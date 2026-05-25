@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+.npm-cache/
+
+# Build outputs
+dist/
+src-tauri/target/
+__pycache__/
+*.py[cod]
+
+# Local logs and temporary files
+*.log
+.vite.*.log
+tmp_*
+*.tmp
+*.pre_recover_backup.vue
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Large local model assets
+wd-swinv2-tagger-v3/model.onnx

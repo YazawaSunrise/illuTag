@@ -1,0 +1,30 @@
+export type GalleryImage = {
+  id: string
+  path: string
+  fileName: string
+  ext: string
+  width: number
+  height: number
+  fileSize: number
+  modifiedAt: number
+  importedAt: number
+  folderId: number
+  missing: boolean
+  source: string
+}
+
+export type GalleryLayoutItem = {
+  id: string
+  thumbnailUrl: string
+  x: number
+  y: number
+  width: number
+  height: number
+  columnIndex: number
+}
+
+export type GalleryLayoutResult = {
+  items: GalleryLayoutItem[]
+  totalHeight: number
+  columnCount: number
+}
