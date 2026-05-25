@@ -8,6 +8,8 @@ import LeftSidebar from './components/LeftSidebar.vue'
 import RightSidebar from './components/RightSidebar.vue'
 import ReferenceBoardView from './components/ReferenceBoardView.vue'
 import SettingsView from './components/SettingsView.vue'
+import { useBackgroundScan } from './composables/useBackgroundScan'
+import { useReferenceBoardClipboard } from './composables/useReferenceBoardClipboard'
 import type { GalleryImage, GalleryLayoutItem } from './types/gallery'
 
 type LibraryFolder = {
@@ -158,31 +160,6 @@ type GallerySearchFilters = {
   confidenceMax: number
 }
 
-type BackgroundScanStatus = {
-  running: boolean
-}
-
-type StartupCleanupStatus = {
-  running: boolean
-  generation: number
-}
-
-type BackgroundScanProgress = {
-  running: boolean
-  phase: string
-  scannedFolders: number
-  totalFolders: number
-  newImages: number
-  updatedImages: number
-  skippedImages: number
-  removedMissingImages: number
-  queuedImages: number
-  taggedImages: number
-  failedImages: number
-  lastError?: string | null
-  recentErrors?: string[] | null
-}
-
 type ReferenceBoardCanvasMenu =
   | { kind: 'item'; itemId: number; x: number; y: number }
   | { kind: 'canvas'; x: number; y: number; worldX: number; worldY: number }
@@ -209,15 +186,6 @@ type ImageTagRecord = {
   tagZh?: string | null
   confidence: number
   category?: string | null
-}
-
-type InternalBoardCopyRef = {
-  itemId: number
-  imageId: string
-  width: number
-  height: number
-  rotation: number
-  copiedAt: number
 }
 
 type BoardCanvasBounds = {
@@ -344,10 +312,6 @@ const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
 const themeMode = ref<'light' | 'dark'>('light')
 const autoFixRightSidebarOnPreview = ref(false)
-const autoScanOnStartup = ref(false)
-const isBackgroundScanRunning = ref(false)
-const scanProgressText = ref('')
-const scanRecentErrors = ref<string[]>([])
 const galleryScrollTop = ref(0)
 const galleryViewportHeight = ref(0)
 const previewDragOverDeleteZone = ref(false)
@@ -370,8 +334,6 @@ const isSearchPointerInside = ref(false)
 const selectedReferenceBoardItemId = ref<number | null>(null)
 const referenceBoardCanvasMenu = ref<ReferenceBoardCanvasMenu>(null)
 const lastBoardPointerWorld = ref<{ x: number; y: number; at: number } | null>(null)
-const clipboardWriteTask = ref<Promise<void> | null>(null)
-const internalBoardCopyRef = ref<InternalBoardCopyRef | null>(null)
 const boardUndoStack = ref<BoardHistoryEntry[]>([])
 const boardRedoStack = ref<BoardHistoryEntry[]>([])
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
@@ -385,15 +347,9 @@ const searchRequestToken = ref(0)
 const searchSuggestRequestToken = ref(0)
 const searchTimer = ref<number | null>(null)
 const searchSuggestTimer = ref<number | null>(null)
-const scanProgressPollTimer = ref<number | null>(null)
-const scanProgressSignature = ref('')
-const scanLibraryRefreshInFlight = ref(false)
-const scanLibraryRefreshAt = ref(0)
-const startupCleanupObservedGeneration = ref(0)
 const previewBoardPointerId = ref<number | null>(null)
 const dragReferenceBoardFolderCollapseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
-const internalBoardCopyMaxAgeMs = 10 * 60 * 1000
 
 const gap = 12
 const defaultBoardCanvasWidth = 1440
@@ -788,6 +744,52 @@ const searchPanelStyle = computed<Record<string, string>>(() => ({
   '--search-translate-y': '0%',
 }))
 
+const {
+  autoScanOnStartup,
+  isBackgroundScanRunning,
+  scanProgressText,
+  scanRecentErrors,
+  initAutoScanOnStartupFromStorage,
+  setAutoScanOnStartup,
+  startScanAllFolders,
+  startStartupCleanup,
+  refreshBackgroundScanStatus,
+  startBackgroundScanPolling,
+  stopBackgroundScanPolling,
+  startAutoScanIfEnabled,
+} = useBackgroundScan({
+  loadLibrary,
+  formatError,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  autoScanOnStartupStorageKey,
+})
+
+const {
+  copyReferenceBoardItemToClipboard,
+  pasteReferenceBoardContent,
+  copyImageToSystemClipboard,
+  buildClipboardCopyErrorText,
+  clearInternalBoardCopyRefForItem,
+  clearInternalBoardCopyRefForItems,
+} = useReferenceBoardClipboard<LibraryStore>({
+  library,
+  activeReferenceBoard,
+  selectedReferenceBoardItemId,
+  boardPan,
+  boardScale,
+  lastBoardPointerWorld,
+  boardPointerUseMaxAgeMs,
+  closeReferenceBoardCanvasMenu,
+  ensureBoardCanvasBoundsFor,
+  getReferenceBoardViewportMetrics,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  formatError,
+})
+
 onMounted(async () => {
   sidebarPinned.value = localStorage.getItem(sidebarPinnedStorageKey) === 'true'
   rightSidebarPinned.value = localStorage.getItem(rightSidebarPinnedStorageKey) === 'true'
@@ -795,7 +797,7 @@ onMounted(async () => {
   previewReferenceBoardIds.value = readStoredIdSet(previewReferenceBoardIdsStorageKey)
   autoFixRightSidebarOnPreview.value =
     localStorage.getItem(autoFixRightSidebarOnPreviewStorageKey) === 'true'
-  autoScanOnStartup.value = localStorage.getItem(autoScanOnStartupStorageKey) === 'true'
+  initAutoScanOnStartupFromStorage()
   themeMode.value = (localStorage.getItem(themeModeStorageKey) as 'light' | 'dark' | null) ?? 'light'
   setThemeMode(themeMode.value)
   await loadLibrary()
@@ -816,13 +818,9 @@ onMounted(async () => {
   window.addEventListener('click', closeGalleryImageContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   void refreshBackgroundScanStatus()
-  scanProgressPollTimer.value = window.setInterval(() => {
-    void refreshBackgroundScanStatus()
-  }, 1200)
+  startBackgroundScanPolling()
   void startStartupCleanup()
-  if (autoScanOnStartup.value) {
-    void startScanAllFolders()
-  }
+  startAutoScanIfEnabled()
 })
 
 onUnmounted(() => {
@@ -834,10 +832,7 @@ onUnmounted(() => {
     window.clearTimeout(searchSuggestTimer.value)
     searchSuggestTimer.value = null
   }
-  if (scanProgressPollTimer.value !== null) {
-    window.clearInterval(scanProgressPollTimer.value)
-    scanProgressPollTimer.value = null
-  }
+  stopBackgroundScanPolling()
   clearDragReferenceBoardFolderCollapseTimer()
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('pointermove', moveImageDrag)
@@ -1703,9 +1698,7 @@ async function finishPreviewBoardItemPointerDrag(event: PointerEvent) {
         if (selectedReferenceBoardItemId.value === state.itemId) {
           selectedReferenceBoardItemId.value = null
         }
-        if (internalBoardCopyRef.value?.itemId === state.itemId) {
-          internalBoardCopyRef.value = null
-        }
+        clearInternalBoardCopyRefForItem(state.itemId)
       }
     }
   } catch (error) {
@@ -1758,9 +1751,7 @@ async function dropPreviewBoardItem(boardId: number, event: DragEvent) {
       if (selectedReferenceBoardItemId.value === state.itemId) {
         selectedReferenceBoardItemId.value = null
       }
-      if (internalBoardCopyRef.value?.itemId === state.itemId) {
-        internalBoardCopyRef.value = null
-      }
+      clearInternalBoardCopyRefForItem(state.itemId)
     }
   } catch (error) {
     errorText.value = formatError(error)
@@ -2422,128 +2413,6 @@ function openReferenceBoardCanvasMenu(event: MouseEvent) {
     y: event.clientY,
     worldX: worldPoint.x,
     worldY: worldPoint.y,
-  }
-}
-
-async function copyReferenceBoardItemToClipboard(itemId: number) {
-  const boardItem = library.value.referenceBoardItems.find((item) => item.id === itemId)
-  if (!boardItem) return
-  selectedReferenceBoardItemId.value = itemId
-  internalBoardCopyRef.value = {
-    itemId: boardItem.id,
-    imageId: boardItem.imageId,
-    width: boardItem.width,
-    height: boardItem.height,
-    rotation: boardItem.rotation,
-    copiedAt: Date.now(),
-  }
-  closeReferenceBoardCanvasMenu()
-  const task = copyImageToSystemClipboard(boardItem.imageId)
-  clipboardWriteTask.value = task
-  try {
-    await task
-  } catch (error) {
-    errorText.value = buildClipboardCopyErrorText(error, '参考板复制')
-  } finally {
-    if (clipboardWriteTask.value === task) {
-      clipboardWriteTask.value = null
-    }
-  }
-}
-
-async function pasteReferenceBoardContent(worldX?: number, worldY?: number) {
-  if (!activeReferenceBoard.value) return
-
-  const pastePoint = resolveReferenceBoardPastePoint(worldX, worldY)
-  try {
-    if (clipboardWriteTask.value) {
-      try {
-        await clipboardWriteTask.value
-      } catch {}
-    }
-    const { invoke } = await import('@tauri-apps/api/core')
-    const clipboardImage = await readClipboardImageForReferenceBoard()
-    if (clipboardImage) {
-      library.value = await invoke<LibraryStore>('paste_image_to_reference_board_command', {
-        boardId: activeReferenceBoard.value.id,
-        imageBytes: clipboardImage.imageBytes,
-        mimeType: clipboardImage.mimeType,
-        x: pastePoint.x,
-        y: pastePoint.y,
-      })
-      ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
-      return
-    }
-
-    if (
-      internalBoardCopyRef.value &&
-      Date.now() - internalBoardCopyRef.value.copiedAt <= internalBoardCopyMaxAgeMs
-    ) {
-      const copied = internalBoardCopyRef.value
-      const sourceStillExists = library.value.referenceBoardItems.some((item) => item.id === copied.itemId)
-      if (sourceStillExists) {
-        library.value = await invoke<LibraryStore>('duplicate_reference_board_item_command', {
-          itemId: copied.itemId,
-          x: pastePoint.x,
-          y: pastePoint.y,
-        })
-        ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
-        return
-      }
-      internalBoardCopyRef.value = null
-    }
-
-    errorText.value = '剪贴板中没有可粘贴的图片。'
-  } catch (error) {
-    errorText.value = formatError(error)
-  } finally {
-    closeReferenceBoardCanvasMenu()
-  }
-}
-
-function resolveReferenceBoardPastePoint(worldX?: number, worldY?: number) {
-  if (Number.isFinite(worldX) && Number.isFinite(worldY)) {
-    return { x: Number(worldX), y: Number(worldY) }
-  }
-
-  if (
-    lastBoardPointerWorld.value &&
-    Date.now() - lastBoardPointerWorld.value.at <= boardPointerUseMaxAgeMs
-  ) {
-    return {
-      x: lastBoardPointerWorld.value.x,
-      y: lastBoardPointerWorld.value.y,
-    }
-  }
-
-  const viewport = getReferenceBoardViewportMetrics()
-  const scale = Math.max(boardScale.value, 0.001)
-  return {
-    x: ((viewport?.width ?? window.innerWidth) * 0.5 - boardPan.value.x) / scale,
-    y: ((viewport?.height ?? window.innerHeight) * 0.5 - boardPan.value.y) / scale,
-  }
-}
-
-async function readClipboardImageForReferenceBoard() {
-  if (!('clipboard' in navigator) || typeof navigator.clipboard.read !== 'function') {
-    return null
-  }
-
-  try {
-    const items = await navigator.clipboard.read()
-    for (const item of items) {
-      const type = item.types.find((entry) => entry.startsWith('image/'))
-      if (!type) continue
-      const blob = await item.getType(type)
-      const buffer = await blob.arrayBuffer()
-      return {
-        imageBytes: Array.from(new Uint8Array(buffer)),
-        mimeType: type,
-      }
-    }
-    return null
-  } catch {
-    return null
   }
 }
 
@@ -3276,9 +3145,7 @@ async function removeReferenceBoardItemsWithHistory(itemIds: number[]) {
     if (selectedReferenceBoardItemId.value !== null && removedIds.has(selectedReferenceBoardItemId.value)) {
       selectedReferenceBoardItemId.value = null
     }
-    if (internalBoardCopyRef.value && removedIds.has(internalBoardCopyRef.value.itemId)) {
-      internalBoardCopyRef.value = null
-    }
+    clearInternalBoardCopyRefForItems(removedIds)
 
     pushBoardHistory({
       kind: 'delete',
@@ -3714,140 +3581,6 @@ async function copyGalleryImageToClipboard(imageId: string) {
   }
 }
 
-async function copyImageToSystemClipboard(imageId: string) {
-  const { invoke } = await import('@tauri-apps/api/core')
-  let backendError: unknown = null
-  try {
-    await invoke('copy_image_to_system_clipboard_command', { imageId })
-    return
-  } catch (error) {
-    backendError = error
-  }
-
-  try {
-    await copyImageToSystemClipboardByWebApi(imageId)
-    return
-  } catch (error) {
-    const backendRaw = formatRawErrorNameMessage(backendError)
-    const fallbackRaw = formatRawErrorNameMessage(error)
-    throw new Error(
-      [
-        `后端系统剪贴板写入失败：${backendRaw}`,
-        `Web Clipboard 回退失败：${fallbackRaw}`,
-        `能力检测：${formatClipboardFeatureAvailability()}`,
-      ].join('\n'),
-    )
-  }
-}
-
-async function copyImageToSystemClipboardByWebApi(imageId: string) {
-  const { invoke } = await import('@tauri-apps/api/core')
-  const payload = await invoke<{ bytes: number[]; mime_type?: string; mimeType?: string }>('read_image_bytes_command', {
-    imageId,
-  })
-  const mimeType = payload.mime_type || payload.mimeType || 'image/png'
-  const sourceBlob = new Blob([new Uint8Array(payload.bytes)], { type: mimeType })
-  const features = clipboardFeatureAvailability()
-  if (!features.hasClipboardWrite || !features.hasClipboardItem) {
-    throw new Error(`Clipboard API 不可用：${formatClipboardFeatureAvailability(features)}`)
-  }
-
-  let convertError: unknown = null
-  let pngBlob: Blob | null = null
-  try {
-    pngBlob = await convertImageBlobToPng(sourceBlob)
-  } catch (error) {
-    convertError = error
-  }
-
-  const data: Record<string, Blob> = {}
-  if (pngBlob) {
-    // 某些环境会因包含 image/jpeg/webp 等类型而直接拒绝 write，这里优先只写 PNG。
-    data['image/png'] = pngBlob
-  } else {
-    data[mimeType] = sourceBlob
-  }
-
-  try {
-    await navigator.clipboard.write([new ClipboardItem(data)])
-  } catch (error) {
-    const rawWrite = formatRawErrorNameMessage(error)
-    const rawConvert = convertError ? formatRawErrorNameMessage(convertError) : null
-    throw new Error(
-      [
-        `系统剪贴板写入失败：${rawWrite}`,
-        rawConvert ? `PNG 转换错误：${rawConvert}` : null,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    )
-  }
-}
-
-async function convertImageBlobToPng(blob: Blob) {
-  if (typeof createImageBitmap !== 'function') {
-    return null
-  }
-  const bitmap = await createImageBitmap(blob)
-  try {
-    const canvas = document.createElement('canvas')
-    canvas.width = bitmap.width
-    canvas.height = bitmap.height
-    const ctx = canvas.getContext('2d')
-    if (!ctx) {
-      throw new Error('Canvas 2D 上下文不可用')
-    }
-    ctx.drawImage(bitmap, 0, 0)
-    return await new Promise<Blob | null>((resolve, reject) => {
-      canvas.toBlob((png) => {
-        if (png) resolve(png)
-        else reject(new Error('canvas.toBlob 返回空结果'))
-      }, 'image/png')
-    })
-  } finally {
-    bitmap.close()
-  }
-}
-
-function formatRawErrorNameMessage(error: unknown) {
-  if (error instanceof Error) return `${error.name}: ${error.message}`
-  const maybe = error as { name?: unknown; message?: unknown } | null
-  if (maybe && typeof maybe === 'object') {
-    const name = typeof maybe.name === 'string' ? maybe.name : 'UnknownError'
-    const message = typeof maybe.message === 'string' ? maybe.message : String(error)
-    return `${name}: ${message}`
-  }
-  return `UnknownError: ${String(error)}`
-}
-
-function clipboardFeatureAvailability() {
-  const hasNavigator = typeof navigator !== 'undefined'
-  const hasClipboard = hasNavigator && 'clipboard' in navigator && !!navigator.clipboard
-  const hasClipboardWrite =
-    hasClipboard && typeof (navigator.clipboard as Clipboard).write === 'function'
-  const hasClipboardItem = typeof ClipboardItem !== 'undefined'
-  const hasCreateImageBitmap = typeof createImageBitmap === 'function'
-  return {
-    hasNavigator,
-    hasClipboard,
-    hasClipboardWrite,
-    hasClipboardItem,
-    hasCreateImageBitmap,
-  }
-}
-
-function formatClipboardFeatureAvailability(features = clipboardFeatureAvailability()) {
-  return `navigator=${features.hasNavigator}, clipboard=${features.hasClipboard}, clipboard.write=${features.hasClipboardWrite}, ClipboardItem=${features.hasClipboardItem}, createImageBitmap=${features.hasCreateImageBitmap}`
-}
-
-function buildClipboardCopyErrorText(error: unknown, scene: string) {
-  return [
-    `${scene}失败`,
-    `原始错误：${formatRawErrorNameMessage(error)}`,
-    `能力检测：${formatClipboardFeatureAvailability()}`,
-  ].join('\n')
-}
-
 function formatFileSize(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -3905,138 +3638,6 @@ function setThemeMode(value: 'light' | 'dark') {
 function setAutoFixRightSidebarOnPreview(value: boolean) {
   autoFixRightSidebarOnPreview.value = value
   localStorage.setItem(autoFixRightSidebarOnPreviewStorageKey, String(value))
-}
-
-function setAutoScanOnStartup(value: boolean) {
-  autoScanOnStartup.value = value
-  localStorage.setItem(autoScanOnStartupStorageKey, String(value))
-}
-
-async function startScanAllFolders() {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const started = await invoke<boolean>('start_scan_all_folders_with_tagging_command')
-    if (started) {
-      isBackgroundScanRunning.value = true
-      scanProgressText.value = '扫描任务已启动'
-    } else {
-      scanProgressText.value = '扫描任务已在后台运行，已排队下一轮扫描'
-    }
-    await refreshBackgroundScanStatus()
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-async function startStartupCleanup() {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke<boolean>('start_startup_cleanup_command')
-    await refreshStartupCleanupStatus()
-  } catch {
-    // startup cleanup is best-effort; keep silent to avoid noisy cold-start errors
-  }
-}
-
-async function refreshBackgroundScanStatus() {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const wasRunning = isBackgroundScanRunning.value
-    const status = await invoke<BackgroundScanStatus>('background_scan_status_command')
-    isBackgroundScanRunning.value = Boolean(status.running)
-
-    const progress = await invoke<BackgroundScanProgress>('background_scan_progress_command')
-    isBackgroundScanRunning.value = Boolean(progress.running)
-    scanProgressText.value = buildScanProgressText(progress)
-    scanRecentErrors.value = Array.isArray(progress.recentErrors)
-      ? progress.recentErrors.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-      : []
-
-    const signature = [
-      progress.running ? '1' : '0',
-      progress.phase,
-      progress.scannedFolders,
-      progress.totalFolders,
-      progress.newImages,
-      progress.updatedImages,
-      progress.skippedImages,
-      progress.removedMissingImages,
-      progress.queuedImages,
-      progress.taggedImages,
-      progress.failedImages,
-    ].join('|')
-    const changed = signature !== scanProgressSignature.value
-    scanProgressSignature.value = signature
-
-    const now = Date.now()
-    const becameIdle = wasRunning && !progress.running
-    const refreshIntervalMs =
-      progress.phase === 'collecting' ? 900 : progress.phase === 'tagging' ? 2400 : 1200
-    const shouldLiveRefresh =
-      progress.running && changed && now - scanLibraryRefreshAt.value >= refreshIntervalMs
-    if ((becameIdle || shouldLiveRefresh) && !scanLibraryRefreshInFlight.value) {
-      scanLibraryRefreshInFlight.value = true
-      scanLibraryRefreshAt.value = now
-      try {
-        await loadLibrary()
-      } finally {
-        scanLibraryRefreshInFlight.value = false
-      }
-    }
-    await refreshStartupCleanupStatus()
-  } catch (error) {
-    if (isBackgroundScanRunning.value) {
-      errorText.value = formatError(error)
-    }
-  }
-}
-
-async function refreshStartupCleanupStatus() {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const status = await invoke<StartupCleanupStatus>('startup_cleanup_status_command')
-    const previousGeneration = startupCleanupObservedGeneration.value
-    startupCleanupObservedGeneration.value = status.generation
-    const cleanupJustFinished = !status.running && status.generation > previousGeneration
-    if (!cleanupJustFinished || scanLibraryRefreshInFlight.value) return
-
-    scanLibraryRefreshInFlight.value = true
-    scanLibraryRefreshAt.value = Date.now()
-    try {
-      await loadLibrary()
-    } finally {
-      scanLibraryRefreshInFlight.value = false
-    }
-  } catch {
-    // ignore startup cleanup polling failure to avoid disturbing normal scan progress flow
-  }
-}
-
-function buildScanProgressText(progress: BackgroundScanProgress) {
-  const phaseLabel = scanPhaseLabel(progress.phase)
-  const folders = `${progress.scannedFolders}/${progress.totalFolders}`
-  const tagged = `${progress.taggedImages}/${progress.queuedImages}`
-  const base = `${phaseLabel}｜文件夹 ${folders}｜新增 ${progress.newImages}｜更新 ${progress.updatedImages}｜跳过 ${progress.skippedImages}｜清理 ${progress.removedMissingImages}｜打标 ${tagged}｜失败 ${progress.failedImages}`
-  if (progress.lastError) {
-    return `${base}｜错误：${progress.lastError}`
-  }
-  if (!progress.running && progress.phase === 'idle') {
-    return `上次扫描完成｜${base}`
-  }
-  return base
-}
-
-function scanPhaseLabel(phase: string) {
-  switch ((phase || '').toLowerCase()) {
-    case 'collecting':
-      return '扫描中'
-    case 'tagging':
-      return '打标中'
-    case 'idle':
-      return '空闲'
-    default:
-      return phase || '未知状态'
-  }
 }
 
 const settingsViewHandlers = {
