@@ -14,6 +14,8 @@ import { useFolderManagement } from './composables/useFolderManagement'
 import { useGalleryMasonry } from './composables/useGalleryMasonry'
 import { useGallerySearch } from './composables/useGallerySearch'
 import { useImageDragAndDrop } from './composables/useImageDragAndDrop'
+import { usePreviewBoardDrag } from './composables/usePreviewBoardDrag'
+import { useContextMenuState } from './composables/useContextMenuState'
 import { useReferenceBoardManagement } from './composables/useReferenceBoardManagement'
 import { useReferenceBoardInteraction } from './composables/useReferenceBoardInteraction'
 import { useReferenceBoardClipboard } from './composables/useReferenceBoardClipboard'
@@ -83,22 +85,6 @@ type LibraryStore = {
 
 type ViewMode = 'gallery' | 'settings' | 'board'
 
-type ImageDetailContextMenu = { x: number; y: number } | null
-type GalleryImageContextMenu = { imageId: string; x: number; y: number } | null
-type PreviewBoardDragKind = 'preview' | 'board' | 'gallery' | null
-
-type PreviewBoardItemDragState = {
-  itemId: number
-  imageId: string
-  sourceBoardId: number
-  thumbnailUrl: string
-  x: number
-  y: number
-  targetBoardId: number | null
-  targetKind: PreviewBoardDragKind
-  mode: 'copy' | 'move'
-}
-
 type BoardCanvasBounds = {
   minX: number
   minY: number
@@ -129,14 +115,8 @@ const folderPathInput = ref('')
 const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
-const previewDragOverDeleteZone = ref(false)
-const previewBoardItemDrag = ref<PreviewBoardItemDragState | null>(null)
-const lastPreviewBoardDragEndedAt = ref(0)
 const boardCanvasBoundsById = ref<Record<number, BoardCanvasBounds>>({})
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
-const imageDetailContextMenu = ref<ImageDetailContextMenu>(null)
-const galleryImageContextMenu = ref<GalleryImageContextMenu>(null)
-const previewBoardPointerId = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
 
 const defaultBoardCanvasWidth = 1440
@@ -185,22 +165,6 @@ const referenceBoardCanvasMenuStyle = computed(() => {
   return {
     left: `${referenceBoardCanvasMenu.value.x}px`,
     top: `${referenceBoardCanvasMenu.value.y}px`,
-  }
-})
-
-const imageDetailContextMenuStyle = computed(() => {
-  if (!imageDetailContextMenu.value) return {}
-  return {
-    left: `${imageDetailContextMenu.value.x}px`,
-    top: `${imageDetailContextMenu.value.y}px`,
-  }
-})
-
-const galleryImageContextMenuStyle = computed(() => {
-  if (!galleryImageContextMenu.value) return {}
-  return {
-    left: `${galleryImageContextMenu.value.x}px`,
-    top: `${galleryImageContextMenu.value.y}px`,
   }
 })
 
@@ -398,6 +362,17 @@ const {
 })
 
 const {
+  imageDetailContextMenu,
+  galleryImageContextMenu,
+  imageDetailContextMenuStyle,
+  galleryImageContextMenuStyle,
+  closeImageDetailContextMenu,
+  closeGalleryImageContextMenu,
+  openGalleryImageMenu: openGalleryImageMenuState,
+  openImageDetailMenu: openImageDetailMenuState,
+} = useContextMenuState()
+
+const {
   boardScale,
   boardPan,
   selectedReferenceBoardItemId,
@@ -421,6 +396,8 @@ const {
   activeReferenceBoard,
   viewMode,
   ensureBoardCanvasBoundsFor,
+  closeImageDetailContextMenu,
+  closeGalleryImageContextMenu,
   setErrorText(value) {
     errorText.value = value
   },
@@ -558,6 +535,36 @@ const {
   ensureBoardCanvasBoundsFor,
   clearInternalBoardCopyRefForItems,
   closeReferenceBoardCanvasMenu,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  formatError,
+})
+
+const {
+  previewDragOverDeleteZone,
+  previewBoardItemDrag,
+  previewBoardDragIconKind,
+  onPreviewReferenceThumbClick,
+  startPreviewBoardItemDrag,
+  startPreviewBoardItemPointerDrag,
+  movePreviewBoardItemPointerDrag,
+  finishPreviewBoardItemPointerDrag,
+  onPreviewBoardItemDragOverPreview,
+  onPreviewBoardItemDragOverBoard,
+  dropPreviewBoardItem,
+  endPreviewBoardItemDrag,
+  onGalleryPreviewBoardItemDragOver,
+  onGalleryPreviewBoardItemDrop,
+} = usePreviewBoardDrag<LibraryStore>({
+  library,
+  selectedReferenceBoardItemId,
+  closeBoardContextMenu,
+  clearReferenceBoardDragState,
+  ensureBoardCanvasBoundsFor,
+  removeReferenceBoardItemsWithHistory,
+  clearInternalBoardCopyRefForItem,
+  showReferenceBoard,
   setErrorText(value) {
     errorText.value = value
   },
@@ -749,14 +756,6 @@ async function removeFolder(folderPath: string) {
   }
 }
 
-function closeImageDetailContextMenu() {
-  imageDetailContextMenu.value = null
-}
-
-function closeGalleryImageContextMenu() {
-  galleryImageContextMenu.value = null
-}
-
 function isEditableKeyboardTarget(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null
   if (!target) return false
@@ -831,290 +830,6 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
     event.preventDefault()
     void pasteReferenceBoardContent()
-  }
-}
-
-function clearPreviewBoardItemDrag() {
-  const hadDrag = previewBoardItemDrag.value !== null
-  previewBoardPointerId.value = null
-  previewBoardItemDrag.value = null
-  previewDragOverDeleteZone.value = false
-  if (hadDrag) {
-    lastPreviewBoardDragEndedAt.value = Date.now()
-  }
-}
-
-function previewBoardDragIconKind(state: PreviewBoardItemDragState) {
-  if (state.targetKind === 'gallery') return 'delete'
-  if (state.targetBoardId === null || state.targetBoardId === state.sourceBoardId) return 'none'
-  return state.mode === 'move' ? 'move' : 'copy'
-}
-
-function onPreviewReferenceThumbClick(boardId: number) {
-  if (Date.now() - lastPreviewBoardDragEndedAt.value < 260) return
-  showReferenceBoard(boardId)
-}
-
-function previewDropModeFromEvent(
-  event: DragEvent,
-  element: EventTarget | null,
-): 'copy' | 'move' {
-  const host = element instanceof HTMLElement ? element : null
-  if (!host) return 'copy'
-  const rect = host.getBoundingClientRect()
-  const midX = rect.left + rect.width / 2
-  return event.clientX < midX ? 'move' : 'copy'
-}
-
-function setPreviewBoardDragTarget(
-  boardId: number,
-  kind: Exclude<PreviewBoardDragKind, 'gallery' | null>,
-  mode: 'copy' | 'move',
-  event: DragEvent,
-) {
-  const state = previewBoardItemDrag.value
-  if (!state) return
-  if (state.sourceBoardId === boardId) {
-    state.targetBoardId = null
-    state.targetKind = null
-    previewDragOverDeleteZone.value = false
-    return
-  }
-  state.targetBoardId = boardId
-  state.targetKind = kind
-  state.mode = mode
-  state.x = event.clientX
-  state.y = event.clientY
-  previewDragOverDeleteZone.value = false
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = mode === 'move' ? 'move' : 'copy'
-  }
-}
-
-function startPreviewBoardItemDrag(
-  itemId: number,
-  imageId: string,
-  sourceBoardId: number,
-  thumbnailUrl: string,
-  event: DragEvent,
-) {
-  closeBoardContextMenu()
-  clearReferenceBoardDragState()
-  previewBoardItemDrag.value = {
-    itemId,
-    imageId,
-    sourceBoardId,
-    thumbnailUrl,
-    x: event.clientX,
-    y: event.clientY,
-    targetBoardId: null,
-    targetKind: null,
-    mode: 'copy',
-  }
-  previewDragOverDeleteZone.value = false
-  event.dataTransfer?.setData('text/plain', `preview-item:${itemId}`)
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'copyMove'
-  }
-}
-
-function startPreviewBoardItemPointerDrag(
-  itemId: number,
-  imageId: string,
-  sourceBoardId: number,
-  thumbnailUrl: string,
-  event: PointerEvent,
-) {
-  if (event.button !== 0) return
-  event.preventDefault()
-  event.stopPropagation()
-  closeBoardContextMenu()
-  clearReferenceBoardDragState()
-  previewBoardPointerId.value = event.pointerId
-  previewBoardItemDrag.value = {
-    itemId,
-    imageId,
-    sourceBoardId,
-    thumbnailUrl,
-    x: event.clientX,
-    y: event.clientY,
-    targetBoardId: null,
-    targetKind: null,
-    mode: 'copy',
-  }
-  previewDragOverDeleteZone.value = false
-}
-
-function movePreviewBoardItemPointerDrag(event: PointerEvent) {
-  if (previewBoardPointerId.value === null || previewBoardPointerId.value !== event.pointerId) return
-  const state = previewBoardItemDrag.value
-  if (!state) return
-
-  state.x = event.clientX
-  state.y = event.clientY
-
-  const element = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
-  if (element?.closest('.gallery-page')) {
-    state.targetBoardId = null
-    state.targetKind = 'gallery'
-    state.mode = 'move'
-    previewDragOverDeleteZone.value = true
-    return
-  }
-
-  const boardElement = element?.closest<HTMLElement>('[data-reference-board-id]')
-  if (boardElement?.dataset.referenceBoardId) {
-    const boardId = Number(boardElement.dataset.referenceBoardId)
-    if (Number.isFinite(boardId)) {
-      if (boardId === state.sourceBoardId) {
-        state.targetBoardId = null
-        state.targetKind = null
-        previewDragOverDeleteZone.value = false
-        return
-      }
-      const mode = event.clientX < boardElement.getBoundingClientRect().left + boardElement.getBoundingClientRect().width / 2 ? 'move' : 'copy'
-      const kind: Exclude<PreviewBoardDragKind, 'gallery' | null> = boardElement.closest('.reference-board-preview__block')
-        ? 'preview'
-        : 'board'
-      state.targetBoardId = boardId
-      state.targetKind = kind
-      state.mode = mode
-      previewDragOverDeleteZone.value = false
-      return
-    }
-  }
-
-  state.targetBoardId = null
-  state.targetKind = null
-  previewDragOverDeleteZone.value = false
-}
-
-async function finishPreviewBoardItemPointerDrag(event: PointerEvent) {
-  if (previewBoardPointerId.value === null || previewBoardPointerId.value !== event.pointerId) return
-  const state = previewBoardItemDrag.value
-  if (!state) {
-    clearPreviewBoardItemDrag()
-    return
-  }
-
-  previewBoardPointerId.value = null
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    if (state.targetKind === 'gallery') {
-      await removeReferenceBoardItemsWithHistory([state.itemId])
-      return
-    }
-
-    if (state.targetBoardId !== null) {
-      if (state.mode === 'copy') {
-        library.value = await invoke<LibraryStore>('add_image_to_reference_board_command', {
-          imageId: state.imageId,
-          boardId: state.targetBoardId,
-        })
-        ensureBoardCanvasBoundsFor(state.targetBoardId)
-      } else if (state.sourceBoardId !== state.targetBoardId) {
-        library.value = await invoke<LibraryStore>('add_image_to_reference_board_command', {
-          imageId: state.imageId,
-          boardId: state.targetBoardId,
-        })
-        ensureBoardCanvasBoundsFor(state.targetBoardId)
-        library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
-          itemId: state.itemId,
-        })
-        if (selectedReferenceBoardItemId.value === state.itemId) {
-          selectedReferenceBoardItemId.value = null
-        }
-        clearInternalBoardCopyRefForItem(state.itemId)
-      }
-    }
-  } catch (error) {
-    errorText.value = formatError(error)
-  } finally {
-    clearPreviewBoardItemDrag()
-  }
-}
-
-function onPreviewBoardItemDragOverPreview(boardId: number, event: DragEvent) {
-  if (!previewBoardItemDrag.value) return
-  event.preventDefault()
-  event.stopPropagation()
-  const mode = previewDropModeFromEvent(event, event.currentTarget)
-  setPreviewBoardDragTarget(boardId, 'preview', mode, event)
-}
-
-function onPreviewBoardItemDragOverBoard(boardId: number, event: DragEvent) {
-  if (!previewBoardItemDrag.value) return
-  event.preventDefault()
-  event.stopPropagation()
-  const mode = previewDropModeFromEvent(event, event.currentTarget)
-  setPreviewBoardDragTarget(boardId, 'board', mode, event)
-}
-
-async function dropPreviewBoardItem(boardId: number, event: DragEvent) {
-  if (!previewBoardItemDrag.value) return
-  event.preventDefault()
-  event.stopPropagation()
-  const state = previewBoardItemDrag.value
-  const mode = previewDropModeFromEvent(event, event.currentTarget) ?? state.mode
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    if (mode === 'copy') {
-      library.value = await invoke<LibraryStore>('add_image_to_reference_board_command', {
-        imageId: state.imageId,
-        boardId,
-      })
-      ensureBoardCanvasBoundsFor(boardId)
-    } else if (state.sourceBoardId !== boardId) {
-      library.value = await invoke<LibraryStore>('add_image_to_reference_board_command', {
-        imageId: state.imageId,
-        boardId,
-      })
-      ensureBoardCanvasBoundsFor(boardId)
-      library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
-        itemId: state.itemId,
-      })
-      if (selectedReferenceBoardItemId.value === state.itemId) {
-        selectedReferenceBoardItemId.value = null
-      }
-      clearInternalBoardCopyRefForItem(state.itemId)
-    }
-  } catch (error) {
-    errorText.value = formatError(error)
-  } finally {
-    clearPreviewBoardItemDrag()
-  }
-}
-
-function endPreviewBoardItemDrag() {
-  clearPreviewBoardItemDrag()
-}
-
-function onGalleryPreviewBoardItemDragOver(event: DragEvent) {
-  const state = previewBoardItemDrag.value
-  if (!state) return
-  event.preventDefault()
-  event.stopPropagation()
-  state.x = event.clientX
-  state.y = event.clientY
-  state.targetBoardId = null
-  state.targetKind = 'gallery'
-  state.mode = 'move'
-  previewDragOverDeleteZone.value = true
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
-}
-
-async function onGalleryPreviewBoardItemDrop(event: DragEvent) {
-  const state = previewBoardItemDrag.value
-  if (!state) return
-  event.preventDefault()
-  event.stopPropagation()
-  try {
-    await removeReferenceBoardItemsWithHistory([state.itemId])
-  } catch (error) {
-    errorText.value = formatError(error)
-  } finally {
-    clearPreviewBoardItemDrag()
   }
 }
 
@@ -1484,22 +1199,11 @@ function setComposingFolderName(value: boolean) {
 }
 
 function openGalleryImageMenu(item: GalleryLayoutItem, event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-  galleryImageContextMenu.value = {
-    imageId: item.id,
-    x: event.clientX,
-    y: event.clientY,
-  }
-  imageDetailContextMenu.value = null
+  openGalleryImageMenuState(item, event, closeReferenceBoardCanvasMenu)
 }
 
 function openImageDetailMenu(event: MouseEvent) {
-  if (!activeImageDetail.value) return
-  event.preventDefault()
-  event.stopPropagation()
-  closeGalleryImageContextMenu()
-  imageDetailContextMenu.value = { x: event.clientX, y: event.clientY }
+  openImageDetailMenuState(event, Boolean(activeImageDetail.value), closeReferenceBoardCanvasMenu)
 }
 
 async function exportGalleryImage(imageId: string) {

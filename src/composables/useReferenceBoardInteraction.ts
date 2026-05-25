@@ -52,6 +52,8 @@ type UseReferenceBoardInteractionOptions<TLibraryStore extends LibraryStoreLike>
   activeReferenceBoard: Ref<ReferenceBoard | null>
   viewMode: Ref<string>
   ensureBoardCanvasBoundsFor: (boardId: number) => void
+  closeImageDetailContextMenu: () => void
+  closeGalleryImageContextMenu: () => void
   setErrorText: (value: string) => void
   formatError: (error: unknown) => string
   clamp: (value: number, min: number, max: number) => number
@@ -82,6 +84,8 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
   function openReferenceBoardItemMenu(itemId: number, event: MouseEvent) {
     event.preventDefault()
     event.stopPropagation()
+    options.closeImageDetailContextMenu()
+    options.closeGalleryImageContextMenu()
     rememberBoardPointerFromClient(event.clientX, event.clientY)
     selectedReferenceBoardItemId.value = itemId
     referenceBoardCanvasMenu.value = {
@@ -96,6 +100,8 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
     if (options.viewMode.value !== 'board') return
     event.preventDefault()
     event.stopPropagation()
+    options.closeImageDetailContextMenu()
+    options.closeGalleryImageContextMenu()
 
     const target = event.target as HTMLElement | null
     if (target?.closest('.reference-board-card')) return
