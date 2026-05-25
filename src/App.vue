@@ -10,6 +10,7 @@ import ReferenceBoardView from './components/ReferenceBoardView.vue'
 import SettingsView from './components/SettingsView.vue'
 import { useAppSettings } from './composables/useAppSettings'
 import { useBackgroundScan } from './composables/useBackgroundScan'
+import { useFolderManagement } from './composables/useFolderManagement'
 import { useGallerySearch } from './composables/useGallerySearch'
 import { useReferenceBoardInteraction } from './composables/useReferenceBoardInteraction'
 import { useReferenceBoardClipboard } from './composables/useReferenceBoardClipboard'
@@ -78,12 +79,6 @@ type LibraryStore = {
 
 type ViewMode = 'gallery' | 'settings' | 'board'
 
-type FolderTreeItem = UserFolder & {
-  depth: number
-  hasChildren: boolean
-  isExpanded: boolean
-}
-
 type DragState = {
   imageId: string
   thumbnailUrl: string
@@ -94,27 +89,6 @@ type DragState = {
   overFolderId: number | null
   overBoardId: number | null
   overRightSidebar: boolean
-}
-
-type FolderContextMenu =
-  | { kind: 'space'; x: number; y: number }
-  | { kind: 'folder'; folderId: number; x: number; y: number }
-  | null
-
-type FolderDraft = {
-  parentId: number | null
-  x: number
-  y: number
-}
-
-type FolderPointerState = {
-  folderId: number
-  pointerId: number
-  startX: number
-  startY: number
-  currentX: number
-  currentY: number
-  isDragging: boolean
 }
 
 type ReferenceBoardRow =
@@ -201,7 +175,6 @@ const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoar
 const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
 const autoScanOnStartupStorageKey = 'illutag.autoScanOnStartup'
 const imageDragDelayMs = 120
-const folderDragDelayMs = 160
 const sidebarHoverOpen = ref(false)
 const rightSidebarHoverOpen = ref(false)
 const viewMode = ref<ViewMode>('gallery')
@@ -221,29 +194,14 @@ const galleryEl = ref<HTMLElement | null>(null)
 const viewportWidth = ref(960)
 const viewportHeight = ref(720)
 const folderPathInput = ref('')
-const activeUserFolderId = ref<number | 'all' | 'trash'>('all')
-const newFolderName = ref('')
-const folderDraft = ref<FolderDraft | null>(null)
 const longPressTimer = ref<number | null>(null)
-const folderPressTimer = ref<number | null>(null)
 const dragState = ref<DragState | null>(null)
-const expandedFolderIds = ref<Set<number>>(new Set())
 const expandedReferenceBoardFolderIds = ref<Set<number>>(new Set())
 const dragExpandedReferenceBoardFolderIds = ref<Set<number>>(new Set())
-const dragExpandedFolderIds = ref<Set<number>>(new Set())
-const folderContextMenu = ref<FolderContextMenu | null>(null)
-const draggedFolderId = ref<number | null>(null)
-const folderDragOverId = ref<number | null>(null)
-const folderPointerState = ref<FolderPointerState | null>(null)
-const suppressNextFolderClick = ref(false)
 const pressedItem = ref<GalleryLayoutItem | null>(null)
 const pressedPointerId = ref<number | null>(null)
 const pressStart = ref<{ x: number; y: number } | null>(null)
 const pressCurrent = ref<{ x: number; y: number } | null>(null)
-const isComposingFolderName = ref(false)
-const renamingUserFolderId = ref<number | null>(null)
-const renamingUserFolderName = ref('')
-const isComposingUserFolderRename = ref(false)
 const activeReferenceBoardId = ref<number | null>(null)
 const previewReferenceBoardIds = ref<Set<number>>(new Set())
 const boardContextMenu = ref<BoardContextMenu | null>(null)
@@ -289,50 +247,6 @@ const rightSidebarOpen = computed(() => rightSidebarPinned.value || rightSidebar
 const isTitlebarPinned = computed(() => !isWindowMaximized.value || isTitlebarHovered.value)
 const isReferencePreviewActive = computed(() => previewReferenceBoardIds.value.size > 0)
 
-function collectDescendantFolderIds(rootFolderId: number) {
-  const childrenByParent = new Map<number, number[]>()
-  for (const folder of library.value.userFolders) {
-    if (folder.parentId == null) continue
-    const group = childrenByParent.get(folder.parentId) ?? []
-    group.push(folder.id)
-    childrenByParent.set(folder.parentId, group)
-  }
-
-  const ids = new Set<number>()
-  const stack = [rootFolderId]
-  while (stack.length > 0) {
-    const folderId = stack.pop()!
-    if (ids.has(folderId)) continue
-    ids.add(folderId)
-    for (const childId of childrenByParent.get(folderId) ?? []) {
-      stack.push(childId)
-    }
-  }
-  return ids
-}
-
-const folderScopedImages = computed(() => {
-  const galleryImages = library.value.images.filter((image) => image.source !== 'reference')
-  if (activeUserFolderId.value === 'trash') {
-    return galleryImages.filter((image) => image.trashed)
-  }
-  const activeImages = galleryImages.filter((image) => !image.trashed)
-  if (activeUserFolderId.value === 'all') return activeImages
-
-  const scopeFolderIds = collectDescendantFolderIds(activeUserFolderId.value)
-  const hasChildFolders = (folderGroups.value.get(activeUserFolderId.value) ?? []).length > 0
-  if (hasChildFolders) {
-    scopeFolderIds.delete(activeUserFolderId.value)
-  }
-
-  const assignedIds = new Set(
-    library.value.imageFolders
-      .filter((assignment) => scopeFolderIds.has(assignment.folderId))
-      .map((assignment) => assignment.imageId),
-  )
-  return activeImages.filter((image) => assignedIds.has(image.id))
-})
-
 const referenceBoardPreviewBlocks = computed(() => {
   const imageById = new Map(library.value.images.map((image) => [image.id, image]))
   const boardById = new Map(library.value.referenceBoards.map((board) => [board.id, board]))
@@ -371,27 +285,6 @@ const referenceBoardPreviewBlocks = computed(() => {
   }
 
   return rows
-})
-
-const folderGroups = computed(() => {
-  const byParent = new Map<number | null, UserFolder[]>()
-  for (const folder of library.value.userFolders) {
-    const key = folder.parentId ?? null
-    const group = byParent.get(key) ?? []
-    group.push(folder)
-    byParent.set(key, group)
-  }
-
-  for (const group of byParent.values()) {
-    group.sort(
-      (a, b) =>
-        (a.sortOrder ?? 0) - (b.sortOrder ?? 0) ||
-        a.name.localeCompare(b.name, 'zh-Hans-CN') ||
-        a.id - b.id,
-    )
-  }
-
-  return byParent
 })
 
 const effectiveExpandedReferenceBoardFolderIds = computed(() => {
@@ -482,25 +375,6 @@ const activeBoardCanvasBounds = computed(() => {
   return getBoardCanvasBounds(activeReferenceBoardId.value)
 })
 
-const folderTree = computed<FolderTreeItem[]>(() => buildFolderTree(expandedFolderIds.value))
-const dropFolderTree = computed<FolderTreeItem[]>(() => buildFolderTree(dragExpandedFolderIds.value))
-
-const contextMenuStyle = computed(() => {
-  if (!folderContextMenu.value) return {}
-  return {
-    left: `${folderContextMenu.value.x}px`,
-    top: `${folderContextMenu.value.y}px`,
-  }
-})
-
-const folderDraftStyle = computed(() => {
-  if (!folderDraft.value) return {}
-  return {
-    left: `${folderDraft.value.x}px`,
-    top: `${folderDraft.value.y}px`,
-  }
-})
-
 const boardContextMenuStyle = computed(() => {
   if (!boardContextMenu.value) return {}
   return {
@@ -540,20 +414,6 @@ const galleryImageContextMenuStyle = computed(() => {
     top: `${galleryImageContextMenu.value.y}px`,
   }
 })
-
-function buildFolderTree(expandedIds: Set<number>) {
-  const result: FolderTreeItem[] = []
-  const append = (parentId: number | null, depth: number) => {
-    for (const folder of folderGroups.value.get(parentId) ?? []) {
-      const hasChildren = (folderGroups.value.get(folder.id) ?? []).length > 0
-      const isExpanded = expandedIds.has(folder.id)
-      result.push({ ...folder, depth, hasChildren, isExpanded })
-      if (isExpanded) append(folder.id, depth + 1)
-    }
-  }
-  append(null, 0)
-  return result
-}
 
 const columnCount = computed(() => {
   const width = viewportWidth.value
@@ -637,6 +497,64 @@ const {
   setAutoFixRightSidebarOnPreview,
   setThemeMode,
 } = useAppSettings()
+
+const {
+  activeUserFolderId,
+  newFolderName,
+  folderDraft,
+  isComposingFolderName,
+  dragExpandedFolderIds,
+  folderContextMenu,
+  renamingUserFolderId,
+  renamingUserFolderName,
+  isComposingUserFolderRename,
+  folderPointerState,
+  draggedFolderId,
+  folderDragOverId,
+  folderTree,
+  dropFolderTree,
+  contextMenuStyle,
+  folderDraftStyle,
+  folderScopedImages,
+  deleteUserFolder,
+  openCreateFolderDraft,
+  closeCreateFolderDraft,
+  commitFolderDraft,
+  toggleFolderExpanded,
+  expandFolder,
+  openFolderSectionMenu,
+  openFolderMenu,
+  closeFolderContextMenu,
+  showAllImages,
+  showTrashImages,
+  onUserFolderRowClick,
+  startUserFolderRename,
+  setRenamingUserFolderName,
+  startComposingUserFolderRename,
+  endComposingUserFolderRename,
+  cancelUserFolderRename,
+  commitUserFolderRename,
+  onUserFolderRenameEnter,
+  clearFolderPress,
+  startFolderPointer,
+  moveFolderPointer,
+  finishFolderPointer,
+  folderIdFromPoint,
+  folderHasChildren,
+  expandedDropFolderIdsFor,
+  assignImageToFolder,
+} = useFolderManagement<LibraryStore>({
+  library,
+  viewMode,
+  activeReferenceBoardId,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  formatError,
+  updateStatus,
+  closeBoardContextMenu,
+  clamp,
+})
 
 const {
   boardScale,
@@ -955,104 +873,6 @@ async function removeFolder(folderPath: string) {
   }
 }
 
-async function createUserFolder(parentId: number | null = null) {
-  const name = newFolderName.value.trim()
-  if (!name) return
-
-  errorText.value = ''
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('create_user_folder_command', {
-      parentId,
-      name,
-    })
-    newFolderName.value = ''
-    folderDraft.value = null
-    if (parentId !== null) expandFolder(parentId)
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-async function reorderUserFolder(folderId: number, targetFolderId: number) {
-  if (folderId === targetFolderId) return
-
-  const dragged = library.value.userFolders.find((item) => item.id === folderId)
-  const target = library.value.userFolders.find((item) => item.id === targetFolderId)
-  if (!dragged || !target || (dragged.parentId ?? null) !== (target.parentId ?? null)) return
-
-  errorText.value = ''
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('reorder_user_folder_command', {
-      folderId,
-      targetFolderId,
-    })
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-async function deleteUserFolder(folderId: number) {
-  const folder = library.value.userFolders.find((item) => item.id === folderId)
-  if (!folder) return
-  closeFolderContextMenu()
-
-  if (!window.confirm(`删除文件夹“${folder.name}”？子文件夹和图片归类关系也会一起移除。`)) {
-    return
-  }
-
-  errorText.value = ''
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('delete_user_folder_command', { folderId })
-    removeExpandedFolder(folderId)
-    if (
-      activeUserFolderId.value !== 'all' &&
-      activeUserFolderId.value !== 'trash' &&
-      !library.value.userFolders.some((item) => item.id === activeUserFolderId.value)
-    ) {
-      activeUserFolderId.value = 'all'
-    }
-    updateStatus()
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-async function openCreateFolderDraft(parentId: number | null, x: number, y: number) {
-  folderDraft.value = { parentId, x: clamp(x, 10, window.innerWidth - 210), y: clamp(y, 10, window.innerHeight - 42) }
-  newFolderName.value = ''
-  closeFolderContextMenu()
-  if (parentId !== null) expandFolder(parentId)
-  await nextTick()
-  const input = document.querySelector<HTMLInputElement>('[data-folder-draft-input]')
-  input?.focus()
-  input?.select()
-}
-
-function closeCreateFolderDraft() {
-  folderDraft.value = null
-  newFolderName.value = ''
-  isComposingFolderName.value = false
-}
-
-function commitFolderDraft() {
-  if (isComposingFolderName.value) return
-  if (!folderDraft.value) return
-  void createUserFolder(folderDraft.value.parentId)
-}
-
-function toggleFolderExpanded(folderId: number) {
-  const next = new Set(expandedFolderIds.value)
-  if (next.has(folderId)) {
-    next.delete(folderId)
-  } else {
-    next.add(folderId)
-  }
-  expandedFolderIds.value = next
-}
-
 function toggleReferenceBoardFolderExpanded(folderId: number) {
   const next = new Set(expandedReferenceBoardFolderIds.value)
   if (next.has(folderId)) {
@@ -1067,38 +887,6 @@ function expandReferenceBoardFolder(folderId: number) {
   const next = new Set(expandedReferenceBoardFolderIds.value)
   next.add(folderId)
   expandedReferenceBoardFolderIds.value = next
-}
-
-function expandFolder(folderId: number) {
-  const next = new Set(expandedFolderIds.value)
-  next.add(folderId)
-  expandedFolderIds.value = next
-}
-
-function removeExpandedFolder(folderId: number) {
-  const next = new Set(expandedFolderIds.value)
-  next.delete(folderId)
-  expandedFolderIds.value = next
-}
-
-function openFolderSectionMenu(event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-  void openCreateFolderDraft(null, event.clientX, event.clientY)
-}
-
-function openFolderMenu(folderId: number, event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-  folderContextMenu.value = { kind: 'folder', folderId, x: event.clientX, y: event.clientY }
-  closeBoardContextMenu()
-}
-
-function folderIdFromPoint(x: number, y: number) {
-  const element = document.elementFromPoint(x, y)
-  const folderElement = element?.closest<HTMLElement>('[data-folder-id]')
-  const folderId = folderElement?.dataset.folderId
-  return folderId ? Number(folderId) : null
 }
 
 function referenceBoardIdFromPoint(x: number, y: number) {
@@ -1155,37 +943,6 @@ function keepDragExpandedReferenceBoardFolder(folderId: number) {
   dragExpandedReferenceBoardFolderIds.value = new Set([folderId])
 }
 
-function sidebarFolderIdFromPoint(x: number, y: number) {
-  const element = document.elementFromPoint(x, y)
-  const folderElement = element?.closest<HTMLElement>('[data-sidebar-folder-id]')
-  const folderId = folderElement?.dataset.sidebarFolderId
-  return folderId ? Number(folderId) : null
-}
-
-function canReorderFolder(folderId: number, targetFolderId: number) {
-  if (folderId === targetFolderId) return false
-  const dragged = library.value.userFolders.find((item) => item.id === folderId)
-  const target = library.value.userFolders.find((item) => item.id === targetFolderId)
-  return Boolean(dragged && target && (dragged.parentId ?? null) === (target.parentId ?? null))
-}
-
-function folderHasChildren(folderId: number) {
-  return (folderGroups.value.get(folderId) ?? []).length > 0
-}
-
-function expandedDropFolderIdsFor(folderId: number) {
-  const expandedIds = new Set<number>()
-  let current = library.value.userFolders.find((folder) => folder.id === folderId)
-
-  while (current?.parentId != null) {
-    expandedIds.add(current.parentId)
-    current = library.value.userFolders.find((folder) => folder.id === current?.parentId)
-  }
-
-  if (folderHasChildren(folderId)) expandedIds.add(folderId)
-  return expandedIds
-}
-
 function floatingPanelPosition(x: number, y: number) {
   const panelWidth = 184
   const panelHeight = 260
@@ -1194,45 +951,6 @@ function floatingPanelPosition(x: number, y: number) {
     x: side === 'right' ? x + 28 : x - panelWidth - 28,
     y: Math.max(84, Math.min(y - 40, window.innerHeight - panelHeight - 16)),
   }
-}
-
-function showAllImages() {
-  viewMode.value = 'gallery'
-  activeUserFolderId.value = 'all'
-  activeReferenceBoardId.value = null
-}
-
-function showTrashImages() {
-  viewMode.value = 'gallery'
-  activeUserFolderId.value = 'trash'
-  activeReferenceBoardId.value = null
-}
-
-function showUserFolder(folderId: number) {
-  if (suppressNextFolderClick.value) {
-    suppressNextFolderClick.value = false
-    return
-  }
-  viewMode.value = 'gallery'
-  activeUserFolderId.value = folderId
-  activeReferenceBoardId.value = null
-}
-
-function onUserFolderRowClick(folder: FolderTreeItem) {
-  if (suppressNextFolderClick.value) {
-    suppressNextFolderClick.value = false
-    return
-  }
-
-  if (activeUserFolderId.value === folder.id && folder.isExpanded) {
-    removeExpandedFolder(folder.id)
-  } else {
-    expandFolder(folder.id)
-  }
-
-  viewMode.value = 'gallery'
-  activeUserFolderId.value = folder.id
-  activeReferenceBoardId.value = null
 }
 
 function onReferenceBoardFolderRowClick(folderId: number) {
@@ -1245,10 +963,6 @@ function showReferenceBoard(boardId: number) {
   activeReferenceBoardId.value = boardId
   ensureBoardCanvasBoundsFor(boardId)
   viewMode.value = 'board'
-}
-
-function closeFolderContextMenu() {
-  folderContextMenu.value = null
 }
 
 function closeBoardContextMenu() {
@@ -1352,81 +1066,6 @@ function clearImagePress() {
   if (longPressTimer.value !== null) {
     window.clearTimeout(longPressTimer.value)
     longPressTimer.value = null
-  }
-}
-
-function startUserFolderRename(folderId: number) {
-  const folder = library.value.userFolders.find((entry) => entry.id === folderId)
-  if (!folder) return
-  renamingUserFolderId.value = folderId
-  renamingUserFolderName.value = folder.name
-  isComposingUserFolderRename.value = false
-  closeFolderContextMenu()
-  void nextTick(() => {
-    const input = document.querySelector<HTMLInputElement>(`[data-user-folder-rename-id="${folderId}"]`)
-    input?.focus()
-    input?.select()
-  })
-}
-
-function setRenamingUserFolderName(value: string) {
-  renamingUserFolderName.value = value
-}
-
-function startComposingUserFolderRename() {
-  isComposingUserFolderRename.value = true
-}
-
-function endComposingUserFolderRename() {
-  isComposingUserFolderRename.value = false
-}
-
-function cancelUserFolderRename() {
-  renamingUserFolderId.value = null
-  renamingUserFolderName.value = ''
-  isComposingUserFolderRename.value = false
-}
-
-async function commitUserFolderRename() {
-  if (isComposingUserFolderRename.value) return
-  const folderId = renamingUserFolderId.value
-  if (folderId === null) return
-  const name = renamingUserFolderName.value.trim()
-  if (!name) {
-    cancelUserFolderRename()
-    return
-  }
-  const current = library.value.userFolders.find((entry) => entry.id === folderId)
-  if (!current) {
-    cancelUserFolderRename()
-    return
-  }
-  if (name === current.name) {
-    cancelUserFolderRename()
-    return
-  }
-
-  errorText.value = ''
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('rename_user_folder_command', { folderId, name })
-  } catch (error) {
-    errorText.value = formatError(error)
-  } finally {
-    cancelUserFolderRename()
-  }
-}
-
-function onUserFolderRenameEnter(event: KeyboardEvent) {
-  event.preventDefault()
-  if (isComposingUserFolderRename.value) return
-  void commitUserFolderRename()
-}
-
-function clearFolderPress() {
-  if (folderPressTimer.value !== null) {
-    window.clearTimeout(folderPressTimer.value)
-    folderPressTimer.value = null
   }
 }
 
@@ -1725,15 +1364,6 @@ async function onGalleryPreviewBoardItemDrop(event: DragEvent) {
   }
 }
 
-async function assignImageToFolder(folderId: number) {
-  if (!dragState.value) return
-  const { invoke } = await import('@tauri-apps/api/core')
-  library.value = await invoke<LibraryStore>('assign_image_to_user_folder_command', {
-    imageId: dragState.value.imageId,
-    folderId,
-  })
-}
-
 async function addImageToReferenceBoard(boardId: number) {
   if (!dragState.value) return
   const { invoke } = await import('@tauri-apps/api/core')
@@ -1848,81 +1478,13 @@ async function finishImageDrag(event: PointerEvent) {
     const folderId =
       folderCandidateId !== null && !folderHasChildren(folderCandidateId) ? folderCandidateId : null
     if (folderId !== null) {
-      await assignImageToFolder(folderId)
+      await assignImageToFolder(dragState.value.imageId, folderId)
     }
   } catch (error) {
     errorText.value = formatError(error)
   } finally {
     lastImageDragEndedAt.value = Date.now()
     cancelImageDrag()
-  }
-}
-
-function startFolderPointer(folderId: number, event: PointerEvent) {
-  if (event.button !== 0) return
-
-  clearFolderPress()
-  folderPointerState.value = {
-    folderId,
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    currentX: event.clientX,
-    currentY: event.clientY,
-    isDragging: false,
-  }
-
-  folderPressTimer.value = window.setTimeout(() => {
-    const state = folderPointerState.value
-    if (!state || state.folderId !== folderId || state.pointerId !== event.pointerId) return
-    state.isDragging = true
-    draggedFolderId.value = folderId
-    suppressNextFolderClick.value = true
-  }, folderDragDelayMs)
-}
-
-function moveFolderPointer(event: PointerEvent) {
-  const state = folderPointerState.value
-  if (!state || state.pointerId !== event.pointerId) return
-
-  state.currentX = event.clientX
-  state.currentY = event.clientY
-
-  if (!state.isDragging) {
-    const distance = Math.hypot(state.currentX - state.startX, state.currentY - state.startY)
-    if (distance >= 6) {
-      clearFolderPress()
-      state.isDragging = true
-      draggedFolderId.value = state.folderId
-      suppressNextFolderClick.value = true
-    } else {
-      return
-    }
-  }
-
-  const targetFolderId = sidebarFolderIdFromPoint(state.currentX, state.currentY)
-  folderDragOverId.value =
-    targetFolderId !== null && canReorderFolder(state.folderId, targetFolderId) ? targetFolderId : null
-}
-
-async function finishFolderPointer(event: PointerEvent) {
-  const state = folderPointerState.value
-  if (!state || state.pointerId !== event.pointerId) return
-
-  clearFolderPress()
-  const draggedId = state.folderId
-  const targetFolderId = folderDragOverId.value
-  const shouldReorder = state.isDragging && targetFolderId !== null && canReorderFolder(draggedId, targetFolderId)
-
-  folderPointerState.value = null
-  draggedFolderId.value = null
-  folderDragOverId.value = null
-
-  if (!shouldReorder) return
-  try {
-    await reorderUserFolder(draggedId, targetFolderId!)
-  } catch (error) {
-    errorText.value = formatError(error)
   }
 }
 
@@ -2843,6 +2405,14 @@ async function toggleWindowMaximize() {
   } catch {}
 }
 
+async function startWindowDrag(event: PointerEvent) {
+  if (event.button !== 0) return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('window_start_dragging_command')
+  } catch {}
+}
+
 async function closeWindow() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -3257,7 +2827,12 @@ function formatError(error: unknown) {
           {{ viewMode === 'settings' ? '设置' : viewMode === 'board' ? '参考板' : '图库' }}
         </span>
       </div>
-      <div class="app-titlebar__drag" data-tauri-drag-region @dblclick="toggleWindowMaximize" />
+      <div
+        class="app-titlebar__drag"
+        data-tauri-drag-region
+        @pointerdown="startWindowDrag"
+        @dblclick="toggleWindowMaximize"
+      />
       <div class="app-titlebar__right">
         <button class="app-titlebar__button app-titlebar__button--win" type="button" @click="minimizeWindow">
           —

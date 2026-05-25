@@ -425,6 +425,13 @@ fn window_close_command(window: tauri::Window) -> Result<(), String> {
         .map_err(|error| format!("关闭窗口失败：{error}"))
 }
 
+#[tauri::command]
+fn window_start_dragging_command(window: tauri::Window) -> Result<(), String> {
+    window
+        .start_dragging()
+        .map_err(|error| format!("failed to start dragging window: {error}"))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -492,6 +499,7 @@ fn main() {
             window_minimize_command,
             window_toggle_maximize_command,
             window_is_maximized_command,
+            window_start_dragging_command,
             window_close_command
         ])
         .run(tauri::generate_context!())
