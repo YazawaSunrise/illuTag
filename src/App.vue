@@ -8,6 +8,11 @@ import LeftSidebar from './components/LeftSidebar.vue'
 import RightSidebar from './components/RightSidebar.vue'
 import ReferenceBoardView from './components/ReferenceBoardView.vue'
 import SettingsView from './components/SettingsView.vue'
+import { useAppSettings } from './composables/useAppSettings'
+import { useBackgroundScan } from './composables/useBackgroundScan'
+import { useGallerySearch } from './composables/useGallerySearch'
+import { useReferenceBoardInteraction } from './composables/useReferenceBoardInteraction'
+import { useReferenceBoardClipboard } from './composables/useReferenceBoardClipboard'
 import type { GalleryImage, GalleryLayoutItem } from './types/gallery'
 
 type LibraryFolder = {
@@ -128,66 +133,6 @@ type BoardDraft = {
   y: number
 }
 
-type BoardItemInteraction = {
-  itemId: number
-  mode: 'move' | 'resize' | 'rotate' | 'pan'
-  pointerId: number
-  startX: number
-  startY: number
-  itemX: number
-  itemY: number
-  itemWidth: number
-  itemHeight: number
-  itemRotation: number
-  rotateStartAngle: number
-  panX: number
-  panY: number
-}
-
-type KnownAutoTagSuggestion = {
-  tagEn: string
-  tagZh?: string | null
-  imageCount: number
-}
-
-type GallerySearchFilters = {
-  chineseTagEns: string[]
-  englishQuery: string
-  fileNameQuery: string
-  confidenceMin: number
-  confidenceMax: number
-}
-
-type BackgroundScanStatus = {
-  running: boolean
-}
-
-type StartupCleanupStatus = {
-  running: boolean
-  generation: number
-}
-
-type BackgroundScanProgress = {
-  running: boolean
-  phase: string
-  scannedFolders: number
-  totalFolders: number
-  newImages: number
-  updatedImages: number
-  skippedImages: number
-  removedMissingImages: number
-  queuedImages: number
-  taggedImages: number
-  failedImages: number
-  lastError?: string | null
-  recentErrors?: string[] | null
-}
-
-type ReferenceBoardCanvasMenu =
-  | { kind: 'item'; itemId: number; x: number; y: number }
-  | { kind: 'canvas'; x: number; y: number; worldX: number; worldY: number }
-  | null
-
 type ImageDetailContextMenu = { x: number; y: number } | null
 type GalleryImageContextMenu = { imageId: string; x: number; y: number } | null
 type PreviewBoardDragKind = 'preview' | 'board' | 'gallery' | null
@@ -202,22 +147,6 @@ type PreviewBoardItemDragState = {
   targetBoardId: number | null
   targetKind: PreviewBoardDragKind
   mode: 'copy' | 'move'
-}
-
-type ImageTagRecord = {
-  tagEn: string
-  tagZh?: string | null
-  confidence: number
-  category?: string | null
-}
-
-type InternalBoardCopyRef = {
-  itemId: number
-  imageId: string
-  width: number
-  height: number
-  rotation: number
-  copiedAt: number
 }
 
 type BoardCanvasBounds = {
@@ -268,18 +197,12 @@ type BoardDeleteHistoryEntry = {
 
 type BoardHistoryEntry = BoardLayoutHistoryEntry | BoardDeleteHistoryEntry
 
-const sidebarPinnedStorageKey = 'illutag.sidebarPinned'
-const rightSidebarPinnedStorageKey = 'illutag.rightSidebarPinned'
 const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoardFolderIds'
 const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
-const autoFixRightSidebarOnPreviewStorageKey = 'illutag.autoFixRightSidebarOnPreview'
 const autoScanOnStartupStorageKey = 'illutag.autoScanOnStartup'
-const themeModeStorageKey = 'illutag.themeMode'
-const imageDragDelayMs = 80
+const imageDragDelayMs = 120
 const folderDragDelayMs = 160
-const sidebarPinned = ref(false)
 const sidebarHoverOpen = ref(false)
-const rightSidebarPinned = ref(false)
 const rightSidebarHoverOpen = ref(false)
 const viewMode = ref<ViewMode>('gallery')
 const library = ref<LibraryStore>({
@@ -337,17 +260,8 @@ const draggedReferenceBoardId = ref<number | null>(null)
 const draggedReferenceBoardFolderId = ref<number | null>(null)
 const referenceBoardDragOverKind = ref<'board' | 'folder' | 'space' | null>(null)
 const referenceBoardDragOverId = ref<number | null>(null)
-const boardScale = ref(1)
-const boardPan = ref({ x: 80, y: 72 })
-const boardInteraction = ref<BoardItemInteraction | null>(null)
 const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
-const themeMode = ref<'light' | 'dark'>('light')
-const autoFixRightSidebarOnPreview = ref(false)
-const autoScanOnStartup = ref(false)
-const isBackgroundScanRunning = ref(false)
-const scanProgressText = ref('')
-const scanRecentErrors = ref<string[]>([])
 const galleryScrollTop = ref(0)
 const galleryViewportHeight = ref(0)
 const previewDragOverDeleteZone = ref(false)
@@ -355,47 +269,15 @@ const previewBoardItemDrag = ref<PreviewBoardItemDragState | null>(null)
 const lastImageDragEndedAt = ref(0)
 const lastPreviewBoardDragEndedAt = ref(0)
 const boardCanvasBoundsById = ref<Record<number, BoardCanvasBounds>>({})
-const searchZhInput = ref('')
-const searchZhSelected = ref<KnownAutoTagSuggestion[]>([])
-const searchZhSuggestions = ref<KnownAutoTagSuggestion[]>([])
-const searchZhOpen = ref(false)
-const searchEnQuery = ref('')
-const searchFileNameQuery = ref('')
-const searchConfidenceMin = ref(0)
-const searchConfidenceMax = ref(1)
-const searchRunning = ref(false)
-const searchError = ref('')
-const isSearchFocused = ref(false)
-const isSearchPointerInside = ref(false)
-const selectedReferenceBoardItemId = ref<number | null>(null)
-const referenceBoardCanvasMenu = ref<ReferenceBoardCanvasMenu>(null)
-const lastBoardPointerWorld = ref<{ x: number; y: number; at: number } | null>(null)
-const clipboardWriteTask = ref<Promise<void> | null>(null)
-const internalBoardCopyRef = ref<InternalBoardCopyRef | null>(null)
 const boardUndoStack = ref<BoardHistoryEntry[]>([])
 const boardRedoStack = ref<BoardHistoryEntry[]>([])
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const isApplyingBoardHistory = ref(false)
-const boardPanMoved = ref(false)
-const suppressNextBoardCanvasContextMenu = ref(false)
-const activeImageDetailId = ref<string | null>(null)
 const imageDetailContextMenu = ref<ImageDetailContextMenu>(null)
 const galleryImageContextMenu = ref<GalleryImageContextMenu>(null)
-const activeImageTagRows = ref<ImageTagRecord[]>([])
-const searchResultImageIds = ref<Set<string> | null>(null)
-const searchRequestToken = ref(0)
-const searchSuggestRequestToken = ref(0)
-const searchTimer = ref<number | null>(null)
-const searchSuggestTimer = ref<number | null>(null)
-const scanProgressPollTimer = ref<number | null>(null)
-const scanProgressSignature = ref('')
-const scanLibraryRefreshInFlight = ref(false)
-const scanLibraryRefreshAt = ref(0)
-const startupCleanupObservedGeneration = ref(0)
 const previewBoardPointerId = ref<number | null>(null)
 const dragReferenceBoardFolderCollapseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
-const internalBoardCopyMaxAgeMs = 10 * 60 * 1000
 
 const gap = 12
 const defaultBoardCanvasWidth = 1440
@@ -406,15 +288,6 @@ const sidebarOpen = computed(() => sidebarPinnedEffective.value || sidebarHoverO
 const rightSidebarOpen = computed(() => rightSidebarPinned.value || rightSidebarHoverOpen.value)
 const isTitlebarPinned = computed(() => !isWindowMaximized.value || isTitlebarHovered.value)
 const isReferencePreviewActive = computed(() => previewReferenceBoardIds.value.size > 0)
-
-const hasSearchFilters = computed(
-  () =>
-    searchZhSelected.value.length > 0 ||
-    searchEnQuery.value.trim().length > 0 ||
-    searchFileNameQuery.value.trim().length > 0 ||
-    searchConfidenceMin.value > 0.0001 ||
-    searchConfidenceMax.value < 0.9999,
-)
 
 function collectDescendantFolderIds(rootFolderId: number) {
   const childrenByParent = new Map<number, number[]>()
@@ -458,12 +331,6 @@ const folderScopedImages = computed(() => {
       .map((assignment) => assignment.imageId),
   )
   return activeImages.filter((image) => assignedIds.has(image.id))
-})
-
-const visibleImages = computed(() => {
-  if (activeUserFolderId.value === 'trash') return folderScopedImages.value
-  if (!hasSearchFilters.value || !searchResultImageIds.value) return folderScopedImages.value
-  return folderScopedImages.value.filter((image) => searchResultImageIds.value?.has(image.id))
 })
 
 const referenceBoardPreviewBlocks = computed(() => {
@@ -674,37 +541,6 @@ const galleryImageContextMenuStyle = computed(() => {
   }
 })
 
-const activeImageDetail = computed(() => {
-  if (!activeImageDetailId.value) return null
-  return library.value.images.find((image) => image.id === activeImageDetailId.value) ?? null
-})
-
-const groupedImageTags = computed(() => {
-  if (activeImageTagRows.value.length === 0) return []
-  const orderedKeys = ['character', 'copyright', 'artist', 'general', 'meta', 'rating']
-  const buckets = new Map<string, ImageTagRecord[]>()
-  for (const row of activeImageTagRows.value) {
-    const key = (row.category ?? 'other').trim() || 'other'
-    const group = buckets.get(key) ?? []
-    group.push(row)
-    buckets.set(key, group)
-  }
-
-  const ordered: Array<{ key: string; label: string; rows: ImageTagRecord[] }> = []
-  for (const key of orderedKeys) {
-    const rows = buckets.get(key)
-    if (!rows || rows.length === 0) continue
-    ordered.push({ key, label: categoryLabel(key), rows })
-    buckets.delete(key)
-  }
-
-  const rest = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b, 'zh-Hans-CN'))
-  for (const [key, rows] of rest) {
-    ordered.push({ key, label: categoryLabel(key), rows })
-  }
-  return ordered
-})
-
 function buildFolderTree(expandedIds: Set<number>) {
   const result: FolderTreeItem[] = []
   const append = (parentId: number | null, depth: number) => {
@@ -790,16 +626,154 @@ const searchPanelStyle = computed<Record<string, string>>(() => ({
   '--search-translate-y': '0%',
 }))
 
+const {
+  sidebarPinned,
+  rightSidebarPinned,
+  autoFixRightSidebarOnPreview,
+  themeMode,
+  initAppSettingsFromStorage,
+  setSidebarPinned,
+  setRightSidebarPinned,
+  setAutoFixRightSidebarOnPreview,
+  setThemeMode,
+} = useAppSettings()
+
+const {
+  boardScale,
+  boardPan,
+  selectedReferenceBoardItemId,
+  referenceBoardCanvasMenu,
+  lastBoardPointerWorld,
+  closeReferenceBoardCanvasMenu,
+  openReferenceBoardItemMenu,
+  openReferenceBoardCanvasMenu,
+  getReferenceBoardViewportMetrics,
+  trackBoardPointer,
+  zoomReferenceBoard,
+  startBoardPan,
+  moveBoardInteraction,
+  finishBoardInteraction,
+  startBoardItemMove,
+  startBoardItemResize,
+  startBoardItemRotate,
+  clearBoardInteraction,
+} = useReferenceBoardInteraction<LibraryStore>({
+  library,
+  activeReferenceBoard,
+  viewMode,
+  ensureBoardCanvasBoundsFor,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  formatError,
+  clamp,
+  onLayoutHistory(payload) {
+    pushBoardHistory({
+      kind: 'layout',
+      boardId: payload.boardId,
+      changes: [{ itemId: payload.itemId, before: payload.before, after: payload.after }],
+      selectionBefore: payload.selectionBefore,
+      selectionAfter: payload.selectionAfter,
+    })
+  },
+})
+
+const {
+  searchZhInput,
+  searchZhSelected,
+  searchZhSuggestions,
+  searchZhOpen,
+  searchEnQuery,
+  searchFileNameQuery,
+  searchConfidenceMin,
+  searchConfidenceMax,
+  searchRunning,
+  searchError,
+  isSearchFocused,
+  isSearchPointerInside,
+  visibleImages,
+  activeImageDetailId,
+  activeImageDetail,
+  groupedImageTags,
+  setSearchPointerInside,
+  setSearchFocus,
+  setSearchZhInput,
+  openSearchZhSuggestionPanel,
+  closeSearchZhSuggestionPanelDeferred,
+  selectSearchZhSuggestion,
+  removeSearchZhSuggestion,
+  setSearchEnQuery,
+  setSearchFileNameQuery,
+  setSearchConfidenceMin,
+  setSearchConfidenceMax,
+  closeImageDetail,
+  openGalleryImageDetail,
+} = useGallerySearch<LibraryStore>({
+  library,
+  folderScopedImages,
+  activeUserFolderId,
+  lastImageDragEndedAt,
+  formatError,
+  clamp,
+  onOpenImageDetail() {
+    imageDetailContextMenu.value = null
+  },
+  onCloseImageDetail() {
+    imageDetailContextMenu.value = null
+  },
+})
+
+const {
+  autoScanOnStartup,
+  isBackgroundScanRunning,
+  scanProgressText,
+  scanRecentErrors,
+  initAutoScanOnStartupFromStorage,
+  setAutoScanOnStartup,
+  startScanAllFolders,
+  startStartupCleanup,
+  refreshBackgroundScanStatus,
+  startBackgroundScanPolling,
+  stopBackgroundScanPolling,
+  startAutoScanIfEnabled,
+} = useBackgroundScan({
+  loadLibrary,
+  formatError,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  autoScanOnStartupStorageKey,
+})
+
+const {
+  copyReferenceBoardItemToClipboard,
+  pasteReferenceBoardContent,
+  copyImageToSystemClipboard,
+  buildClipboardCopyErrorText,
+  clearInternalBoardCopyRefForItem,
+  clearInternalBoardCopyRefForItems,
+} = useReferenceBoardClipboard<LibraryStore>({
+  library,
+  activeReferenceBoard,
+  selectedReferenceBoardItemId,
+  boardPan,
+  boardScale,
+  lastBoardPointerWorld,
+  boardPointerUseMaxAgeMs,
+  closeReferenceBoardCanvasMenu,
+  ensureBoardCanvasBoundsFor,
+  getReferenceBoardViewportMetrics,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  formatError,
+})
+
 onMounted(async () => {
-  sidebarPinned.value = localStorage.getItem(sidebarPinnedStorageKey) === 'true'
-  rightSidebarPinned.value = localStorage.getItem(rightSidebarPinnedStorageKey) === 'true'
+  initAppSettingsFromStorage()
   expandedReferenceBoardFolderIds.value = readStoredIdSet(expandedReferenceBoardFolderIdsStorageKey)
   previewReferenceBoardIds.value = readStoredIdSet(previewReferenceBoardIdsStorageKey)
-  autoFixRightSidebarOnPreview.value =
-    localStorage.getItem(autoFixRightSidebarOnPreviewStorageKey) === 'true'
-  autoScanOnStartup.value = localStorage.getItem(autoScanOnStartupStorageKey) === 'true'
-  themeMode.value = (localStorage.getItem(themeModeStorageKey) as 'light' | 'dark' | null) ?? 'light'
-  setThemeMode(themeMode.value)
+  initAutoScanOnStartupFromStorage()
   await loadLibrary()
   handleWindowResize()
   window.addEventListener('resize', handleWindowResize)
@@ -818,28 +792,13 @@ onMounted(async () => {
   window.addEventListener('click', closeGalleryImageContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   void refreshBackgroundScanStatus()
-  scanProgressPollTimer.value = window.setInterval(() => {
-    void refreshBackgroundScanStatus()
-  }, 1200)
+  startBackgroundScanPolling()
   void startStartupCleanup()
-  if (autoScanOnStartup.value) {
-    void startScanAllFolders()
-  }
+  startAutoScanIfEnabled()
 })
 
 onUnmounted(() => {
-  if (searchTimer.value !== null) {
-    window.clearTimeout(searchTimer.value)
-    searchTimer.value = null
-  }
-  if (searchSuggestTimer.value !== null) {
-    window.clearTimeout(searchSuggestTimer.value)
-    searchSuggestTimer.value = null
-  }
-  if (scanProgressPollTimer.value !== null) {
-    window.clearInterval(scanProgressPollTimer.value)
-    scanProgressPollTimer.value = null
-  }
+  stopBackgroundScanPolling()
   clearDragReferenceBoardFolderCollapseTimer()
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('pointermove', moveImageDrag)
@@ -859,14 +818,12 @@ onUnmounted(() => {
 })
 
 watch(sidebarPinned, async (value) => {
-  localStorage.setItem(sidebarPinnedStorageKey, String(value))
   if (value) sidebarHoverOpen.value = false
   await nextTick()
   updateViewportSize()
 })
 
 watch(rightSidebarPinned, async (value) => {
-  localStorage.setItem(rightSidebarPinnedStorageKey, String(value))
   if (value) rightSidebarHoverOpen.value = false
   await nextTick()
   updateViewportSize()
@@ -919,33 +876,6 @@ watch([visibleImages, sidebarPinned], async () => {
   await nextTick()
   updateViewportSize()
 })
-
-watch(
-  () => searchZhInput.value,
-  () => {
-    if (searchSuggestTimer.value !== null) window.clearTimeout(searchSuggestTimer.value)
-    searchSuggestTimer.value = window.setTimeout(() => {
-      void refreshSearchZhSuggestions()
-    }, 140)
-  },
-)
-
-watch(
-  () => [
-    searchZhSelected.value.map((item) => item.tagEn).sort().join('\u0000'),
-    searchEnQuery.value,
-    searchFileNameQuery.value,
-    searchConfidenceMin.value,
-    searchConfidenceMax.value,
-  ],
-  () => {
-    if (searchTimer.value !== null) window.clearTimeout(searchTimer.value)
-    searchTimer.value = window.setTimeout(() => {
-      void runGallerySearch()
-    }, 150)
-  },
-  { immediate: true },
-)
 
 async function loadLibrary() {
   isLoading.value = true
@@ -1325,10 +1255,6 @@ function closeBoardContextMenu() {
   boardContextMenu.value = null
 }
 
-function closeReferenceBoardCanvasMenu() {
-  referenceBoardCanvasMenu.value = null
-}
-
 function closeImageDetailContextMenu() {
   imageDetailContextMenu.value = null
 }
@@ -1370,7 +1296,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     folderPointerState.value = null
     draggedFolderId.value = null
     folderDragOverId.value = null
-    boardInteraction.value = null
+    clearBoardInteraction()
     return
   }
 
@@ -1705,9 +1631,7 @@ async function finishPreviewBoardItemPointerDrag(event: PointerEvent) {
         if (selectedReferenceBoardItemId.value === state.itemId) {
           selectedReferenceBoardItemId.value = null
         }
-        if (internalBoardCopyRef.value?.itemId === state.itemId) {
-          internalBoardCopyRef.value = null
-        }
+        clearInternalBoardCopyRefForItem(state.itemId)
       }
     }
   } catch (error) {
@@ -1760,9 +1684,7 @@ async function dropPreviewBoardItem(boardId: number, event: DragEvent) {
       if (selectedReferenceBoardItemId.value === state.itemId) {
         selectedReferenceBoardItemId.value = null
       }
-      if (internalBoardCopyRef.value?.itemId === state.itemId) {
-        internalBoardCopyRef.value = null
-      }
+      clearInternalBoardCopyRefForItem(state.itemId)
     }
   } catch (error) {
     errorText.value = formatError(error)
@@ -2395,166 +2317,6 @@ async function deleteReferenceBoard(boardId: number) {
   closeBoardContextMenu()
 }
 
-function openReferenceBoardItemMenu(itemId: number, event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-  rememberBoardPointerFromClient(event.clientX, event.clientY)
-  selectedReferenceBoardItemId.value = itemId
-  referenceBoardCanvasMenu.value = {
-    kind: 'item',
-    itemId,
-    x: event.clientX,
-    y: event.clientY,
-  }
-}
-
-function openReferenceBoardCanvasMenu(event: MouseEvent) {
-  if (viewMode.value !== 'board') return
-  if (suppressNextBoardCanvasContextMenu.value) {
-    suppressNextBoardCanvasContextMenu.value = false
-    event.preventDefault()
-    event.stopPropagation()
-    return
-  }
-  event.preventDefault()
-  event.stopPropagation()
-
-  const target = event.target as HTMLElement | null
-  if (target?.closest('.reference-board-card')) return
-
-  rememberBoardPointerFromClient(event.clientX, event.clientY)
-  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
-  referenceBoardCanvasMenu.value = {
-    kind: 'canvas',
-    x: event.clientX,
-    y: event.clientY,
-    worldX: worldPoint.x,
-    worldY: worldPoint.y,
-  }
-}
-
-async function copyReferenceBoardItemToClipboard(itemId: number) {
-  const boardItem = library.value.referenceBoardItems.find((item) => item.id === itemId)
-  if (!boardItem) return
-  selectedReferenceBoardItemId.value = itemId
-  internalBoardCopyRef.value = {
-    itemId: boardItem.id,
-    imageId: boardItem.imageId,
-    width: boardItem.width,
-    height: boardItem.height,
-    rotation: boardItem.rotation,
-    copiedAt: Date.now(),
-  }
-  closeReferenceBoardCanvasMenu()
-  const task = copyImageToSystemClipboard(boardItem.imageId)
-  clipboardWriteTask.value = task
-  try {
-    await task
-  } catch (error) {
-    errorText.value = buildClipboardCopyErrorText(error, '参考板复制')
-  } finally {
-    if (clipboardWriteTask.value === task) {
-      clipboardWriteTask.value = null
-    }
-  }
-}
-
-async function pasteReferenceBoardContent(worldX?: number, worldY?: number) {
-  if (!activeReferenceBoard.value) return
-
-  const pastePoint = resolveReferenceBoardPastePoint(worldX, worldY)
-  try {
-    if (clipboardWriteTask.value) {
-      try {
-        await clipboardWriteTask.value
-      } catch {}
-    }
-    const { invoke } = await import('@tauri-apps/api/core')
-    const clipboardImage = await readClipboardImageForReferenceBoard()
-    if (clipboardImage) {
-      library.value = await invoke<LibraryStore>('paste_image_to_reference_board_command', {
-        boardId: activeReferenceBoard.value.id,
-        imageBytes: clipboardImage.imageBytes,
-        mimeType: clipboardImage.mimeType,
-        x: pastePoint.x,
-        y: pastePoint.y,
-      })
-      ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
-      return
-    }
-
-    if (
-      internalBoardCopyRef.value &&
-      Date.now() - internalBoardCopyRef.value.copiedAt <= internalBoardCopyMaxAgeMs
-    ) {
-      const copied = internalBoardCopyRef.value
-      const sourceStillExists = library.value.referenceBoardItems.some((item) => item.id === copied.itemId)
-      if (sourceStillExists) {
-        library.value = await invoke<LibraryStore>('duplicate_reference_board_item_command', {
-          itemId: copied.itemId,
-          x: pastePoint.x,
-          y: pastePoint.y,
-        })
-        ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
-        return
-      }
-      internalBoardCopyRef.value = null
-    }
-
-    errorText.value = '剪贴板中没有可粘贴的图片。'
-  } catch (error) {
-    errorText.value = formatError(error)
-  } finally {
-    closeReferenceBoardCanvasMenu()
-  }
-}
-
-function resolveReferenceBoardPastePoint(worldX?: number, worldY?: number) {
-  if (Number.isFinite(worldX) && Number.isFinite(worldY)) {
-    return { x: Number(worldX), y: Number(worldY) }
-  }
-
-  if (
-    lastBoardPointerWorld.value &&
-    Date.now() - lastBoardPointerWorld.value.at <= boardPointerUseMaxAgeMs
-  ) {
-    return {
-      x: lastBoardPointerWorld.value.x,
-      y: lastBoardPointerWorld.value.y,
-    }
-  }
-
-  const viewport = getReferenceBoardViewportMetrics()
-  const scale = Math.max(boardScale.value, 0.001)
-  return {
-    x: ((viewport?.width ?? window.innerWidth) * 0.5 - boardPan.value.x) / scale,
-    y: ((viewport?.height ?? window.innerHeight) * 0.5 - boardPan.value.y) / scale,
-  }
-}
-
-async function readClipboardImageForReferenceBoard() {
-  if (!('clipboard' in navigator) || typeof navigator.clipboard.read !== 'function') {
-    return null
-  }
-
-  try {
-    const items = await navigator.clipboard.read()
-    for (const item of items) {
-      const type = item.types.find((entry) => entry.startsWith('image/'))
-      if (!type) continue
-      const blob = await item.getType(type)
-      const buffer = await blob.arrayBuffer()
-      return {
-        imageBytes: Array.from(new Uint8Array(buffer)),
-        mimeType: type,
-      }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
 function cloneBoardItemLayout(item: ReferenceBoardItem): BoardItemLayout {
   return {
     x: item.x,
@@ -2827,62 +2589,6 @@ function ensureBoardCanvasBoundsForActiveBoard() {
   ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
 }
 
-function getReferenceBoardViewportMetrics() {
-  const page = document.querySelector<HTMLElement>('.reference-board-page')
-  if (!page) return null
-  const rect = page.getBoundingClientRect()
-  const styles = window.getComputedStyle(page)
-  const paddingLeft = Number.parseFloat(styles.paddingLeft || '0') || 0
-  const paddingRight = Number.parseFloat(styles.paddingRight || '0') || 0
-  const paddingTop = Number.parseFloat(styles.paddingTop || '0') || 0
-  const paddingBottom = Number.parseFloat(styles.paddingBottom || '0') || 0
-  return {
-    left: rect.left + paddingLeft,
-    top: rect.top + paddingTop,
-    width: Math.max(1, page.clientWidth - paddingLeft - paddingRight),
-    height: Math.max(1, page.clientHeight - paddingTop - paddingBottom),
-  }
-}
-
-function worldPointFromClient(clientX: number, clientY: number) {
-  const viewport = getReferenceBoardViewportMetrics()
-  const scale = Math.max(0.001, boardScale.value)
-  if (!viewport) {
-    return {
-      x: (clientX - boardPan.value.x) / scale,
-      y: (clientY - boardPan.value.y) / scale,
-    }
-  }
-  return {
-    x: (clientX - viewport.left - boardPan.value.x) / scale,
-    y: (clientY - viewport.top - boardPan.value.y) / scale,
-  }
-}
-
-function rememberBoardPointerFromClient(clientX: number, clientY: number) {
-  if (viewMode.value !== 'board' || !activeReferenceBoard.value) return
-  const viewport = getReferenceBoardViewportMetrics()
-  if (
-    viewport &&
-    (clientX < viewport.left ||
-      clientX > viewport.left + viewport.width ||
-      clientY < viewport.top ||
-      clientY > viewport.top + viewport.height)
-  ) {
-    return
-  }
-  const world = worldPointFromClient(clientX, clientY)
-  lastBoardPointerWorld.value = {
-    x: world.x,
-    y: world.y,
-    at: Date.now(),
-  }
-}
-
-function trackBoardPointer(event: PointerEvent) {
-  rememberBoardPointerFromClient(event.clientX, event.clientY)
-}
-
 function focusReferenceBoardBounds(bounds: BoardWorldBounds) {
   const viewport = getReferenceBoardViewportMetrics()
   if (!viewport) return false
@@ -3031,279 +2737,6 @@ async function exportReferenceBoardItem(itemId: number) {
   }
 }
 
-function zoomReferenceBoard(event: WheelEvent) {
-  if (!activeReferenceBoard.value) return
-  event.preventDefault()
-
-  const viewport = getReferenceBoardViewportMetrics()
-  const nextScale = clamp(boardScale.value * (event.deltaY < 0 ? 1.08 : 0.92), 0.2, 4)
-  const baseLeft = viewport?.left ?? 0
-  const baseTop = viewport?.top ?? 0
-  const activeBoardId = activeReferenceBoard.value.id
-  const selectedItem =
-    selectedReferenceBoardItemId.value === null
-      ? null
-      : library.value.referenceBoardItems.find(
-          (item) => item.id === selectedReferenceBoardItemId.value && item.boardId === activeBoardId,
-        ) ?? null
-
-  const worldPoint = selectedItem
-    ? {
-        x: selectedItem.x + selectedItem.width / 2,
-        y: selectedItem.y + selectedItem.height / 2,
-      }
-    : worldPointFromClient(event.clientX, event.clientY)
-
-  const anchorClientX = selectedItem
-    ? baseLeft + boardPan.value.x + worldPoint.x * boardScale.value
-    : event.clientX
-  const anchorClientY = selectedItem
-    ? baseTop + boardPan.value.y + worldPoint.y * boardScale.value
-    : event.clientY
-
-  boardScale.value = nextScale
-  boardPan.value = {
-    x: anchorClientX - baseLeft - worldPoint.x * nextScale,
-    y: anchorClientY - baseTop - worldPoint.y * nextScale,
-  }
-}
-
-function startBoardPan(event: PointerEvent) {
-  if (event.button === 0) {
-    const target = event.target as HTMLElement | null
-    if (target?.closest('.reference-board-card')) return
-    closeReferenceBoardCanvasMenu()
-    selectedReferenceBoardItemId.value = null
-    return
-  }
-  if (event.button !== 2) return
-  const target = event.target as HTMLElement | null
-  if (target?.closest('.reference-board-card')) return
-  event.preventDefault()
-  closeReferenceBoardCanvasMenu()
-  selectedReferenceBoardItemId.value = null
-  boardPanMoved.value = false
-
-  boardInteraction.value = {
-    itemId: -1,
-    mode: 'pan',
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    itemX: 0,
-    itemY: 0,
-    itemWidth: 0,
-    itemHeight: 0,
-    itemRotation: 0,
-    rotateStartAngle: 0,
-    panX: boardPan.value.x,
-    panY: boardPan.value.y,
-  }
-}
-
-function moveBoardInteraction(event: PointerEvent) {
-  const interaction = boardInteraction.value
-  if (!interaction || interaction.pointerId !== event.pointerId) return
-
-  if (interaction.mode === 'pan') {
-    const movedX = Math.abs(event.clientX - interaction.startX)
-    const movedY = Math.abs(event.clientY - interaction.startY)
-    if (movedX > 2 || movedY > 2) {
-      boardPanMoved.value = true
-    }
-    boardPan.value = {
-      x: interaction.panX + (event.clientX - interaction.startX),
-      y: interaction.panY + (event.clientY - interaction.startY),
-    }
-    return
-  }
-
-  const item = library.value.referenceBoardItems.find((entry) => entry.id === interaction.itemId)
-  if (!item) return
-
-  if (interaction.mode === 'rotate') {
-    const centerX = interaction.itemX + interaction.itemWidth / 2
-    const centerY = interaction.itemY + interaction.itemHeight / 2
-    const worldPoint = worldPointFromClient(event.clientX, event.clientY)
-    const angle = (Math.atan2(worldPoint.y - centerY, worldPoint.x - centerX) * 180) / Math.PI
-    const nextRotation = interaction.itemRotation + (angle - interaction.rotateStartAngle)
-    item.rotation = event.shiftKey ? Math.round(nextRotation / 45) * 45 : nextRotation
-    return
-  }
-
-  const scale = Math.max(0.001, boardScale.value)
-  const deltaX = (event.clientX - interaction.startX) / scale
-  const deltaY = (event.clientY - interaction.startY) / scale
-
-  if (interaction.mode === 'move') {
-    item.x = interaction.itemX + deltaX
-    item.y = interaction.itemY + deltaY
-    return
-  }
-
-  const baseWidth = Math.max(1, interaction.itemWidth)
-  const baseHeight = Math.max(1, interaction.itemHeight)
-  const aspect = baseWidth / baseHeight
-  const widthByX = baseWidth + deltaX
-  const widthByY = (baseHeight + deltaY) * aspect
-  const useY =
-    Math.abs(deltaY / baseHeight) > Math.abs(deltaX / baseWidth)
-  let nextWidth = useY ? widthByY : widthByX
-
-  const minWidth = Math.max(56, 56 * aspect)
-  const maxWidth = Math.min(4000, 4000 * aspect)
-  if (maxWidth >= minWidth) {
-    nextWidth = clamp(nextWidth, minWidth, maxWidth)
-  }
-
-  item.width = nextWidth
-  item.height = nextWidth / aspect
-}
-
-async function finishBoardInteraction(event: PointerEvent) {
-  const interaction = boardInteraction.value
-  if (!interaction || interaction.pointerId !== event.pointerId) return
-  boardInteraction.value = null
-
-  if (interaction.mode === 'pan') {
-    if (boardPanMoved.value) {
-      suppressNextBoardCanvasContextMenu.value = true
-      window.setTimeout(() => {
-        suppressNextBoardCanvasContextMenu.value = false
-      }, 260)
-    }
-    boardPanMoved.value = false
-    return
-  }
-  const item = library.value.referenceBoardItems.find((entry) => entry.id === interaction.itemId)
-  if (!item) return
-  const boardId = item.boardId
-  const before: BoardItemLayout = {
-    x: interaction.itemX,
-    y: interaction.itemY,
-    width: interaction.itemWidth,
-    height: interaction.itemHeight,
-    rotation: interaction.itemRotation,
-  }
-  const after = cloneBoardItemLayout(item)
-  const selectionBefore = interaction.itemId
-  const selectionAfter = selectedReferenceBoardItemId.value
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('update_reference_board_item_layout_command', {
-      itemId: item.id,
-      x: item.x,
-      y: item.y,
-      width: item.width,
-      height: item.height,
-      rotation: item.rotation,
-    })
-    ensureBoardCanvasBoundsFor(boardId)
-    if (!boardLayoutEquals(before, after)) {
-      pushBoardHistory({
-        kind: 'layout',
-        boardId,
-        changes: [{ itemId: item.id, before, after }],
-        selectionBefore,
-        selectionAfter,
-      })
-    }
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-async function bringReferenceBoardItemToFront(itemId: number) {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('bring_reference_board_item_to_front_command', { itemId })
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-function startBoardItemMove(item: ReferenceBoardItem, event: PointerEvent) {
-  if (event.button !== 0) return
-  event.stopPropagation()
-  event.preventDefault()
-  selectedReferenceBoardItemId.value = item.id
-  closeReferenceBoardCanvasMenu()
-  void bringReferenceBoardItemToFront(item.id)
-
-  boardInteraction.value = {
-    itemId: item.id,
-    mode: 'move',
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    itemX: item.x,
-    itemY: item.y,
-    itemWidth: item.width,
-    itemHeight: item.height,
-    itemRotation: item.rotation,
-    rotateStartAngle: 0,
-    panX: boardPan.value.x,
-    panY: boardPan.value.y,
-  }
-}
-
-function startBoardItemResize(item: ReferenceBoardItem, event: PointerEvent) {
-  if (event.button !== 0) return
-  if (selectedReferenceBoardItemId.value !== item.id) return
-  event.stopPropagation()
-  event.preventDefault()
-  selectedReferenceBoardItemId.value = item.id
-  closeReferenceBoardCanvasMenu()
-  void bringReferenceBoardItemToFront(item.id)
-
-  boardInteraction.value = {
-    itemId: item.id,
-    mode: 'resize',
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    itemX: item.x,
-    itemY: item.y,
-    itemWidth: item.width,
-    itemHeight: item.height,
-    itemRotation: item.rotation,
-    rotateStartAngle: 0,
-    panX: boardPan.value.x,
-    panY: boardPan.value.y,
-  }
-}
-
-function startBoardItemRotate(item: ReferenceBoardItem, event: PointerEvent) {
-  if (event.button !== 0) return
-  if (selectedReferenceBoardItemId.value !== item.id) return
-  event.stopPropagation()
-  event.preventDefault()
-  closeReferenceBoardCanvasMenu()
-  void bringReferenceBoardItemToFront(item.id)
-
-  const centerX = item.x + item.width / 2
-  const centerY = item.y + item.height / 2
-  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
-  const rotateStartAngle = (Math.atan2(worldPoint.y - centerY, worldPoint.x - centerX) * 180) / Math.PI
-
-  boardInteraction.value = {
-    itemId: item.id,
-    mode: 'rotate',
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    itemX: item.x,
-    itemY: item.y,
-    itemWidth: item.width,
-    itemHeight: item.height,
-    itemRotation: item.rotation,
-    rotateStartAngle,
-    panX: boardPan.value.x,
-    panY: boardPan.value.y,
-  }
-}
-
 async function removeReferenceBoardItem(itemId: number) {
   await removeReferenceBoardItemsWithHistory([itemId])
 }
@@ -3328,9 +2761,7 @@ async function removeReferenceBoardItemsWithHistory(itemIds: number[]) {
     if (selectedReferenceBoardItemId.value !== null && removedIds.has(selectedReferenceBoardItemId.value)) {
       selectedReferenceBoardItemId.value = null
     }
-    if (internalBoardCopyRef.value && removedIds.has(internalBoardCopyRef.value.itemId)) {
-      internalBoardCopyRef.value = null
-    }
+    clearInternalBoardCopyRefForItems(removedIds)
 
     pushBoardHistory({
       kind: 'delete',
@@ -3487,14 +2918,6 @@ function onGalleryScroll(scrollTop: number, clientHeight: number) {
 
 function onGalleryWheel(_event: WheelEvent) {}
 
-function setSearchPointerInside(next: boolean) {
-  isSearchPointerInside.value = next
-}
-
-function setSearchFocus(next: boolean) {
-  isSearchFocused.value = next
-}
-
 function hideSearchPanel() {}
 
 function setNewFolderName(value: string) {
@@ -3511,157 +2934,6 @@ function setNewBoardName(value: string) {
 
 function setComposingBoardName(value: boolean) {
   isComposingBoardName.value = value
-}
-
-function setSearchZhInput(value: string) {
-  searchZhInput.value = value
-}
-
-function openSearchZhSuggestionPanel() {
-  searchZhOpen.value = searchZhSuggestions.value.length > 0
-}
-
-function closeSearchZhSuggestionPanelDeferred() {
-  window.setTimeout(() => {
-    searchZhOpen.value = false
-  }, 90)
-}
-
-function selectSearchZhSuggestion(item: KnownAutoTagSuggestion) {
-  if (searchZhSelected.value.some((existing) => existing.tagEn === item.tagEn)) {
-    searchZhInput.value = ''
-    searchZhOpen.value = false
-    return
-  }
-  searchZhSelected.value = [...searchZhSelected.value, item]
-  searchZhInput.value = ''
-  searchZhOpen.value = false
-}
-
-function removeSearchZhSuggestion(tagEn: string) {
-  searchZhSelected.value = searchZhSelected.value.filter((item) => item.tagEn !== tagEn)
-}
-
-function setSearchEnQuery(value: string) {
-  searchEnQuery.value = value
-}
-
-function setSearchFileNameQuery(value: string) {
-  searchFileNameQuery.value = value
-}
-
-function setSearchConfidenceMin(value: number) {
-  searchConfidenceMin.value = clamp(value, 0, searchConfidenceMax.value)
-}
-
-function setSearchConfidenceMax(value: number) {
-  searchConfidenceMax.value = clamp(value, searchConfidenceMin.value, 1)
-}
-
-async function refreshSearchZhSuggestions() {
-  const keyword = searchZhInput.value.trim()
-  if (!keyword) {
-    searchZhSuggestions.value = []
-    searchZhOpen.value = false
-    return
-  }
-
-  const token = searchSuggestRequestToken.value + 1
-  searchSuggestRequestToken.value = token
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const rows = await invoke<Array<Record<string, unknown>>>('suggest_known_auto_tags_command', {
-      query: keyword,
-      limit: 30,
-    })
-    if (token !== searchSuggestRequestToken.value) return
-    const selected = new Set(searchZhSelected.value.map((item) => item.tagEn))
-    searchZhSuggestions.value = rows
-      .map((item) => ({
-        tagEn: String(item.tagEn ?? item.tag_en ?? ''),
-        tagZh: (item.tagZh ?? item.tag_zh ?? null) as string | null,
-        imageCount: Number(item.imageCount ?? item.image_count ?? 0),
-      }))
-      .filter((item) => item.tagEn.length > 0 && !selected.has(item.tagEn))
-    searchZhOpen.value = searchZhSuggestions.value.length > 0
-  } catch {
-    if (token !== searchSuggestRequestToken.value) return
-    searchZhSuggestions.value = []
-    searchZhOpen.value = false
-  }
-}
-
-async function runGallerySearch() {
-  if (!hasSearchFilters.value) {
-    searchResultImageIds.value = null
-    searchRunning.value = false
-    searchError.value = ''
-    return
-  }
-
-  const filters: GallerySearchFilters = {
-    chineseTagEns: searchZhSelected.value.map((item) => item.tagEn),
-    englishQuery: searchEnQuery.value,
-    fileNameQuery: searchFileNameQuery.value,
-    confidenceMin: searchConfidenceMin.value,
-    confidenceMax: searchConfidenceMax.value,
-  }
-
-  const token = searchRequestToken.value + 1
-  searchRequestToken.value = token
-  searchRunning.value = true
-  searchError.value = ''
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const ids = await invoke<string[]>('search_gallery_image_ids_command', {
-      filters,
-    })
-    if (token !== searchRequestToken.value) return
-    searchResultImageIds.value = new Set(ids)
-  } catch (error) {
-    if (token !== searchRequestToken.value) return
-    searchError.value = formatError(error)
-  } finally {
-    if (token === searchRequestToken.value) {
-      searchRunning.value = false
-    }
-  }
-}
-
-async function loadImageAutoTags(imageId: string) {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const summary = await invoke<Record<string, unknown>>('list_image_auto_tags_command', {
-      imageId,
-    })
-    const rows = Object.values(summary)
-      .flatMap((value) => (Array.isArray(value) ? value : []))
-      .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
-      .map((item) => ({
-        tagEn: String(item.tagEn ?? item.tag_en ?? ''),
-        tagZh: (item.tagZh ?? item.tag_zh ?? null) as string | null,
-        confidence: Number(item.confidence ?? item.score ?? 0),
-        category: (item.category ?? null) as string | null,
-      }))
-      .filter((item) => item.tagEn.length > 0)
-      .sort((a, b) => b.confidence - a.confidence)
-    activeImageTagRows.value = rows
-  } catch {
-    activeImageTagRows.value = []
-  }
-}
-
-function closeImageDetail() {
-  activeImageDetailId.value = null
-  imageDetailContextMenu.value = null
-  activeImageTagRows.value = []
-}
-
-function openGalleryImageDetail(item: GalleryLayoutItem) {
-  if (Date.now() - lastImageDragEndedAt.value < 260) return
-  activeImageDetailId.value = item.id
-  imageDetailContextMenu.value = null
-  void loadImageAutoTags(item.id)
 }
 
 function openGalleryImageMenu(item: GalleryLayoutItem, event: MouseEvent) {
@@ -3766,140 +3038,6 @@ async function copyGalleryImageToClipboard(imageId: string) {
   }
 }
 
-async function copyImageToSystemClipboard(imageId: string) {
-  const { invoke } = await import('@tauri-apps/api/core')
-  let backendError: unknown = null
-  try {
-    await invoke('copy_image_to_system_clipboard_command', { imageId })
-    return
-  } catch (error) {
-    backendError = error
-  }
-
-  try {
-    await copyImageToSystemClipboardByWebApi(imageId)
-    return
-  } catch (error) {
-    const backendRaw = formatRawErrorNameMessage(backendError)
-    const fallbackRaw = formatRawErrorNameMessage(error)
-    throw new Error(
-      [
-        `后端系统剪贴板写入失败：${backendRaw}`,
-        `Web Clipboard 回退失败：${fallbackRaw}`,
-        `能力检测：${formatClipboardFeatureAvailability()}`,
-      ].join('\n'),
-    )
-  }
-}
-
-async function copyImageToSystemClipboardByWebApi(imageId: string) {
-  const { invoke } = await import('@tauri-apps/api/core')
-  const payload = await invoke<{ bytes: number[]; mime_type?: string; mimeType?: string }>('read_image_bytes_command', {
-    imageId,
-  })
-  const mimeType = payload.mime_type || payload.mimeType || 'image/png'
-  const sourceBlob = new Blob([new Uint8Array(payload.bytes)], { type: mimeType })
-  const features = clipboardFeatureAvailability()
-  if (!features.hasClipboardWrite || !features.hasClipboardItem) {
-    throw new Error(`Clipboard API 不可用：${formatClipboardFeatureAvailability(features)}`)
-  }
-
-  let convertError: unknown = null
-  let pngBlob: Blob | null = null
-  try {
-    pngBlob = await convertImageBlobToPng(sourceBlob)
-  } catch (error) {
-    convertError = error
-  }
-
-  const data: Record<string, Blob> = {}
-  if (pngBlob) {
-    // 某些环境会因包含 image/jpeg/webp 等类型而直接拒绝 write，这里优先只写 PNG。
-    data['image/png'] = pngBlob
-  } else {
-    data[mimeType] = sourceBlob
-  }
-
-  try {
-    await navigator.clipboard.write([new ClipboardItem(data)])
-  } catch (error) {
-    const rawWrite = formatRawErrorNameMessage(error)
-    const rawConvert = convertError ? formatRawErrorNameMessage(convertError) : null
-    throw new Error(
-      [
-        `系统剪贴板写入失败：${rawWrite}`,
-        rawConvert ? `PNG 转换错误：${rawConvert}` : null,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    )
-  }
-}
-
-async function convertImageBlobToPng(blob: Blob) {
-  if (typeof createImageBitmap !== 'function') {
-    return null
-  }
-  const bitmap = await createImageBitmap(blob)
-  try {
-    const canvas = document.createElement('canvas')
-    canvas.width = bitmap.width
-    canvas.height = bitmap.height
-    const ctx = canvas.getContext('2d')
-    if (!ctx) {
-      throw new Error('Canvas 2D 上下文不可用')
-    }
-    ctx.drawImage(bitmap, 0, 0)
-    return await new Promise<Blob | null>((resolve, reject) => {
-      canvas.toBlob((png) => {
-        if (png) resolve(png)
-        else reject(new Error('canvas.toBlob 返回空结果'))
-      }, 'image/png')
-    })
-  } finally {
-    bitmap.close()
-  }
-}
-
-function formatRawErrorNameMessage(error: unknown) {
-  if (error instanceof Error) return `${error.name}: ${error.message}`
-  const maybe = error as { name?: unknown; message?: unknown } | null
-  if (maybe && typeof maybe === 'object') {
-    const name = typeof maybe.name === 'string' ? maybe.name : 'UnknownError'
-    const message = typeof maybe.message === 'string' ? maybe.message : String(error)
-    return `${name}: ${message}`
-  }
-  return `UnknownError: ${String(error)}`
-}
-
-function clipboardFeatureAvailability() {
-  const hasNavigator = typeof navigator !== 'undefined'
-  const hasClipboard = hasNavigator && 'clipboard' in navigator && !!navigator.clipboard
-  const hasClipboardWrite =
-    hasClipboard && typeof (navigator.clipboard as Clipboard).write === 'function'
-  const hasClipboardItem = typeof ClipboardItem !== 'undefined'
-  const hasCreateImageBitmap = typeof createImageBitmap === 'function'
-  return {
-    hasNavigator,
-    hasClipboard,
-    hasClipboardWrite,
-    hasClipboardItem,
-    hasCreateImageBitmap,
-  }
-}
-
-function formatClipboardFeatureAvailability(features = clipboardFeatureAvailability()) {
-  return `navigator=${features.hasNavigator}, clipboard=${features.hasClipboard}, clipboard.write=${features.hasClipboardWrite}, ClipboardItem=${features.hasClipboardItem}, createImageBitmap=${features.hasCreateImageBitmap}`
-}
-
-function buildClipboardCopyErrorText(error: unknown, scene: string) {
-  return [
-    `${scene}失败`,
-    `原始错误：${formatRawErrorNameMessage(error)}`,
-    `能力检测：${formatClipboardFeatureAvailability()}`,
-  ].join('\n')
-}
-
 function formatFileSize(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -3917,178 +3055,8 @@ function formatTime(timestamp: number) {
   return new Date(timestamp).toLocaleString('zh-CN')
 }
 
-function categoryLabel(key: string) {
-  switch (key) {
-    case 'character':
-      return '人物标签'
-    case 'copyright':
-      return '作品标签'
-    case 'artist':
-      return '作者标签'
-    case 'general':
-      return '通用标签'
-    case 'meta':
-      return '元信息'
-    case 'rating':
-      return '分级标签'
-    default:
-      return '其他标签'
-  }
-}
-
 function closeSidebarByToggle() {
   sidebarHoverOpen.value = false
-}
-
-function setRightSidebarPinned(value: boolean) {
-  rightSidebarPinned.value = value
-}
-
-function setSidebarPinned(value: boolean) {
-  sidebarPinned.value = value
-}
-
-function setThemeMode(value: 'light' | 'dark') {
-  themeMode.value = value
-  document.documentElement.dataset.theme = value
-  localStorage.setItem(themeModeStorageKey, value)
-}
-
-function setAutoFixRightSidebarOnPreview(value: boolean) {
-  autoFixRightSidebarOnPreview.value = value
-  localStorage.setItem(autoFixRightSidebarOnPreviewStorageKey, String(value))
-}
-
-function setAutoScanOnStartup(value: boolean) {
-  autoScanOnStartup.value = value
-  localStorage.setItem(autoScanOnStartupStorageKey, String(value))
-}
-
-async function startScanAllFolders() {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const started = await invoke<boolean>('start_scan_all_folders_with_tagging_command')
-    if (started) {
-      isBackgroundScanRunning.value = true
-      scanProgressText.value = '扫描任务已启动'
-    } else {
-      scanProgressText.value = '扫描任务已在后台运行，已排队下一轮扫描'
-    }
-    await refreshBackgroundScanStatus()
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-async function startStartupCleanup() {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke<boolean>('start_startup_cleanup_command')
-    await refreshStartupCleanupStatus()
-  } catch {
-    // startup cleanup is best-effort; keep silent to avoid noisy cold-start errors
-  }
-}
-
-async function refreshBackgroundScanStatus() {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const wasRunning = isBackgroundScanRunning.value
-    const status = await invoke<BackgroundScanStatus>('background_scan_status_command')
-    isBackgroundScanRunning.value = Boolean(status.running)
-
-    const progress = await invoke<BackgroundScanProgress>('background_scan_progress_command')
-    isBackgroundScanRunning.value = Boolean(progress.running)
-    scanProgressText.value = buildScanProgressText(progress)
-    scanRecentErrors.value = Array.isArray(progress.recentErrors)
-      ? progress.recentErrors.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-      : []
-
-    const signature = [
-      progress.running ? '1' : '0',
-      progress.phase,
-      progress.scannedFolders,
-      progress.totalFolders,
-      progress.newImages,
-      progress.updatedImages,
-      progress.skippedImages,
-      progress.removedMissingImages,
-      progress.queuedImages,
-      progress.taggedImages,
-      progress.failedImages,
-    ].join('|')
-    const changed = signature !== scanProgressSignature.value
-    scanProgressSignature.value = signature
-
-    const now = Date.now()
-    const becameIdle = wasRunning && !progress.running
-    const refreshIntervalMs =
-      progress.phase === 'collecting' ? 900 : progress.phase === 'tagging' ? 2400 : 1200
-    const shouldLiveRefresh =
-      progress.running && changed && now - scanLibraryRefreshAt.value >= refreshIntervalMs
-    if ((becameIdle || shouldLiveRefresh) && !scanLibraryRefreshInFlight.value) {
-      scanLibraryRefreshInFlight.value = true
-      scanLibraryRefreshAt.value = now
-      try {
-        await loadLibrary()
-      } finally {
-        scanLibraryRefreshInFlight.value = false
-      }
-    }
-    await refreshStartupCleanupStatus()
-  } catch (error) {
-    if (isBackgroundScanRunning.value) {
-      errorText.value = formatError(error)
-    }
-  }
-}
-
-async function refreshStartupCleanupStatus() {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const status = await invoke<StartupCleanupStatus>('startup_cleanup_status_command')
-    const previousGeneration = startupCleanupObservedGeneration.value
-    startupCleanupObservedGeneration.value = status.generation
-    const cleanupJustFinished = !status.running && status.generation > previousGeneration
-    if (!cleanupJustFinished || scanLibraryRefreshInFlight.value) return
-
-    scanLibraryRefreshInFlight.value = true
-    scanLibraryRefreshAt.value = Date.now()
-    try {
-      await loadLibrary()
-    } finally {
-      scanLibraryRefreshInFlight.value = false
-    }
-  } catch {
-    // ignore startup cleanup polling failure to avoid disturbing normal scan progress flow
-  }
-}
-
-function buildScanProgressText(progress: BackgroundScanProgress) {
-  const phaseLabel = scanPhaseLabel(progress.phase)
-  const folders = `${progress.scannedFolders}/${progress.totalFolders}`
-  const tagged = `${progress.taggedImages}/${progress.queuedImages}`
-  const base = `${phaseLabel}｜文件夹 ${folders}｜新增 ${progress.newImages}｜更新 ${progress.updatedImages}｜跳过 ${progress.skippedImages}｜清理 ${progress.removedMissingImages}｜打标 ${tagged}｜失败 ${progress.failedImages}`
-  if (progress.lastError) {
-    return `${base}｜错误：${progress.lastError}`
-  }
-  if (!progress.running && progress.phase === 'idle') {
-    return `上次扫描完成｜${base}`
-  }
-  return base
-}
-
-function scanPhaseLabel(phase: string) {
-  switch ((phase || '').toLowerCase()) {
-    case 'collecting':
-      return '扫描中'
-    case 'tagging':
-      return '打标中'
-    case 'idle':
-      return '空闲'
-    default:
-      return phase || '未知状态'
-  }
 }
 
 const settingsViewHandlers = {
@@ -4553,4 +3521,3 @@ function formatError(error: unknown) {
     </div>
   </div>
 </template>
-
