@@ -9,6 +9,8 @@ import RightSidebar from './components/RightSidebar.vue'
 import ReferenceBoardView from './components/ReferenceBoardView.vue'
 import SettingsView from './components/SettingsView.vue'
 import { useBackgroundScan } from './composables/useBackgroundScan'
+import { useGallerySearch } from './composables/useGallerySearch'
+import { useReferenceBoardInteraction } from './composables/useReferenceBoardInteraction'
 import { useReferenceBoardClipboard } from './composables/useReferenceBoardClipboard'
 import type { GalleryImage, GalleryLayoutItem } from './types/gallery'
 
@@ -130,41 +132,6 @@ type BoardDraft = {
   y: number
 }
 
-type BoardItemInteraction = {
-  itemId: number
-  mode: 'move' | 'resize' | 'rotate' | 'pan'
-  pointerId: number
-  startX: number
-  startY: number
-  itemX: number
-  itemY: number
-  itemWidth: number
-  itemHeight: number
-  itemRotation: number
-  rotateStartAngle: number
-  panX: number
-  panY: number
-}
-
-type KnownAutoTagSuggestion = {
-  tagEn: string
-  tagZh?: string | null
-  imageCount: number
-}
-
-type GallerySearchFilters = {
-  chineseTagEns: string[]
-  englishQuery: string
-  fileNameQuery: string
-  confidenceMin: number
-  confidenceMax: number
-}
-
-type ReferenceBoardCanvasMenu =
-  | { kind: 'item'; itemId: number; x: number; y: number }
-  | { kind: 'canvas'; x: number; y: number; worldX: number; worldY: number }
-  | null
-
 type ImageDetailContextMenu = { x: number; y: number } | null
 type GalleryImageContextMenu = { imageId: string; x: number; y: number } | null
 type PreviewBoardDragKind = 'preview' | 'board' | 'gallery' | null
@@ -179,13 +146,6 @@ type PreviewBoardItemDragState = {
   targetBoardId: number | null
   targetKind: PreviewBoardDragKind
   mode: 'copy' | 'move'
-}
-
-type ImageTagRecord = {
-  tagEn: string
-  tagZh?: string | null
-  confidence: number
-  category?: string | null
 }
 
 type BoardCanvasBounds = {
@@ -243,7 +203,7 @@ const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
 const autoFixRightSidebarOnPreviewStorageKey = 'illutag.autoFixRightSidebarOnPreview'
 const autoScanOnStartupStorageKey = 'illutag.autoScanOnStartup'
 const themeModeStorageKey = 'illutag.themeMode'
-const imageDragDelayMs = 80
+const imageDragDelayMs = 120
 const folderDragDelayMs = 160
 const sidebarPinned = ref(false)
 const sidebarHoverOpen = ref(false)
@@ -305,9 +265,6 @@ const draggedReferenceBoardId = ref<number | null>(null)
 const draggedReferenceBoardFolderId = ref<number | null>(null)
 const referenceBoardDragOverKind = ref<'board' | 'folder' | 'space' | null>(null)
 const referenceBoardDragOverId = ref<number | null>(null)
-const boardScale = ref(1)
-const boardPan = ref({ x: 80, y: 72 })
-const boardInteraction = ref<BoardItemInteraction | null>(null)
 const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
 const themeMode = ref<'light' | 'dark'>('light')
@@ -319,34 +276,12 @@ const previewBoardItemDrag = ref<PreviewBoardItemDragState | null>(null)
 const lastImageDragEndedAt = ref(0)
 const lastPreviewBoardDragEndedAt = ref(0)
 const boardCanvasBoundsById = ref<Record<number, BoardCanvasBounds>>({})
-const searchZhInput = ref('')
-const searchZhSelected = ref<KnownAutoTagSuggestion[]>([])
-const searchZhSuggestions = ref<KnownAutoTagSuggestion[]>([])
-const searchZhOpen = ref(false)
-const searchEnQuery = ref('')
-const searchFileNameQuery = ref('')
-const searchConfidenceMin = ref(0)
-const searchConfidenceMax = ref(1)
-const searchRunning = ref(false)
-const searchError = ref('')
-const isSearchFocused = ref(false)
-const isSearchPointerInside = ref(false)
-const selectedReferenceBoardItemId = ref<number | null>(null)
-const referenceBoardCanvasMenu = ref<ReferenceBoardCanvasMenu>(null)
-const lastBoardPointerWorld = ref<{ x: number; y: number; at: number } | null>(null)
 const boardUndoStack = ref<BoardHistoryEntry[]>([])
 const boardRedoStack = ref<BoardHistoryEntry[]>([])
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const isApplyingBoardHistory = ref(false)
-const activeImageDetailId = ref<string | null>(null)
 const imageDetailContextMenu = ref<ImageDetailContextMenu>(null)
 const galleryImageContextMenu = ref<GalleryImageContextMenu>(null)
-const activeImageTagRows = ref<ImageTagRecord[]>([])
-const searchResultImageIds = ref<Set<string> | null>(null)
-const searchRequestToken = ref(0)
-const searchSuggestRequestToken = ref(0)
-const searchTimer = ref<number | null>(null)
-const searchSuggestTimer = ref<number | null>(null)
 const previewBoardPointerId = ref<number | null>(null)
 const dragReferenceBoardFolderCollapseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
@@ -360,15 +295,6 @@ const sidebarOpen = computed(() => sidebarPinnedEffective.value || sidebarHoverO
 const rightSidebarOpen = computed(() => rightSidebarPinned.value || rightSidebarHoverOpen.value)
 const isTitlebarPinned = computed(() => !isWindowMaximized.value || isTitlebarHovered.value)
 const isReferencePreviewActive = computed(() => previewReferenceBoardIds.value.size > 0)
-
-const hasSearchFilters = computed(
-  () =>
-    searchZhSelected.value.length > 0 ||
-    searchEnQuery.value.trim().length > 0 ||
-    searchFileNameQuery.value.trim().length > 0 ||
-    searchConfidenceMin.value > 0.0001 ||
-    searchConfidenceMax.value < 0.9999,
-)
 
 function collectDescendantFolderIds(rootFolderId: number) {
   const childrenByParent = new Map<number, number[]>()
@@ -412,12 +338,6 @@ const folderScopedImages = computed(() => {
       .map((assignment) => assignment.imageId),
   )
   return activeImages.filter((image) => assignedIds.has(image.id))
-})
-
-const visibleImages = computed(() => {
-  if (activeUserFolderId.value === 'trash') return folderScopedImages.value
-  if (!hasSearchFilters.value || !searchResultImageIds.value) return folderScopedImages.value
-  return folderScopedImages.value.filter((image) => searchResultImageIds.value?.has(image.id))
 })
 
 const referenceBoardPreviewBlocks = computed(() => {
@@ -628,37 +548,6 @@ const galleryImageContextMenuStyle = computed(() => {
   }
 })
 
-const activeImageDetail = computed(() => {
-  if (!activeImageDetailId.value) return null
-  return library.value.images.find((image) => image.id === activeImageDetailId.value) ?? null
-})
-
-const groupedImageTags = computed(() => {
-  if (activeImageTagRows.value.length === 0) return []
-  const orderedKeys = ['character', 'copyright', 'artist', 'general', 'meta', 'rating']
-  const buckets = new Map<string, ImageTagRecord[]>()
-  for (const row of activeImageTagRows.value) {
-    const key = (row.category ?? 'other').trim() || 'other'
-    const group = buckets.get(key) ?? []
-    group.push(row)
-    buckets.set(key, group)
-  }
-
-  const ordered: Array<{ key: string; label: string; rows: ImageTagRecord[] }> = []
-  for (const key of orderedKeys) {
-    const rows = buckets.get(key)
-    if (!rows || rows.length === 0) continue
-    ordered.push({ key, label: categoryLabel(key), rows })
-    buckets.delete(key)
-  }
-
-  const rest = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b, 'zh-Hans-CN'))
-  for (const [key, rows] of rest) {
-    ordered.push({ key, label: categoryLabel(key), rows })
-  }
-  return ordered
-})
-
 function buildFolderTree(expandedIds: Set<number>) {
   const result: FolderTreeItem[] = []
   const append = (parentId: number | null, depth: number) => {
@@ -745,6 +634,91 @@ const searchPanelStyle = computed<Record<string, string>>(() => ({
 }))
 
 const {
+  boardScale,
+  boardPan,
+  selectedReferenceBoardItemId,
+  referenceBoardCanvasMenu,
+  lastBoardPointerWorld,
+  closeReferenceBoardCanvasMenu,
+  openReferenceBoardItemMenu,
+  openReferenceBoardCanvasMenu,
+  getReferenceBoardViewportMetrics,
+  trackBoardPointer,
+  zoomReferenceBoard,
+  startBoardPan,
+  moveBoardInteraction,
+  finishBoardInteraction,
+  startBoardItemMove,
+  startBoardItemResize,
+  startBoardItemRotate,
+  clearBoardInteraction,
+} = useReferenceBoardInteraction<LibraryStore>({
+  library,
+  activeReferenceBoard,
+  viewMode,
+  ensureBoardCanvasBoundsFor,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  formatError,
+  clamp,
+  onLayoutHistory(payload) {
+    pushBoardHistory({
+      kind: 'layout',
+      boardId: payload.boardId,
+      changes: [{ itemId: payload.itemId, before: payload.before, after: payload.after }],
+      selectionBefore: payload.selectionBefore,
+      selectionAfter: payload.selectionAfter,
+    })
+  },
+})
+
+const {
+  searchZhInput,
+  searchZhSelected,
+  searchZhSuggestions,
+  searchZhOpen,
+  searchEnQuery,
+  searchFileNameQuery,
+  searchConfidenceMin,
+  searchConfidenceMax,
+  searchRunning,
+  searchError,
+  isSearchFocused,
+  isSearchPointerInside,
+  visibleImages,
+  activeImageDetailId,
+  activeImageDetail,
+  groupedImageTags,
+  setSearchPointerInside,
+  setSearchFocus,
+  setSearchZhInput,
+  openSearchZhSuggestionPanel,
+  closeSearchZhSuggestionPanelDeferred,
+  selectSearchZhSuggestion,
+  removeSearchZhSuggestion,
+  setSearchEnQuery,
+  setSearchFileNameQuery,
+  setSearchConfidenceMin,
+  setSearchConfidenceMax,
+  closeImageDetail,
+  openGalleryImageDetail,
+} = useGallerySearch<LibraryStore>({
+  library,
+  folderScopedImages,
+  activeUserFolderId,
+  lastImageDragEndedAt,
+  formatError,
+  clamp,
+  onOpenImageDetail() {
+    imageDetailContextMenu.value = null
+  },
+  onCloseImageDetail() {
+    imageDetailContextMenu.value = null
+  },
+})
+
+const {
   autoScanOnStartup,
   isBackgroundScanRunning,
   scanProgressText,
@@ -824,14 +798,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (searchTimer.value !== null) {
-    window.clearTimeout(searchTimer.value)
-    searchTimer.value = null
-  }
-  if (searchSuggestTimer.value !== null) {
-    window.clearTimeout(searchSuggestTimer.value)
-    searchSuggestTimer.value = null
-  }
   stopBackgroundScanPolling()
   clearDragReferenceBoardFolderCollapseTimer()
   window.removeEventListener('resize', handleWindowResize)
@@ -912,33 +878,6 @@ watch([visibleImages, sidebarPinned], async () => {
   await nextTick()
   updateViewportSize()
 })
-
-watch(
-  () => searchZhInput.value,
-  () => {
-    if (searchSuggestTimer.value !== null) window.clearTimeout(searchSuggestTimer.value)
-    searchSuggestTimer.value = window.setTimeout(() => {
-      void refreshSearchZhSuggestions()
-    }, 140)
-  },
-)
-
-watch(
-  () => [
-    searchZhSelected.value.map((item) => item.tagEn).sort().join('\u0000'),
-    searchEnQuery.value,
-    searchFileNameQuery.value,
-    searchConfidenceMin.value,
-    searchConfidenceMax.value,
-  ],
-  () => {
-    if (searchTimer.value !== null) window.clearTimeout(searchTimer.value)
-    searchTimer.value = window.setTimeout(() => {
-      void runGallerySearch()
-    }, 150)
-  },
-  { immediate: true },
-)
 
 async function loadLibrary() {
   isLoading.value = true
@@ -1318,10 +1257,6 @@ function closeBoardContextMenu() {
   boardContextMenu.value = null
 }
 
-function closeReferenceBoardCanvasMenu() {
-  referenceBoardCanvasMenu.value = null
-}
-
 function closeImageDetailContextMenu() {
   imageDetailContextMenu.value = null
 }
@@ -1363,7 +1298,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     folderPointerState.value = null
     draggedFolderId.value = null
     folderDragOverId.value = null
-    boardInteraction.value = null
+    clearBoardInteraction()
     return
   }
 
@@ -2384,38 +2319,6 @@ async function deleteReferenceBoard(boardId: number) {
   closeBoardContextMenu()
 }
 
-function openReferenceBoardItemMenu(itemId: number, event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-  rememberBoardPointerFromClient(event.clientX, event.clientY)
-  selectedReferenceBoardItemId.value = itemId
-  referenceBoardCanvasMenu.value = {
-    kind: 'item',
-    itemId,
-    x: event.clientX,
-    y: event.clientY,
-  }
-}
-
-function openReferenceBoardCanvasMenu(event: MouseEvent) {
-  if (viewMode.value !== 'board') return
-  event.preventDefault()
-  event.stopPropagation()
-
-  const target = event.target as HTMLElement | null
-  if (target?.closest('.reference-board-card')) return
-
-  rememberBoardPointerFromClient(event.clientX, event.clientY)
-  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
-  referenceBoardCanvasMenu.value = {
-    kind: 'canvas',
-    x: event.clientX,
-    y: event.clientY,
-    worldX: worldPoint.x,
-    worldY: worldPoint.y,
-  }
-}
-
 function cloneBoardItemLayout(item: ReferenceBoardItem): BoardItemLayout {
   return {
     x: item.x,
@@ -2688,62 +2591,6 @@ function ensureBoardCanvasBoundsForActiveBoard() {
   ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
 }
 
-function getReferenceBoardViewportMetrics() {
-  const page = document.querySelector<HTMLElement>('.reference-board-page')
-  if (!page) return null
-  const rect = page.getBoundingClientRect()
-  const styles = window.getComputedStyle(page)
-  const paddingLeft = Number.parseFloat(styles.paddingLeft || '0') || 0
-  const paddingRight = Number.parseFloat(styles.paddingRight || '0') || 0
-  const paddingTop = Number.parseFloat(styles.paddingTop || '0') || 0
-  const paddingBottom = Number.parseFloat(styles.paddingBottom || '0') || 0
-  return {
-    left: rect.left + paddingLeft,
-    top: rect.top + paddingTop,
-    width: Math.max(1, page.clientWidth - paddingLeft - paddingRight),
-    height: Math.max(1, page.clientHeight - paddingTop - paddingBottom),
-  }
-}
-
-function worldPointFromClient(clientX: number, clientY: number) {
-  const viewport = getReferenceBoardViewportMetrics()
-  const scale = Math.max(0.001, boardScale.value)
-  if (!viewport) {
-    return {
-      x: (clientX - boardPan.value.x) / scale,
-      y: (clientY - boardPan.value.y) / scale,
-    }
-  }
-  return {
-    x: (clientX - viewport.left - boardPan.value.x) / scale,
-    y: (clientY - viewport.top - boardPan.value.y) / scale,
-  }
-}
-
-function rememberBoardPointerFromClient(clientX: number, clientY: number) {
-  if (viewMode.value !== 'board' || !activeReferenceBoard.value) return
-  const viewport = getReferenceBoardViewportMetrics()
-  if (
-    viewport &&
-    (clientX < viewport.left ||
-      clientX > viewport.left + viewport.width ||
-      clientY < viewport.top ||
-      clientY > viewport.top + viewport.height)
-  ) {
-    return
-  }
-  const world = worldPointFromClient(clientX, clientY)
-  lastBoardPointerWorld.value = {
-    x: world.x,
-    y: world.y,
-    at: Date.now(),
-  }
-}
-
-function trackBoardPointer(event: PointerEvent) {
-  rememberBoardPointerFromClient(event.clientX, event.clientY)
-}
-
 function focusReferenceBoardBounds(bounds: BoardWorldBounds) {
   const viewport = getReferenceBoardViewportMetrics()
   if (!viewport) return false
@@ -2889,235 +2736,6 @@ async function exportReferenceBoardItem(itemId: number) {
     errorText.value = formatError(error)
   } finally {
     closeReferenceBoardCanvasMenu()
-  }
-}
-
-function zoomReferenceBoard(event: WheelEvent) {
-  if (!activeReferenceBoard.value) return
-  event.preventDefault()
-
-  const viewport = getReferenceBoardViewportMetrics()
-  const nextScale = clamp(boardScale.value * (event.deltaY < 0 ? 1.08 : 0.92), 0.2, 4)
-  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
-  const baseLeft = viewport?.left ?? 0
-  const baseTop = viewport?.top ?? 0
-  boardScale.value = nextScale
-  boardPan.value = {
-    x: event.clientX - baseLeft - worldPoint.x * nextScale,
-    y: event.clientY - baseTop - worldPoint.y * nextScale,
-  }
-}
-
-function startBoardPan(event: PointerEvent) {
-  if (event.button !== 0) return
-  const target = event.target as HTMLElement | null
-  if (target?.closest('.reference-board-card')) return
-  closeReferenceBoardCanvasMenu()
-  selectedReferenceBoardItemId.value = null
-
-  boardInteraction.value = {
-    itemId: -1,
-    mode: 'pan',
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    itemX: 0,
-    itemY: 0,
-    itemWidth: 0,
-    itemHeight: 0,
-    itemRotation: 0,
-    rotateStartAngle: 0,
-    panX: boardPan.value.x,
-    panY: boardPan.value.y,
-  }
-}
-
-function moveBoardInteraction(event: PointerEvent) {
-  const interaction = boardInteraction.value
-  if (!interaction || interaction.pointerId !== event.pointerId) return
-
-  if (interaction.mode === 'pan') {
-    boardPan.value = {
-      x: interaction.panX + (event.clientX - interaction.startX),
-      y: interaction.panY + (event.clientY - interaction.startY),
-    }
-    return
-  }
-
-  const item = library.value.referenceBoardItems.find((entry) => entry.id === interaction.itemId)
-  if (!item) return
-
-  if (interaction.mode === 'rotate') {
-    const centerX = interaction.itemX + interaction.itemWidth / 2
-    const centerY = interaction.itemY + interaction.itemHeight / 2
-    const worldPoint = worldPointFromClient(event.clientX, event.clientY)
-    const angle = (Math.atan2(worldPoint.y - centerY, worldPoint.x - centerX) * 180) / Math.PI
-    const nextRotation = interaction.itemRotation + (angle - interaction.rotateStartAngle)
-    item.rotation = event.shiftKey ? Math.round(nextRotation / 45) * 45 : nextRotation
-    return
-  }
-
-  const scale = Math.max(0.001, boardScale.value)
-  const deltaX = (event.clientX - interaction.startX) / scale
-  const deltaY = (event.clientY - interaction.startY) / scale
-
-  if (interaction.mode === 'move') {
-    item.x = interaction.itemX + deltaX
-    item.y = interaction.itemY + deltaY
-    return
-  }
-
-  const baseWidth = Math.max(1, interaction.itemWidth)
-  const baseHeight = Math.max(1, interaction.itemHeight)
-  const aspect = baseWidth / baseHeight
-  const widthByX = baseWidth + deltaX
-  const widthByY = (baseHeight + deltaY) * aspect
-  const useY =
-    Math.abs(deltaY / baseHeight) > Math.abs(deltaX / baseWidth)
-  let nextWidth = useY ? widthByY : widthByX
-
-  const minWidth = Math.max(56, 56 * aspect)
-  const maxWidth = Math.min(4000, 4000 * aspect)
-  if (maxWidth >= minWidth) {
-    nextWidth = clamp(nextWidth, minWidth, maxWidth)
-  }
-
-  item.width = nextWidth
-  item.height = nextWidth / aspect
-}
-
-async function finishBoardInteraction(event: PointerEvent) {
-  const interaction = boardInteraction.value
-  if (!interaction || interaction.pointerId !== event.pointerId) return
-  boardInteraction.value = null
-
-  if (interaction.mode === 'pan') return
-  const item = library.value.referenceBoardItems.find((entry) => entry.id === interaction.itemId)
-  if (!item) return
-  const boardId = item.boardId
-  const before: BoardItemLayout = {
-    x: interaction.itemX,
-    y: interaction.itemY,
-    width: interaction.itemWidth,
-    height: interaction.itemHeight,
-    rotation: interaction.itemRotation,
-  }
-  const after = cloneBoardItemLayout(item)
-  const selectionBefore = interaction.itemId
-  const selectionAfter = selectedReferenceBoardItemId.value
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('update_reference_board_item_layout_command', {
-      itemId: item.id,
-      x: item.x,
-      y: item.y,
-      width: item.width,
-      height: item.height,
-      rotation: item.rotation,
-    })
-    ensureBoardCanvasBoundsFor(boardId)
-    if (!boardLayoutEquals(before, after)) {
-      pushBoardHistory({
-        kind: 'layout',
-        boardId,
-        changes: [{ itemId: item.id, before, after }],
-        selectionBefore,
-        selectionAfter,
-      })
-    }
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-async function bringReferenceBoardItemToFront(itemId: number) {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('bring_reference_board_item_to_front_command', { itemId })
-  } catch (error) {
-    errorText.value = formatError(error)
-  }
-}
-
-function startBoardItemMove(item: ReferenceBoardItem, event: PointerEvent) {
-  if (event.button !== 0) return
-  event.stopPropagation()
-  event.preventDefault()
-  selectedReferenceBoardItemId.value = item.id
-  closeReferenceBoardCanvasMenu()
-  void bringReferenceBoardItemToFront(item.id)
-
-  boardInteraction.value = {
-    itemId: item.id,
-    mode: 'move',
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    itemX: item.x,
-    itemY: item.y,
-    itemWidth: item.width,
-    itemHeight: item.height,
-    itemRotation: item.rotation,
-    rotateStartAngle: 0,
-    panX: boardPan.value.x,
-    panY: boardPan.value.y,
-  }
-}
-
-function startBoardItemResize(item: ReferenceBoardItem, event: PointerEvent) {
-  if (event.button !== 0) return
-  if (selectedReferenceBoardItemId.value !== item.id) return
-  event.stopPropagation()
-  event.preventDefault()
-  selectedReferenceBoardItemId.value = item.id
-  closeReferenceBoardCanvasMenu()
-  void bringReferenceBoardItemToFront(item.id)
-
-  boardInteraction.value = {
-    itemId: item.id,
-    mode: 'resize',
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    itemX: item.x,
-    itemY: item.y,
-    itemWidth: item.width,
-    itemHeight: item.height,
-    itemRotation: item.rotation,
-    rotateStartAngle: 0,
-    panX: boardPan.value.x,
-    panY: boardPan.value.y,
-  }
-}
-
-function startBoardItemRotate(item: ReferenceBoardItem, event: PointerEvent) {
-  if (event.button !== 0) return
-  if (selectedReferenceBoardItemId.value !== item.id) return
-  event.stopPropagation()
-  event.preventDefault()
-  closeReferenceBoardCanvasMenu()
-  void bringReferenceBoardItemToFront(item.id)
-
-  const centerX = item.x + item.width / 2
-  const centerY = item.y + item.height / 2
-  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
-  const rotateStartAngle = (Math.atan2(worldPoint.y - centerY, worldPoint.x - centerX) * 180) / Math.PI
-
-  boardInteraction.value = {
-    itemId: item.id,
-    mode: 'rotate',
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    itemX: item.x,
-    itemY: item.y,
-    itemWidth: item.width,
-    itemHeight: item.height,
-    itemRotation: item.rotation,
-    rotateStartAngle,
-    panX: boardPan.value.x,
-    panY: boardPan.value.y,
   }
 }
 
@@ -3302,14 +2920,6 @@ function onGalleryScroll(scrollTop: number, clientHeight: number) {
 
 function onGalleryWheel(_event: WheelEvent) {}
 
-function setSearchPointerInside(next: boolean) {
-  isSearchPointerInside.value = next
-}
-
-function setSearchFocus(next: boolean) {
-  isSearchFocused.value = next
-}
-
 function hideSearchPanel() {}
 
 function setNewFolderName(value: string) {
@@ -3326,157 +2936,6 @@ function setNewBoardName(value: string) {
 
 function setComposingBoardName(value: boolean) {
   isComposingBoardName.value = value
-}
-
-function setSearchZhInput(value: string) {
-  searchZhInput.value = value
-}
-
-function openSearchZhSuggestionPanel() {
-  searchZhOpen.value = searchZhSuggestions.value.length > 0
-}
-
-function closeSearchZhSuggestionPanelDeferred() {
-  window.setTimeout(() => {
-    searchZhOpen.value = false
-  }, 90)
-}
-
-function selectSearchZhSuggestion(item: KnownAutoTagSuggestion) {
-  if (searchZhSelected.value.some((existing) => existing.tagEn === item.tagEn)) {
-    searchZhInput.value = ''
-    searchZhOpen.value = false
-    return
-  }
-  searchZhSelected.value = [...searchZhSelected.value, item]
-  searchZhInput.value = ''
-  searchZhOpen.value = false
-}
-
-function removeSearchZhSuggestion(tagEn: string) {
-  searchZhSelected.value = searchZhSelected.value.filter((item) => item.tagEn !== tagEn)
-}
-
-function setSearchEnQuery(value: string) {
-  searchEnQuery.value = value
-}
-
-function setSearchFileNameQuery(value: string) {
-  searchFileNameQuery.value = value
-}
-
-function setSearchConfidenceMin(value: number) {
-  searchConfidenceMin.value = clamp(value, 0, searchConfidenceMax.value)
-}
-
-function setSearchConfidenceMax(value: number) {
-  searchConfidenceMax.value = clamp(value, searchConfidenceMin.value, 1)
-}
-
-async function refreshSearchZhSuggestions() {
-  const keyword = searchZhInput.value.trim()
-  if (!keyword) {
-    searchZhSuggestions.value = []
-    searchZhOpen.value = false
-    return
-  }
-
-  const token = searchSuggestRequestToken.value + 1
-  searchSuggestRequestToken.value = token
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const rows = await invoke<Array<Record<string, unknown>>>('suggest_known_auto_tags_command', {
-      query: keyword,
-      limit: 30,
-    })
-    if (token !== searchSuggestRequestToken.value) return
-    const selected = new Set(searchZhSelected.value.map((item) => item.tagEn))
-    searchZhSuggestions.value = rows
-      .map((item) => ({
-        tagEn: String(item.tagEn ?? item.tag_en ?? ''),
-        tagZh: (item.tagZh ?? item.tag_zh ?? null) as string | null,
-        imageCount: Number(item.imageCount ?? item.image_count ?? 0),
-      }))
-      .filter((item) => item.tagEn.length > 0 && !selected.has(item.tagEn))
-    searchZhOpen.value = searchZhSuggestions.value.length > 0
-  } catch {
-    if (token !== searchSuggestRequestToken.value) return
-    searchZhSuggestions.value = []
-    searchZhOpen.value = false
-  }
-}
-
-async function runGallerySearch() {
-  if (!hasSearchFilters.value) {
-    searchResultImageIds.value = null
-    searchRunning.value = false
-    searchError.value = ''
-    return
-  }
-
-  const filters: GallerySearchFilters = {
-    chineseTagEns: searchZhSelected.value.map((item) => item.tagEn),
-    englishQuery: searchEnQuery.value,
-    fileNameQuery: searchFileNameQuery.value,
-    confidenceMin: searchConfidenceMin.value,
-    confidenceMax: searchConfidenceMax.value,
-  }
-
-  const token = searchRequestToken.value + 1
-  searchRequestToken.value = token
-  searchRunning.value = true
-  searchError.value = ''
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const ids = await invoke<string[]>('search_gallery_image_ids_command', {
-      filters,
-    })
-    if (token !== searchRequestToken.value) return
-    searchResultImageIds.value = new Set(ids)
-  } catch (error) {
-    if (token !== searchRequestToken.value) return
-    searchError.value = formatError(error)
-  } finally {
-    if (token === searchRequestToken.value) {
-      searchRunning.value = false
-    }
-  }
-}
-
-async function loadImageAutoTags(imageId: string) {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const summary = await invoke<Record<string, unknown>>('list_image_auto_tags_command', {
-      imageId,
-    })
-    const rows = Object.values(summary)
-      .flatMap((value) => (Array.isArray(value) ? value : []))
-      .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
-      .map((item) => ({
-        tagEn: String(item.tagEn ?? item.tag_en ?? ''),
-        tagZh: (item.tagZh ?? item.tag_zh ?? null) as string | null,
-        confidence: Number(item.confidence ?? item.score ?? 0),
-        category: (item.category ?? null) as string | null,
-      }))
-      .filter((item) => item.tagEn.length > 0)
-      .sort((a, b) => b.confidence - a.confidence)
-    activeImageTagRows.value = rows
-  } catch {
-    activeImageTagRows.value = []
-  }
-}
-
-function closeImageDetail() {
-  activeImageDetailId.value = null
-  imageDetailContextMenu.value = null
-  activeImageTagRows.value = []
-}
-
-function openGalleryImageDetail(item: GalleryLayoutItem) {
-  if (Date.now() - lastImageDragEndedAt.value < 260) return
-  activeImageDetailId.value = item.id
-  imageDetailContextMenu.value = null
-  void loadImageAutoTags(item.id)
 }
 
 function openGalleryImageMenu(item: GalleryLayoutItem, event: MouseEvent) {
@@ -3596,25 +3055,6 @@ function formatFileSize(bytes: number) {
 function formatTime(timestamp: number) {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '--'
   return new Date(timestamp).toLocaleString('zh-CN')
-}
-
-function categoryLabel(key: string) {
-  switch (key) {
-    case 'character':
-      return '人物标签'
-    case 'copyright':
-      return '作品标签'
-    case 'artist':
-      return '作者标签'
-    case 'general':
-      return '通用标签'
-    case 'meta':
-      return '元信息'
-    case 'rating':
-      return '分级标签'
-    default:
-      return '其他标签'
-  }
 }
 
 function closeSidebarByToggle() {
@@ -4102,4 +3542,3 @@ function formatError(error: unknown) {
     </div>
   </div>
 </template>
-
