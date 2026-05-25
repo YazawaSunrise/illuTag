@@ -289,7 +289,7 @@ const galleryEl = ref<HTMLElement | null>(null)
 const viewportWidth = ref(960)
 const viewportHeight = ref(720)
 const folderPathInput = ref('')
-const activeUserFolderId = ref<number | 'all'>('all')
+const activeUserFolderId = ref<number | 'all' | 'trash'>('all')
 const newFolderName = ref('')
 const folderDraft = ref<FolderDraft | null>(null)
 const longPressTimer = ref<number | null>(null)
@@ -424,7 +424,11 @@ function collectDescendantFolderIds(rootFolderId: number) {
 
 const folderScopedImages = computed(() => {
   const galleryImages = library.value.images.filter((image) => image.source !== 'reference')
-  if (activeUserFolderId.value === 'all') return galleryImages
+  if (activeUserFolderId.value === 'trash') {
+    return galleryImages.filter((image) => image.trashed)
+  }
+  const activeImages = galleryImages.filter((image) => !image.trashed)
+  if (activeUserFolderId.value === 'all') return activeImages
 
   const scopeFolderIds = collectDescendantFolderIds(activeUserFolderId.value)
   const hasChildFolders = (folderGroups.value.get(activeUserFolderId.value) ?? []).length > 0
@@ -437,10 +441,11 @@ const folderScopedImages = computed(() => {
       .filter((assignment) => scopeFolderIds.has(assignment.folderId))
       .map((assignment) => assignment.imageId),
   )
-  return galleryImages.filter((image) => assignedIds.has(image.id))
+  return activeImages.filter((image) => assignedIds.has(image.id))
 })
 
 const visibleImages = computed(() => {
+  if (activeUserFolderId.value === 'trash') return folderScopedImages.value
   if (!hasSearchFilters.value || !searchResultImageIds.value) return folderScopedImages.value
   return folderScopedImages.value.filter((image) => searchResultImageIds.value?.has(image.id))
 })
@@ -1057,6 +1062,7 @@ async function deleteUserFolder(folderId: number) {
     removeExpandedFolder(folderId)
     if (
       activeUserFolderId.value !== 'all' &&
+      activeUserFolderId.value !== 'trash' &&
       !library.value.userFolders.some((item) => item.id === activeUserFolderId.value)
     ) {
       activeUserFolderId.value = 'all'
@@ -1246,6 +1252,12 @@ function floatingPanelPosition(x: number, y: number) {
 function showAllImages() {
   viewMode.value = 'gallery'
   activeUserFolderId.value = 'all'
+  activeReferenceBoardId.value = null
+}
+
+function showTrashImages() {
+  viewMode.value = 'gallery'
+  activeUserFolderId.value = 'trash'
   activeReferenceBoardId.value = null
 }
 
@@ -2920,12 +2932,13 @@ async function autoArrangeActiveReferenceBoard() {
 }
 
 async function importSelectedReferenceItemToLibrary(itemId: number) {
-  const folderId =
-    typeof activeUserFolderId.value === 'number'
-      ? activeUserFolderId.value
-      : library.value.userFolders[0]?.id ?? null
+  if (!canImportReferenceBoardItemToLibrary(itemId)) {
+    closeReferenceBoardCanvasMenu()
+    return
+  }
+
+  const folderId = pickImportedLibraryFolderIdForImport()
   if (folderId === null) {
-    errorText.value = '请先创建至少一个文件夹，再执行加入图库。'
     return
   }
 
@@ -2940,6 +2953,39 @@ async function importSelectedReferenceItemToLibrary(itemId: number) {
   } finally {
     closeReferenceBoardCanvasMenu()
   }
+}
+
+function canImportReferenceBoardItemToLibrary(itemId: number) {
+  const boardItem = library.value.referenceBoardItems.find((item) => item.id === itemId)
+  if (!boardItem) return false
+  const image = library.value.images.find((item) => item.id === boardItem.imageId)
+  if (!image) return false
+  return image.source === 'reference'
+}
+
+function pickImportedLibraryFolderIdForImport() {
+  const folders = library.value.folders
+  if (folders.length === 0) {
+    errorText.value = '请先在设置中导入至少一个本地图库文件夹。'
+    return null
+  }
+  if (folders.length === 1) {
+    return folders[0].id
+  }
+
+  const options = folders.map((folder, index) => `${index + 1}. ${folder.path}`).join('\n')
+  const raw = window.prompt(
+    `选择要保存到的图库文件夹（输入序号）：\n${options}`,
+    '1',
+  )
+  if (raw === null) return null
+
+  const selectedIndex = Number.parseInt(raw.trim(), 10)
+  if (!Number.isFinite(selectedIndex) || selectedIndex < 1 || selectedIndex > folders.length) {
+    errorText.value = '无效选择，请输入列表中的序号。'
+    return null
+  }
+  return folders[selectedIndex - 1].id
 }
 
 async function exportReferenceBoardItem(itemId: number) {
@@ -3609,6 +3655,23 @@ async function removeGalleryImageFromIndex(imageId: string) {
   }
 }
 
+async function restoreGalleryImageFromTrash(imageId: string) {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    library.value = await invoke<LibraryStore>('restore_image_from_trash_command', {
+      imageId,
+    })
+    if (activeImageDetailId.value === imageId) {
+      closeImageDetail()
+    }
+  } catch (error) {
+    errorText.value = formatError(error)
+  } finally {
+    imageDetailContextMenu.value = null
+    closeGalleryImageContextMenu()
+  }
+}
+
 async function removeGalleryImageFromFolder(imageId: string) {
   if (typeof activeUserFolderId.value !== 'number') return
   try {
@@ -3908,6 +3971,7 @@ const leftSidebarHandlers = {
   closeHover: closeSidebarByHover,
   closeByToggle: closeSidebarByToggle,
   showAllImages,
+  showTrashImages,
   openFolderSectionMenu,
   openFolderMenu,
   startFolderPointer,
@@ -4021,6 +4085,7 @@ const galleryViewHandlers = {
 
 const overlayHandlers = {
   copyReferenceBoardItemToClipboard,
+  canImportReferenceBoardItemToLibrary,
   importSelectedReferenceItemToLibrary,
   exportReferenceBoardItem,
   removeReferenceBoardItem,
@@ -4303,7 +4368,14 @@ function formatError(error: unknown) {
         type="button"
         @click="removeGalleryImageFromIndex(galleryImageContextMenu.imageId)"
       >
-        从索引中删除
+        移入回收站
+      </button>
+      <button
+        v-else-if="activeUserFolderId === 'trash'"
+        type="button"
+        @click="restoreGalleryImageFromTrash(galleryImageContextMenu.imageId)"
+      >
+        还原
       </button>
       <button
         v-else

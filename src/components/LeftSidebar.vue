@@ -24,7 +24,7 @@ defineProps<{
   visible: boolean
   sidebarPinned: boolean
   viewMode: ViewMode
-  activeUserFolderId: number | 'all'
+  activeUserFolderId: number | 'all' | 'trash'
   folderTree: FolderTreeItem[]
   folderDragOverId: number | null
   draggedFolderId: number | null
@@ -73,6 +73,15 @@ defineProps<{
           @click="handlers.showAllImages()"
         >
           全部
+        </button>
+
+        <button
+          class="sidebar__nav-button"
+          type="button"
+          :class="{ 'is-active': viewMode === 'gallery' && activeUserFolderId === 'trash' }"
+          @click="handlers.showTrashImages()"
+        >
+          回收站
         </button>
 
         <div class="folder-section" @contextmenu="handlers.openFolderSectionMenu($event)">

@@ -45,7 +45,7 @@ defineProps<{
       <button type="button" @click="handlers.copyReferenceBoardItemToClipboard(referenceBoardCanvasMenu.itemId)">
         复制
       </button>
-      <button type="button" @click="handlers.importSelectedReferenceItemToLibrary(referenceBoardCanvasMenu.itemId)">
+      <button v-if="handlers.canImportReferenceBoardItemToLibrary(referenceBoardCanvasMenu.itemId)" type="button" @click="handlers.importSelectedReferenceItemToLibrary(referenceBoardCanvasMenu.itemId)">
         加入图库
       </button>
       <button type="button" @click="handlers.exportReferenceBoardItem(referenceBoardCanvasMenu.itemId)">

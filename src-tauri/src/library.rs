@@ -59,6 +59,7 @@ pub struct GalleryImage {
     pub imported_at: i64,
     pub folder_id: i64,
     pub missing: bool,
+    pub trashed: bool,
     pub source: String,
 }
 
@@ -320,8 +321,27 @@ pub fn remove_image_from_index(image_id: String, state: &AppState) -> Result<Lib
     let conn = open_database(&state.database_path)?;
     conn.execute("PRAGMA foreign_keys = ON", [])
         .map_err(|error| format!("启用数据库外键失败：{error}"))?;
-    conn.execute("DELETE FROM images WHERE id = ?1", params![image_id])
-        .map_err(|error| format!("从索引中删除图片失败：{error}"))?;
+    conn.execute("UPDATE images SET trashed = 1 WHERE id = ?1 AND source = 'library'", params![image_id])
+        .map_err(|error| format!("Failed to move image to trash: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
+}
+
+pub fn restore_image_from_trash(image_id: String, state: &AppState) -> Result<LibraryStore, String> {
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "鍥惧簱鐘舵€佽鍗犵敤锛岃绋嶅悗鍐嶈瘯".to_string())?;
+    let conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("鍚敤鏁版嵁搴撳閿け璐ワ細{error}"))?;
+    conn.execute(
+        "UPDATE images SET trashed = 0 WHERE id = ?1 AND source = 'library'",
+        params![image_id],
+    )
+    .map_err(|error| format!("Failed to restore image from trash: {error}"))?;
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
@@ -645,6 +665,7 @@ pub fn search_gallery_image_ids(
         SELECT images.id
         FROM images
         WHERE images.source = 'library'
+          AND COALESCE(images.trashed, 0) = 0
         ",
     );
     let mut params_values = Vec::<Value>::new();
@@ -1785,6 +1806,7 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
           imported_at INTEGER NOT NULL,
           folder_id INTEGER NOT NULL,
           missing INTEGER NOT NULL DEFAULT 0,
+          trashed INTEGER NOT NULL DEFAULT 0,
           content_hash TEXT,
           source TEXT NOT NULL DEFAULT 'library',
           FOREIGN KEY(folder_id) REFERENCES folders(id) ON DELETE CASCADE
@@ -2014,13 +2036,16 @@ fn rebuild_known_image_tags(conn: &Connection) -> Result<(), String> {
         "
         INSERT INTO known_image_tags (model_name, tag_en, tag_zh, image_count, updated_at)
         SELECT
-          model_name,
-          tag_en,
-          MAX(NULLIF(tag_zh, '')) AS tag_zh,
-          COUNT(DISTINCT image_id) AS image_count,
+          image_auto_tags.model_name,
+          image_auto_tags.tag_en,
+          MAX(NULLIF(image_auto_tags.tag_zh, '')) AS tag_zh,
+          COUNT(DISTINCT image_auto_tags.image_id) AS image_count,
           ?1
         FROM image_auto_tags
-        GROUP BY model_name, tag_en
+        JOIN images ON images.id = image_auto_tags.image_id
+        WHERE images.source = 'library'
+          AND COALESCE(images.trashed, 0) = 0
+        GROUP BY image_auto_tags.model_name, image_auto_tags.tag_en
         ",
         params![now],
     )
@@ -2042,6 +2067,13 @@ fn ensure_library_columns(conn: &Connection) -> Result<(), String> {
             [],
         )
         .map_err(|error| format!("升级图片来源字段失败：{error}"))?;
+    }
+    if !table_has_column(conn, "images", "trashed")? {
+        conn.execute(
+            "ALTER TABLE images ADD COLUMN trashed INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|error| format!("Failed to upgrade images.trashed column: {error}"))?;
     }
     Ok(())
 }
@@ -2179,7 +2211,7 @@ fn load_images(conn: &Connection) -> Result<Vec<GalleryImage>, String> {
             "
             SELECT
               id, path, file_name, ext, width, height, file_size, modified_at,
-              imported_at, folder_id, missing, source
+              imported_at, folder_id, missing, trashed, source
             FROM images
             ORDER BY modified_at DESC, path ASC
             ",
@@ -2200,7 +2232,8 @@ fn load_images(conn: &Connection) -> Result<Vec<GalleryImage>, String> {
                 imported_at: row.get(8)?,
                 folder_id: row.get(9)?,
                 missing: row.get::<_, i64>(10)? != 0,
-                source: row.get(11)?,
+                trashed: row.get::<_, i64>(11)? != 0,
+                source: row.get(12)?,
             })
         })
         .map_err(|error| format!("读取图片索引失败：{error}"))?
@@ -2425,7 +2458,7 @@ fn load_image_record(conn: &Connection, image_id: &str) -> Result<GalleryImage, 
         "
         SELECT
           id, path, file_name, ext, width, height, file_size, modified_at,
-          imported_at, folder_id, missing, source
+          imported_at, folder_id, missing, trashed, source
         FROM images
         WHERE id = ?1
         ",
@@ -2443,7 +2476,8 @@ fn load_image_record(conn: &Connection, image_id: &str) -> Result<GalleryImage, 
                 imported_at: row.get(8)?,
                 folder_id: row.get(9)?,
                 missing: row.get::<_, i64>(10)? != 0,
-                source: row.get(11)?,
+                trashed: row.get::<_, i64>(11)? != 0,
+                source: row.get(12)?,
             })
         },
     )
@@ -2849,6 +2883,7 @@ fn collect_pending_tag_image_ids(conn: &Connection) -> Result<Vec<String>, Strin
         SELECT images.id
         FROM images
         WHERE images.source = 'library'
+          AND COALESCE(images.trashed, 0) = 0
           AND NOT EXISTS (
             SELECT 1
             FROM image_auto_tags
@@ -3226,6 +3261,7 @@ fn upsert_image(conn: &Connection, folder_id: i64, image: &ScannedImage) -> Resu
           modified_at = excluded.modified_at,
           folder_id = excluded.folder_id,
           missing = 0,
+          trashed = images.trashed,
           source = 'library'
         ",
         params![

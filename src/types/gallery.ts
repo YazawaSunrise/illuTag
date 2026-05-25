@@ -10,6 +10,7 @@ export type GalleryImage = {
   importedAt: number
   folderId: number
   missing: boolean
+  trashed: boolean
   source: string
 }
 
