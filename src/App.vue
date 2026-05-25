@@ -17,6 +17,7 @@ import { useImageDragAndDrop } from './composables/useImageDragAndDrop'
 import { useReferenceBoardManagement } from './composables/useReferenceBoardManagement'
 import { useReferenceBoardInteraction } from './composables/useReferenceBoardInteraction'
 import { useReferenceBoardClipboard } from './composables/useReferenceBoardClipboard'
+import { useReferenceBoardHistory } from './composables/useReferenceBoardHistory'
 import type { GalleryImage, GalleryLayoutItem } from './types/gallery'
 
 type LibraryFolder = {
@@ -105,47 +106,6 @@ type BoardCanvasBounds = {
   maxY: number
 }
 
-type BoardItemLayout = {
-  x: number
-  y: number
-  width: number
-  height: number
-  rotation: number
-}
-
-type BoardHistoryChange = {
-  itemId: number
-  before: BoardItemLayout
-  after: BoardItemLayout
-}
-
-type DeletedBoardItemSnapshot = {
-  itemId: number
-  boardId: number
-  imageId: string
-  layout: BoardItemLayout
-  zIndex: number
-}
-
-type BoardLayoutHistoryEntry = {
-  kind: 'layout'
-  boardId: number
-  changes: BoardHistoryChange[]
-  selectionBefore: number | null
-  selectionAfter: number | null
-}
-
-type BoardDeleteHistoryEntry = {
-  kind: 'delete'
-  boardId: number
-  deletedItems: DeletedBoardItemSnapshot[]
-  restoredItemIds: number[]
-  selectionBefore: number | null
-  selectionAfter: number | null
-}
-
-type BoardHistoryEntry = BoardLayoutHistoryEntry | BoardDeleteHistoryEntry
-
 const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoardFolderIds'
 const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
 const autoScanOnStartupStorageKey = 'illutag.autoScanOnStartup'
@@ -173,10 +133,7 @@ const previewDragOverDeleteZone = ref(false)
 const previewBoardItemDrag = ref<PreviewBoardItemDragState | null>(null)
 const lastPreviewBoardDragEndedAt = ref(0)
 const boardCanvasBoundsById = ref<Record<number, BoardCanvasBounds>>({})
-const boardUndoStack = ref<BoardHistoryEntry[]>([])
-const boardRedoStack = ref<BoardHistoryEntry[]>([])
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
-const isApplyingBoardHistory = ref(false)
 const imageDetailContextMenu = ref<ImageDetailContextMenu>(null)
 const galleryImageContextMenu = ref<GalleryImageContextMenu>(null)
 const previewBoardPointerId = ref<number | null>(null)
@@ -585,6 +542,28 @@ const {
   formatError,
 })
 
+const {
+  pruneBoardHistory,
+  pushBoardHistory,
+  collectBoardLayoutMap,
+  buildBoardHistoryChanges,
+  undoReferenceBoardHistory,
+  redoReferenceBoardHistory,
+  removeReferenceBoardItem,
+  removeReferenceBoardItemsWithHistory,
+} = useReferenceBoardHistory<LibraryStore>({
+  library,
+  activeReferenceBoardId,
+  selectedReferenceBoardItemId,
+  ensureBoardCanvasBoundsFor,
+  clearInternalBoardCopyRefForItems,
+  closeReferenceBoardCanvasMenu,
+  setErrorText(value) {
+    errorText.value = value
+  },
+  formatError,
+})
+
 onMounted(async () => {
   initAppSettingsFromStorage()
   expandedReferenceBoardFolderIds.value = readStoredIdSet(expandedReferenceBoardFolderIdsStorageKey)
@@ -660,8 +639,6 @@ watch(previewReferenceBoardIds, (value) => {
 })
 
 watch(activeReferenceBoardId, () => {
-  boardUndoStack.value = []
-  boardRedoStack.value = []
   boardSpaceFocusMode.value = 'item'
   if (activeReferenceBoardId.value !== null) {
     ensureBoardCanvasBoundsFor(activeReferenceBoardId.value)
@@ -676,6 +653,7 @@ watch(
   () => library.value.referenceBoards.map((board) => board.id).join(','),
   () => {
     const exists = new Set(library.value.referenceBoards.map((board) => board.id))
+    pruneBoardHistory(exists)
     const next = new Set([...previewReferenceBoardIds.value].filter((id) => exists.has(id)))
     if (next.size !== previewReferenceBoardIds.value.size) {
       previewReferenceBoardIds.value = next
@@ -1149,202 +1127,6 @@ async function addImageToReferenceBoard(imageId: string, boardId: number) {
   ensureBoardCanvasBoundsFor(boardId)
 }
 
-function cloneBoardItemLayout(item: ReferenceBoardItem): BoardItemLayout {
-  return {
-    x: item.x,
-    y: item.y,
-    width: item.width,
-    height: item.height,
-    rotation: item.rotation,
-  }
-}
-
-function boardLayoutEquals(a: BoardItemLayout, b: BoardItemLayout) {
-  const epsilon = 0.001
-  return (
-    Math.abs(a.x - b.x) <= epsilon &&
-    Math.abs(a.y - b.y) <= epsilon &&
-    Math.abs(a.width - b.width) <= epsilon &&
-    Math.abs(a.height - b.height) <= epsilon &&
-    Math.abs(a.rotation - b.rotation) <= epsilon
-  )
-}
-
-function collectBoardLayoutMap(boardId: number) {
-  const map = new Map<number, BoardItemLayout>()
-  for (const item of library.value.referenceBoardItems) {
-    if (item.boardId !== boardId) continue
-    map.set(item.id, cloneBoardItemLayout(item))
-  }
-  return map
-}
-
-function buildBoardHistoryChanges(
-  beforeMap: Map<number, BoardItemLayout>,
-  afterMap: Map<number, BoardItemLayout>,
-) {
-  const changes: BoardHistoryChange[] = []
-  for (const [itemId, before] of beforeMap) {
-    const after = afterMap.get(itemId)
-    if (!after) continue
-    if (!boardLayoutEquals(before, after)) {
-      changes.push({ itemId, before, after })
-    }
-  }
-  return changes
-}
-
-function pushBoardHistory(entry: BoardHistoryEntry) {
-  if (isApplyingBoardHistory.value) return
-  if (entry.kind === 'layout' && entry.changes.length === 0) return
-  if (entry.kind === 'delete' && entry.deletedItems.length === 0) return
-  boardUndoStack.value.push(entry)
-  if (boardUndoStack.value.length > 200) {
-    boardUndoStack.value.splice(0, boardUndoStack.value.length - 200)
-  }
-  boardRedoStack.value = []
-}
-
-async function applyBoardHistorySnapshot(
-  boardId: number,
-  changes: BoardHistoryChange[],
-  kind: 'before' | 'after',
-  selectedItemId: number | null,
-) {
-  const targets: Array<{ change: BoardHistoryChange; item: ReferenceBoardItem }> = []
-  for (const change of changes) {
-    const item = library.value.referenceBoardItems.find((entry) => entry.id === change.itemId)
-    if (!item || item.boardId !== boardId) continue
-    targets.push({ change, item })
-  }
-
-  if (targets.length === 0) {
-    selectedReferenceBoardItemId.value = null
-    return
-  }
-
-  const { invoke } = await import('@tauri-apps/api/core')
-  for (const { change, item } of targets) {
-    const layout = kind === 'before' ? change.before : change.after
-    library.value = await invoke<LibraryStore>('update_reference_board_item_layout_command', {
-      itemId: item.id,
-      x: layout.x,
-      y: layout.y,
-      width: layout.width,
-      height: layout.height,
-      rotation: layout.rotation,
-    })
-  }
-
-  const hasSelected = selectedItemId !== null && library.value.referenceBoardItems.some((item) => item.id === selectedItemId)
-  selectedReferenceBoardItemId.value = hasSelected ? selectedItemId : null
-}
-
-function snapshotDeletedBoardItems(itemIds: number[]) {
-  const uniqueIds = [...new Set(itemIds)]
-  const snapshots: DeletedBoardItemSnapshot[] = []
-  for (const itemId of uniqueIds) {
-    const item = library.value.referenceBoardItems.find((entry) => entry.id === itemId)
-    if (!item) continue
-    snapshots.push({
-      itemId: item.id,
-      boardId: item.boardId,
-      imageId: item.imageId,
-      layout: cloneBoardItemLayout(item),
-      zIndex: item.zIndex,
-    })
-  }
-  return snapshots
-}
-
-async function applyBoardDeleteUndo(entry: BoardDeleteHistoryEntry) {
-  const { invoke } = await import('@tauri-apps/api/core')
-  const restoredItemIds: number[] = []
-
-  const deletedItems = [...entry.deletedItems].sort((a, b) => a.zIndex - b.zIndex || a.itemId - b.itemId)
-  for (const deletedItem of deletedItems) {
-    const beforeIds = new Set(
-      library.value.referenceBoardItems.filter((item) => item.boardId === entry.boardId).map((item) => item.id),
-    )
-    library.value = await invoke<LibraryStore>('restore_reference_board_item_command', {
-      boardId: entry.boardId,
-      imageId: deletedItem.imageId,
-      x: deletedItem.layout.x,
-      y: deletedItem.layout.y,
-      width: deletedItem.layout.width,
-      height: deletedItem.layout.height,
-      rotation: deletedItem.layout.rotation,
-      zIndex: deletedItem.zIndex,
-    })
-    const created = library.value.referenceBoardItems.find(
-      (item) => item.boardId === entry.boardId && !beforeIds.has(item.id),
-    )
-    if (!created) continue
-    restoredItemIds.push(created.id)
-  }
-
-  entry.restoredItemIds = restoredItemIds
-  ensureBoardCanvasBoundsFor(entry.boardId)
-}
-
-async function applyBoardDeleteRedo(entry: BoardDeleteHistoryEntry) {
-  const { invoke } = await import('@tauri-apps/api/core')
-  for (const itemId of entry.restoredItemIds) {
-    if (!library.value.referenceBoardItems.some((item) => item.id === itemId && item.boardId === entry.boardId)) continue
-    library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
-      itemId,
-    })
-  }
-  entry.restoredItemIds = []
-}
-
-async function undoReferenceBoardHistory() {
-  if (boardUndoStack.value.length === 0 || isApplyingBoardHistory.value) return
-  const entry = boardUndoStack.value.pop()
-  if (!entry) return
-  if (activeReferenceBoardId.value !== entry.boardId) return
-
-  isApplyingBoardHistory.value = true
-  try {
-    if (entry.kind === 'layout') {
-      await applyBoardHistorySnapshot(entry.boardId, entry.changes, 'before', entry.selectionBefore)
-    } else {
-      await applyBoardDeleteUndo(entry)
-      const selectedId = entry.restoredItemIds[entry.restoredItemIds.length - 1] ?? null
-      selectedReferenceBoardItemId.value = selectedId
-    }
-    boardRedoStack.value.push(entry)
-  } catch (error) {
-    errorText.value = formatError(error)
-    boardUndoStack.value.push(entry)
-  } finally {
-    isApplyingBoardHistory.value = false
-  }
-}
-
-async function redoReferenceBoardHistory() {
-  if (boardRedoStack.value.length === 0 || isApplyingBoardHistory.value) return
-  const entry = boardRedoStack.value.pop()
-  if (!entry) return
-  if (activeReferenceBoardId.value !== entry.boardId) return
-
-  isApplyingBoardHistory.value = true
-  try {
-    if (entry.kind === 'layout') {
-      await applyBoardHistorySnapshot(entry.boardId, entry.changes, 'after', entry.selectionAfter)
-    } else {
-      await applyBoardDeleteRedo(entry)
-      selectedReferenceBoardItemId.value = null
-    }
-    boardUndoStack.value.push(entry)
-  } catch (error) {
-    errorText.value = formatError(error)
-    boardRedoStack.value.push(entry)
-  } finally {
-    isApplyingBoardHistory.value = false
-  }
-}
-
 type BoardWorldBounds = { minX: number; minY: number; maxX: number; maxY: number }
 
 function boundsOfReferenceBoardItem(item: ReferenceBoardItem): BoardWorldBounds {
@@ -1566,47 +1348,6 @@ async function exportReferenceBoardItem(itemId: number) {
     errorText.value = formatError(error)
   } finally {
     closeReferenceBoardCanvasMenu()
-  }
-}
-
-async function removeReferenceBoardItem(itemId: number) {
-  await removeReferenceBoardItemsWithHistory([itemId])
-}
-
-async function removeReferenceBoardItemsWithHistory(itemIds: number[]) {
-  const snapshots = snapshotDeletedBoardItems(itemIds)
-  if (snapshots.length === 0) return
-  const boardId = snapshots[0].boardId
-  const allSameBoard = snapshots.every((item) => item.boardId === boardId)
-  if (!allSameBoard) return
-  const selectionBefore = selectedReferenceBoardItemId.value
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    for (const snapshot of snapshots) {
-      library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
-        itemId: snapshot.itemId,
-      })
-    }
-
-    const removedIds = new Set(snapshots.map((item) => item.itemId))
-    if (selectedReferenceBoardItemId.value !== null && removedIds.has(selectedReferenceBoardItemId.value)) {
-      selectedReferenceBoardItemId.value = null
-    }
-    clearInternalBoardCopyRefForItems(removedIds)
-
-    pushBoardHistory({
-      kind: 'delete',
-      boardId,
-      deletedItems: snapshots,
-      restoredItemIds: [],
-      selectionBefore,
-      selectionAfter: selectedReferenceBoardItemId.value,
-    })
-
-    closeReferenceBoardCanvasMenu()
-  } catch (error) {
-    errorText.value = formatError(error)
   }
 }
 
