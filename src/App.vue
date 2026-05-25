@@ -8,6 +8,7 @@ import LeftSidebar from './components/LeftSidebar.vue'
 import RightSidebar from './components/RightSidebar.vue'
 import ReferenceBoardView from './components/ReferenceBoardView.vue'
 import SettingsView from './components/SettingsView.vue'
+import { useAppSettings } from './composables/useAppSettings'
 import { useBackgroundScan } from './composables/useBackgroundScan'
 import { useGallerySearch } from './composables/useGallerySearch'
 import { useReferenceBoardInteraction } from './composables/useReferenceBoardInteraction'
@@ -196,18 +197,12 @@ type BoardDeleteHistoryEntry = {
 
 type BoardHistoryEntry = BoardLayoutHistoryEntry | BoardDeleteHistoryEntry
 
-const sidebarPinnedStorageKey = 'illutag.sidebarPinned'
-const rightSidebarPinnedStorageKey = 'illutag.rightSidebarPinned'
 const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoardFolderIds'
 const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
-const autoFixRightSidebarOnPreviewStorageKey = 'illutag.autoFixRightSidebarOnPreview'
 const autoScanOnStartupStorageKey = 'illutag.autoScanOnStartup'
-const themeModeStorageKey = 'illutag.themeMode'
 const imageDragDelayMs = 120
 const folderDragDelayMs = 160
-const sidebarPinned = ref(false)
 const sidebarHoverOpen = ref(false)
-const rightSidebarPinned = ref(false)
 const rightSidebarHoverOpen = ref(false)
 const viewMode = ref<ViewMode>('gallery')
 const library = ref<LibraryStore>({
@@ -267,8 +262,6 @@ const referenceBoardDragOverKind = ref<'board' | 'folder' | 'space' | null>(null
 const referenceBoardDragOverId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
-const themeMode = ref<'light' | 'dark'>('light')
-const autoFixRightSidebarOnPreview = ref(false)
 const galleryScrollTop = ref(0)
 const galleryViewportHeight = ref(0)
 const previewDragOverDeleteZone = ref(false)
@@ -634,6 +627,18 @@ const searchPanelStyle = computed<Record<string, string>>(() => ({
 }))
 
 const {
+  sidebarPinned,
+  rightSidebarPinned,
+  autoFixRightSidebarOnPreview,
+  themeMode,
+  initAppSettingsFromStorage,
+  setSidebarPinned,
+  setRightSidebarPinned,
+  setAutoFixRightSidebarOnPreview,
+  setThemeMode,
+} = useAppSettings()
+
+const {
   boardScale,
   boardPan,
   selectedReferenceBoardItemId,
@@ -765,15 +770,10 @@ const {
 })
 
 onMounted(async () => {
-  sidebarPinned.value = localStorage.getItem(sidebarPinnedStorageKey) === 'true'
-  rightSidebarPinned.value = localStorage.getItem(rightSidebarPinnedStorageKey) === 'true'
+  initAppSettingsFromStorage()
   expandedReferenceBoardFolderIds.value = readStoredIdSet(expandedReferenceBoardFolderIdsStorageKey)
   previewReferenceBoardIds.value = readStoredIdSet(previewReferenceBoardIdsStorageKey)
-  autoFixRightSidebarOnPreview.value =
-    localStorage.getItem(autoFixRightSidebarOnPreviewStorageKey) === 'true'
   initAutoScanOnStartupFromStorage()
-  themeMode.value = (localStorage.getItem(themeModeStorageKey) as 'light' | 'dark' | null) ?? 'light'
-  setThemeMode(themeMode.value)
   await loadLibrary()
   handleWindowResize()
   window.addEventListener('resize', handleWindowResize)
@@ -818,14 +818,12 @@ onUnmounted(() => {
 })
 
 watch(sidebarPinned, async (value) => {
-  localStorage.setItem(sidebarPinnedStorageKey, String(value))
   if (value) sidebarHoverOpen.value = false
   await nextTick()
   updateViewportSize()
 })
 
 watch(rightSidebarPinned, async (value) => {
-  localStorage.setItem(rightSidebarPinnedStorageKey, String(value))
   if (value) rightSidebarHoverOpen.value = false
   await nextTick()
   updateViewportSize()
@@ -3059,25 +3057,6 @@ function formatTime(timestamp: number) {
 
 function closeSidebarByToggle() {
   sidebarHoverOpen.value = false
-}
-
-function setRightSidebarPinned(value: boolean) {
-  rightSidebarPinned.value = value
-}
-
-function setSidebarPinned(value: boolean) {
-  sidebarPinned.value = value
-}
-
-function setThemeMode(value: 'light' | 'dark') {
-  themeMode.value = value
-  document.documentElement.dataset.theme = value
-  localStorage.setItem(themeModeStorageKey, value)
-}
-
-function setAutoFixRightSidebarOnPreview(value: boolean) {
-  autoFixRightSidebarOnPreview.value = value
-  localStorage.setItem(autoFixRightSidebarOnPreviewStorageKey, String(value))
 }
 
 const settingsViewHandlers = {
