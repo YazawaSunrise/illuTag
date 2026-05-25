@@ -376,6 +376,8 @@ const boardUndoStack = ref<BoardHistoryEntry[]>([])
 const boardRedoStack = ref<BoardHistoryEntry[]>([])
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const isApplyingBoardHistory = ref(false)
+const boardPanMoved = ref(false)
+const suppressNextBoardCanvasContextMenu = ref(false)
 const activeImageDetailId = ref<string | null>(null)
 const imageDetailContextMenu = ref<ImageDetailContextMenu>(null)
 const galleryImageContextMenu = ref<GalleryImageContextMenu>(null)
@@ -2408,6 +2410,12 @@ function openReferenceBoardItemMenu(itemId: number, event: MouseEvent) {
 
 function openReferenceBoardCanvasMenu(event: MouseEvent) {
   if (viewMode.value !== 'board') return
+  if (suppressNextBoardCanvasContextMenu.value) {
+    suppressNextBoardCanvasContextMenu.value = false
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
   event.preventDefault()
   event.stopPropagation()
 
@@ -3029,22 +3037,52 @@ function zoomReferenceBoard(event: WheelEvent) {
 
   const viewport = getReferenceBoardViewportMetrics()
   const nextScale = clamp(boardScale.value * (event.deltaY < 0 ? 1.08 : 0.92), 0.2, 4)
-  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
   const baseLeft = viewport?.left ?? 0
   const baseTop = viewport?.top ?? 0
+  const activeBoardId = activeReferenceBoard.value.id
+  const selectedItem =
+    selectedReferenceBoardItemId.value === null
+      ? null
+      : library.value.referenceBoardItems.find(
+          (item) => item.id === selectedReferenceBoardItemId.value && item.boardId === activeBoardId,
+        ) ?? null
+
+  const worldPoint = selectedItem
+    ? {
+        x: selectedItem.x + selectedItem.width / 2,
+        y: selectedItem.y + selectedItem.height / 2,
+      }
+    : worldPointFromClient(event.clientX, event.clientY)
+
+  const anchorClientX = selectedItem
+    ? baseLeft + boardPan.value.x + worldPoint.x * boardScale.value
+    : event.clientX
+  const anchorClientY = selectedItem
+    ? baseTop + boardPan.value.y + worldPoint.y * boardScale.value
+    : event.clientY
+
   boardScale.value = nextScale
   boardPan.value = {
-    x: event.clientX - baseLeft - worldPoint.x * nextScale,
-    y: event.clientY - baseTop - worldPoint.y * nextScale,
+    x: anchorClientX - baseLeft - worldPoint.x * nextScale,
+    y: anchorClientY - baseTop - worldPoint.y * nextScale,
   }
 }
 
 function startBoardPan(event: PointerEvent) {
-  if (event.button !== 0) return
+  if (event.button === 0) {
+    const target = event.target as HTMLElement | null
+    if (target?.closest('.reference-board-card')) return
+    closeReferenceBoardCanvasMenu()
+    selectedReferenceBoardItemId.value = null
+    return
+  }
+  if (event.button !== 2) return
   const target = event.target as HTMLElement | null
   if (target?.closest('.reference-board-card')) return
+  event.preventDefault()
   closeReferenceBoardCanvasMenu()
   selectedReferenceBoardItemId.value = null
+  boardPanMoved.value = false
 
   boardInteraction.value = {
     itemId: -1,
@@ -3068,6 +3106,11 @@ function moveBoardInteraction(event: PointerEvent) {
   if (!interaction || interaction.pointerId !== event.pointerId) return
 
   if (interaction.mode === 'pan') {
+    const movedX = Math.abs(event.clientX - interaction.startX)
+    const movedY = Math.abs(event.clientY - interaction.startY)
+    if (movedX > 2 || movedY > 2) {
+      boardPanMoved.value = true
+    }
     boardPan.value = {
       x: interaction.panX + (event.clientX - interaction.startX),
       y: interaction.panY + (event.clientY - interaction.startY),
@@ -3122,7 +3165,16 @@ async function finishBoardInteraction(event: PointerEvent) {
   if (!interaction || interaction.pointerId !== event.pointerId) return
   boardInteraction.value = null
 
-  if (interaction.mode === 'pan') return
+  if (interaction.mode === 'pan') {
+    if (boardPanMoved.value) {
+      suppressNextBoardCanvasContextMenu.value = true
+      window.setTimeout(() => {
+        suppressNextBoardCanvasContextMenu.value = false
+      }, 260)
+    }
+    boardPanMoved.value = false
+    return
+  }
   const item = library.value.referenceBoardItems.find((entry) => entry.id === interaction.itemId)
   if (!item) return
   const boardId = item.boardId
