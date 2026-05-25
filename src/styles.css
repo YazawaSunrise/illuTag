@@ -36,7 +36,7 @@ button {
   z-index: 4;
   left: 0;
   top: 0;
-  width: 180px;
+  width: 90px;
   height: 100vh;
 }
 
@@ -49,13 +49,13 @@ button {
   z-index: 4;
   right: 0;
   top: 0;
-  width: 180px;
+  width: 90px;
   height: 100vh;
 }
 
 .app-shell.is-window-maximized .sidebar-hotspot,
 .app-shell.is-window-maximized .right-sidebar-hotspot {
-  width: clamp(96px, 10vw, 132px);
+  width: clamp(77px, 8vw, 106px);
 }
 
 .app-shell:not(.is-titlebar-pinned) .sidebar-hotspot,
@@ -1151,7 +1151,9 @@ button {
   display: block;
   overflow: visible;
   padding: 0;
-  border: 1px solid #2a3037;
+  border-width: 0;
+  border-style: solid;
+  border-color: transparent;
   border-radius: 8px;
   background: #171c21;
   box-shadow: 0 14px 34px rgb(0 0 0 / 0.3);
@@ -1166,9 +1168,7 @@ button {
 .reference-board-card.is-selected {
   border-color: #82d5b8;
   border-width: 3px;
-  box-shadow:
-    0 0 0 3px rgb(130 213 184 / 0.32),
-    0 14px 34px rgb(0 0 0 / 0.3);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 0.3);
 }
 
 .reference-board-card img {
@@ -1202,35 +1202,41 @@ button {
 
 .reference-board-card__resize {
   position: absolute;
-  right: -12px;
-  bottom: -12px;
-  width: 30px;
-  height: 30px;
-  border: 2px solid #82d5b8;
-  border-radius: 999px;
-  background: #111418;
+  display: grid;
+  place-items: center;
+  right: -16px;
+  bottom: -16px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  color: #0f766e;
   cursor: nwse-resize;
 }
 
-.reference-board-card__resize::after {
-  position: absolute;
-  right: 7px;
-  bottom: 7px;
-  width: 12px;
-  height: 12px;
-  border-right: 2px solid #82d5b8;
-  border-bottom: 2px solid #82d5b8;
-  content: "";
+.reference-board-card__resize-icon {
+  width: 26px;
+  height: 26px;
+  transform: rotate(90deg);
+  transform-origin: center;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+  filter:
+    drop-shadow(0 0 1px rgb(255 255 255 / 0.75))
+    drop-shadow(0 0 1px rgb(15 23 42 / 0.6));
 }
 
 .reference-board-card__rotate {
   position: absolute;
   z-index: 2;
-  width: 30px;
-  height: 30px;
-  border: 2px solid #82d5b8;
-  border-radius: 999px;
-  background: #111418;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  color: #0f766e;
   opacity: 0;
   cursor: grab;
 }
@@ -1240,31 +1246,26 @@ button {
 }
 
 .reference-board-card__rotate {
-  right: -12px;
-  top: -12px;
+  right: -16px;
+  top: -16px;
 }
 
-.reference-board-card__rotate::before,
-.reference-board-card__rotate::after {
-  position: absolute;
-  content: "";
+.reference-board-card__rotate-icon {
+  width: 26px;
+  height: 26px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+  filter:
+    drop-shadow(0 0 1px rgb(255 255 255 / 0.75))
+    drop-shadow(0 0 1px rgb(15 23 42 / 0.6));
 }
 
-.reference-board-card__rotate::before {
-  inset: 7px;
-  border: 2px solid #82d5b8;
-  border-left-color: transparent;
-  border-radius: 999px;
-}
-
-.reference-board-card__rotate::after {
-  right: 6px;
-  top: 5px;
-  width: 0;
-  height: 0;
-  border-left: 5px solid #82d5b8;
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
+.reference-board-card.is-selected .reference-board-card__resize:hover .reference-board-card__resize-icon,
+.reference-board-card.is-selected .reference-board-card__resize:active .reference-board-card__resize-icon,
+.reference-board-card.is-selected .reference-board-card__rotate:hover .reference-board-card__rotate-icon,
+.reference-board-card.is-selected .reference-board-card__rotate:active .reference-board-card__rotate-icon {
+  opacity: 1;
 }
 
 .settings {
@@ -2331,20 +2332,18 @@ button {
 }
 
 .app-shell.theme-light .reference-board-card {
-  border-color: #d0dae5;
   background: #ffffff;
   box-shadow: 0 12px 26px rgb(19 33 51 / 0.15);
 }
 
 .app-shell.theme-light .reference-board-card.is-selected {
-  box-shadow:
-    0 0 0 3px rgb(130 213 184 / 0.32),
-    0 12px 26px rgb(19 33 51 / 0.15);
+  box-shadow: 0 12px 26px rgb(19 33 51 / 0.15);
 }
 
 .app-shell.theme-light .reference-board-card__resize,
 .app-shell.theme-light .reference-board-card__rotate {
-  background: #ffffff;
+  background: transparent;
+  color: #0f766e;
 }
 
 .app-shell.theme-light .masonry__item {

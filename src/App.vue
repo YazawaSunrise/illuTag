@@ -130,7 +130,7 @@ type BoardDraft = {
 
 type BoardItemInteraction = {
   itemId: number
-  mode: 'move' | 'resize' | 'pan'
+  mode: 'move' | 'resize' | 'rotate' | 'pan'
   pointerId: number
   startX: number
   startY: number
@@ -138,6 +138,8 @@ type BoardItemInteraction = {
   itemY: number
   itemWidth: number
   itemHeight: number
+  itemRotation: number
+  rotateStartAngle: number
   panX: number
   panY: number
 }
@@ -2426,6 +2428,8 @@ function startBoardPan(event: PointerEvent) {
     itemY: 0,
     itemWidth: 0,
     itemHeight: 0,
+    itemRotation: 0,
+    rotateStartAngle: 0,
     panX: boardPan.value.x,
     panY: boardPan.value.y,
   }
@@ -2446,6 +2450,17 @@ function moveBoardInteraction(event: PointerEvent) {
   const item = library.value.referenceBoardItems.find((entry) => entry.id === interaction.itemId)
   if (!item) return
 
+  if (interaction.mode === 'rotate') {
+    const scale = Math.max(0.001, boardScale.value)
+    const centerX = interaction.itemX + interaction.itemWidth / 2
+    const centerY = interaction.itemY + interaction.itemHeight / 2
+    const worldX = (event.clientX - boardPan.value.x) / scale
+    const worldY = (event.clientY - boardPan.value.y) / scale
+    const angle = (Math.atan2(worldY - centerY, worldX - centerX) * 180) / Math.PI
+    item.rotation = interaction.itemRotation + (angle - interaction.rotateStartAngle)
+    return
+  }
+
   const scale = Math.max(0.001, boardScale.value)
   const deltaX = (event.clientX - interaction.startX) / scale
   const deltaY = (event.clientY - interaction.startY) / scale
@@ -2456,8 +2471,23 @@ function moveBoardInteraction(event: PointerEvent) {
     return
   }
 
-  item.width = clamp(interaction.itemWidth + deltaX, 56, 4000)
-  item.height = clamp(interaction.itemHeight + deltaY, 56, 4000)
+  const baseWidth = Math.max(1, interaction.itemWidth)
+  const baseHeight = Math.max(1, interaction.itemHeight)
+  const aspect = baseWidth / baseHeight
+  const widthByX = baseWidth + deltaX
+  const widthByY = (baseHeight + deltaY) * aspect
+  const useY =
+    Math.abs(deltaY / baseHeight) > Math.abs(deltaX / baseWidth)
+  let nextWidth = useY ? widthByY : widthByX
+
+  const minWidth = Math.max(56, 56 * aspect)
+  const maxWidth = Math.min(4000, 4000 * aspect)
+  if (maxWidth >= minWidth) {
+    nextWidth = clamp(nextWidth, minWidth, maxWidth)
+  }
+
+  item.width = nextWidth
+  item.height = nextWidth / aspect
 }
 
 async function finishBoardInteraction(event: PointerEvent) {
@@ -2511,6 +2541,8 @@ function startBoardItemMove(item: ReferenceBoardItem, event: PointerEvent) {
     itemY: item.y,
     itemWidth: item.width,
     itemHeight: item.height,
+    itemRotation: item.rotation,
+    rotateStartAngle: 0,
     panX: boardPan.value.x,
     panY: boardPan.value.y,
   }
@@ -2518,6 +2550,7 @@ function startBoardItemMove(item: ReferenceBoardItem, event: PointerEvent) {
 
 function startBoardItemResize(item: ReferenceBoardItem, event: PointerEvent) {
   if (event.button !== 0) return
+  if (selectedReferenceBoardItemId.value !== item.id) return
   event.stopPropagation()
   event.preventDefault()
   selectedReferenceBoardItemId.value = item.id
@@ -2534,6 +2567,40 @@ function startBoardItemResize(item: ReferenceBoardItem, event: PointerEvent) {
     itemY: item.y,
     itemWidth: item.width,
     itemHeight: item.height,
+    itemRotation: item.rotation,
+    rotateStartAngle: 0,
+    panX: boardPan.value.x,
+    panY: boardPan.value.y,
+  }
+}
+
+function startBoardItemRotate(item: ReferenceBoardItem, event: PointerEvent) {
+  if (event.button !== 0) return
+  if (selectedReferenceBoardItemId.value !== item.id) return
+  event.stopPropagation()
+  event.preventDefault()
+  closeReferenceBoardCanvasMenu()
+  void bringReferenceBoardItemToFront(item.id)
+
+  const scale = Math.max(0.001, boardScale.value)
+  const centerX = item.x + item.width / 2
+  const centerY = item.y + item.height / 2
+  const worldX = (event.clientX - boardPan.value.x) / scale
+  const worldY = (event.clientY - boardPan.value.y) / scale
+  const rotateStartAngle = (Math.atan2(worldY - centerY, worldX - centerX) * 180) / Math.PI
+
+  boardInteraction.value = {
+    itemId: item.id,
+    mode: 'rotate',
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    itemX: item.x,
+    itemY: item.y,
+    itemWidth: item.width,
+    itemHeight: item.height,
+    itemRotation: item.rotation,
+    rotateStartAngle,
     panX: boardPan.value.x,
     panY: boardPan.value.y,
   }
@@ -3182,6 +3249,7 @@ const referenceBoardViewHandlers = {
   startBoardPan,
   startBoardItemMove,
   startBoardItemResize,
+  startBoardItemRotate,
   removeReferenceBoardItem,
   openReferenceBoardItemMenu,
   openReferenceBoardCanvasMenu,

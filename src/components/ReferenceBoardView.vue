@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Rotate, Scale } from '@icon-park/vue-next'
+
 type ReferenceBoard = {
   id: number
   name: string
@@ -68,9 +70,35 @@ defineProps<{
       >
         <img :src="handlers.convertFileSrc(image.path)" alt="" draggable="false" />
         <span
+          v-if="selectedReferenceBoardItemId === item.id"
           class="reference-board-card__resize"
           @pointerdown="handlers.startBoardItemResize(item, $event)"
-        />
+        >
+          <Scale
+            class="reference-board-card__resize-icon"
+            theme="outline"
+            :size="26"
+            :stroke-width="3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            :fill="['currentColor']"
+          />
+        </span>
+        <span
+          v-if="selectedReferenceBoardItemId === item.id"
+          class="reference-board-card__rotate"
+          @pointerdown="handlers.startBoardItemRotate(item, $event)"
+        >
+          <Rotate
+            class="reference-board-card__rotate-icon"
+            theme="outline"
+            :size="26"
+            :stroke-width="3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            :fill="['currentColor', 'transparent']"
+          />
+        </span>
       </div>
     </div>
   </section>
