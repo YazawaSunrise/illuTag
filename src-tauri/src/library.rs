@@ -257,8 +257,8 @@ pub fn add_gallery_folder(folder_path: String, state: &AppState) -> Result<Libra
         .transaction()
         .map_err(|error| format!("打开图库事务失败：{error}"))?;
     let folder_id = upsert_folder(&tx, &folder_path, scanned_at)?;
-    let mut known_paths = load_known_paths(&tx)?;
-    let found = scan_images(Path::new(&folder_path), scanned_at, &mut known_paths);
+    let mut seen_paths = HashSet::new();
+    let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths);
 
     for image in found {
         upsert_image(&tx, folder_id, &image)?;
@@ -2635,6 +2635,7 @@ fn scan_all_folders_and_collect_new_images(
 ) -> Result<ScanCollectResult, String> {
     let conn = open_database(database_path)?;
     let scanned_at = now_ms();
+    let mut seen_paths = HashSet::new();
     let mut known_paths = load_known_paths(&conn)?;
 
     let folders = conn
@@ -2664,11 +2665,15 @@ fn scan_all_folders_and_collect_new_images(
             continue;
         }
         let folder_id = upsert_folder(&conn, &folder_path, scanned_at)?;
-        let found = scan_images(Path::new(&folder_path), scanned_at, &mut known_paths);
+        let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths);
         let found_count = found.len() as i64;
         for image in found {
+            let is_new = !known_paths.contains(&image.path);
             upsert_image(&conn, folder_id, &image)?;
-            new_image_ids.push(image.path);
+            if is_new {
+                known_paths.insert(image.path.clone());
+                new_image_ids.push(image.path);
+            }
         }
         scanned_folders += 1;
         set_scan_progress_new_images(progress, new_image_ids.len() as i64);

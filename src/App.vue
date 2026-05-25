@@ -376,6 +376,9 @@ const searchSuggestRequestToken = ref(0)
 const searchTimer = ref<number | null>(null)
 const searchSuggestTimer = ref<number | null>(null)
 const scanProgressPollTimer = ref<number | null>(null)
+const scanProgressSignature = ref('')
+const scanLibraryRefreshInFlight = ref(false)
+const scanLibraryRefreshAt = ref(0)
 const previewBoardPointerId = ref<number | null>(null)
 const dragReferenceBoardFolderCollapseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
@@ -3916,12 +3919,39 @@ async function startScanAllFolders() {
 async function refreshBackgroundScanStatus() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
+    const wasRunning = isBackgroundScanRunning.value
     const status = await invoke<BackgroundScanStatus>('background_scan_status_command')
     isBackgroundScanRunning.value = Boolean(status.running)
 
     const progress = await invoke<BackgroundScanProgress>('background_scan_progress_command')
     isBackgroundScanRunning.value = Boolean(progress.running)
     scanProgressText.value = buildScanProgressText(progress)
+
+    const signature = [
+      progress.running ? '1' : '0',
+      progress.phase,
+      progress.scannedFolders,
+      progress.totalFolders,
+      progress.newImages,
+      progress.queuedImages,
+      progress.taggedImages,
+      progress.failedImages,
+    ].join('|')
+    const changed = signature !== scanProgressSignature.value
+    scanProgressSignature.value = signature
+
+    const now = Date.now()
+    const becameIdle = wasRunning && !progress.running
+    const shouldLiveRefresh = progress.running && changed && now - scanLibraryRefreshAt.value >= 1200
+    if ((becameIdle || shouldLiveRefresh) && !scanLibraryRefreshInFlight.value) {
+      scanLibraryRefreshInFlight.value = true
+      scanLibraryRefreshAt.value = now
+      try {
+        await loadLibrary()
+      } finally {
+        scanLibraryRefreshInFlight.value = false
+      }
+    }
   } catch (error) {
     if (isBackgroundScanRunning.value) {
       errorText.value = formatError(error)
