@@ -21,7 +21,10 @@ pub struct AppState {
     pub database_path: PathBuf,
     pub library: Arc<Mutex<Option<LibraryStore>>>,
     pub background_scan_running: Arc<Mutex<bool>>,
+    pub background_scan_pending: Arc<Mutex<bool>>,
     pub background_scan_progress: Arc<Mutex<BackgroundScanProgress>>,
+    pub startup_cleanup_running: Arc<Mutex<bool>>,
+    pub startup_cleanup_generation: Arc<Mutex<i64>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -187,16 +190,27 @@ pub struct BackgroundScanStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StartupCleanupStatus {
+    pub running: bool,
+    pub generation: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BackgroundScanProgress {
     pub running: bool,
     pub phase: String,
     pub scanned_folders: i64,
     pub total_folders: i64,
     pub new_images: i64,
+    pub updated_images: i64,
+    pub skipped_images: i64,
+    pub removed_missing_images: i64,
     pub queued_images: i64,
     pub tagged_images: i64,
     pub failed_images: i64,
     pub last_error: Option<String>,
+    pub recent_errors: Vec<String>,
 }
 
 impl Default for BackgroundScanProgress {
@@ -207,10 +221,14 @@ impl Default for BackgroundScanProgress {
             scanned_folders: 0,
             total_folders: 0,
             new_images: 0,
+            updated_images: 0,
+            skipped_images: 0,
+            removed_missing_images: 0,
             queued_images: 0,
             tagged_images: 0,
             failed_images: 0,
             last_error: None,
+            recent_errors: Vec::new(),
         }
     }
 }
@@ -224,6 +242,14 @@ struct ScannedImage {
     file_size: i64,
     modified_at: i64,
     imported_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExistingImageMeta {
+    width: u32,
+    height: u32,
+    file_size: i64,
+    modified_at: i64,
 }
 
 struct ScanCollectResult {
@@ -258,7 +284,8 @@ pub fn add_gallery_folder(folder_path: String, state: &AppState) -> Result<Libra
         .map_err(|error| format!("打开图库事务失败：{error}"))?;
     let folder_id = upsert_folder(&tx, &folder_path, scanned_at)?;
     let mut seen_paths = HashSet::new();
-    let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths);
+    let existing_meta = load_existing_library_image_meta(&tx)?;
+    let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths, &existing_meta);
 
     for image in found {
         upsert_image(&tx, folder_id, &image)?;
@@ -486,42 +513,79 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
         .lock()
         .map_err(|_| "Background scan state is locked".to_string())?;
     if *running {
+        if let Ok(mut pending) = state.background_scan_pending.lock() {
+            *pending = true;
+        }
         return Ok(false);
     }
     *running = true;
     drop(running);
-    set_scan_progress(
-        &state.background_scan_progress,
-        BackgroundScanProgress {
-            running: true,
-            phase: "scanning".to_string(),
-            ..BackgroundScanProgress::default()
-        },
-    );
+    if let Ok(mut pending) = state.background_scan_pending.lock() {
+        *pending = false;
+    }
 
     let database_path = state.database_path.clone();
     let library_cache = Arc::clone(&state.library);
     let background_scan_running = Arc::clone(&state.background_scan_running);
+    let background_scan_pending = Arc::clone(&state.background_scan_pending);
     let background_scan_progress = Arc::clone(&state.background_scan_progress);
+    let startup_cleanup_running = Arc::clone(&state.startup_cleanup_running);
     thread::spawn(move || {
-        eprintln!("[wd-scan] started");
-        match scan_all_folders_and_collect_new_images(&database_path, &background_scan_progress) {
-            Ok(scan_result) => {
-                if let Ok(mut cache) = library_cache.lock() {
-                    *cache = None;
+        wait_until_startup_cleanup_finished(&startup_cleanup_running);
+        eprintln!("[wd-scan] worker started");
+        loop {
+            set_scan_progress(
+                &background_scan_progress,
+                BackgroundScanProgress {
+                    running: true,
+                    phase: "collecting".to_string(),
+                    ..BackgroundScanProgress::default()
+                },
+            );
+
+            match scan_all_folders_and_collect_new_images(&database_path, &background_scan_progress) {
+                Ok(scan_result) => {
+                    if let Ok(mut cache) = library_cache.lock() {
+                        *cache = None;
+                    }
+                    if let Err(error) = tag_images_with_wd_model(
+                        &database_path,
+                        &scan_result.tag_queue_image_ids,
+                        &background_scan_progress,
+                    ) {
+                        set_scan_progress_error(&background_scan_progress, &error);
+                        push_scan_progress_recent_error(&background_scan_progress, &error);
+                        eprintln!("[wd-tag] {error}");
+                    }
                 }
-                if let Err(error) =
-                    tag_images_with_wd_model(&database_path, &scan_result.tag_queue_image_ids, &background_scan_progress)
-                {
+                Err(error) => {
                     set_scan_progress_error(&background_scan_progress, &error);
-                    eprintln!("[wd-tag] {error}");
+                    push_scan_progress_recent_error(&background_scan_progress, &error);
+                    eprintln!("[wd-scan] {error}");
                 }
             }
-            Err(error) => {
-                set_scan_progress_error(&background_scan_progress, &error);
-                eprintln!("[wd-scan] {error}");
+
+            if let Ok(mut cache) = library_cache.lock() {
+                *cache = None;
             }
+
+            let rerun = if let Ok(mut pending) = background_scan_pending.lock() {
+                if *pending {
+                    *pending = false;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if rerun {
+                eprintln!("[wd-scan] pending rerun");
+                continue;
+            }
+            break;
         }
+
         set_scan_progress_done(&background_scan_progress);
         if let Ok(mut cache) = library_cache.lock() {
             *cache = None;
@@ -529,7 +593,10 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
         if let Ok(mut running) = background_scan_running.lock() {
             *running = false;
         }
-        eprintln!("[wd-scan] finished");
+        if let Ok(mut pending) = background_scan_pending.lock() {
+            *pending = false;
+        }
+        eprintln!("[wd-scan] worker finished");
     });
 
     Ok(true)
@@ -549,6 +616,83 @@ pub fn background_scan_progress(state: &AppState) -> Result<BackgroundScanProgre
         .lock()
         .map_err(|_| "Background scan progress state is locked".to_string())
         .map(|value| value.clone())
+}
+
+pub fn start_startup_cleanup(state: &AppState) -> Result<bool, String> {
+    let background_scan_running = state
+        .background_scan_running
+        .lock()
+        .map_err(|_| "Background scan state is locked".to_string())?;
+    if *background_scan_running {
+        return Ok(false);
+    }
+    drop(background_scan_running);
+
+    let mut running = state
+        .startup_cleanup_running
+        .lock()
+        .map_err(|_| "Startup cleanup state is locked".to_string())?;
+    if *running {
+        return Ok(false);
+    }
+    *running = true;
+    drop(running);
+
+    let database_path = state.database_path.clone();
+    let library_cache = Arc::clone(&state.library);
+    let startup_cleanup_running = Arc::clone(&state.startup_cleanup_running);
+    let startup_cleanup_generation = Arc::clone(&state.startup_cleanup_generation);
+
+    thread::spawn(move || {
+        let result = cleanup_missing_library_images_batched(&database_path, 256);
+        if let Err(error) = &result {
+            eprintln!("[startup-cleanup] {error}");
+        } else if let Ok(removed) = result {
+            eprintln!("[startup-cleanup] removed {removed} missing library images");
+        }
+
+        if let Ok(mut cache) = library_cache.lock() {
+            *cache = None;
+        }
+        if let Ok(mut generation) = startup_cleanup_generation.lock() {
+            *generation += 1;
+        }
+        if let Ok(mut state) = startup_cleanup_running.lock() {
+            *state = false;
+        }
+    });
+
+    Ok(true)
+}
+
+fn wait_until_startup_cleanup_finished(startup_cleanup_running: &Arc<Mutex<bool>>) {
+    loop {
+        let running = match startup_cleanup_running.lock() {
+            Ok(state) => *state,
+            Err(_) => false,
+        };
+        if !running {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(120));
+    }
+}
+
+pub fn startup_cleanup_status(state: &AppState) -> Result<StartupCleanupStatus, String> {
+    let running = state
+        .startup_cleanup_running
+        .lock()
+        .map_err(|_| "Startup cleanup state is locked".to_string())
+        .map(|value| *value)?;
+    let generation = state
+        .startup_cleanup_generation
+        .lock()
+        .map_err(|_| "Startup cleanup state is locked".to_string())
+        .map(|value| *value)?;
+    Ok(StartupCleanupStatus {
+        running,
+        generation,
+    })
 }
 
 pub fn list_image_auto_tags(
@@ -2165,7 +2309,6 @@ fn ensure_user_folder_sort_order(conn: &Connection) -> Result<(), String> {
 }
 
 fn load_store(conn: &Connection) -> Result<LibraryStore, String> {
-    cleanup_missing_library_images(conn)?;
     Ok(LibraryStore {
         folders: load_folders(conn)?,
         images: load_images(conn)?,
@@ -2598,7 +2741,6 @@ fn cleanup_orphan_reference_images(conn: &Connection) -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("读取临时参考图失败：{error}"))?;
     drop(stmt);
-
     for (image_id, path) in images {
         conn.execute("DELETE FROM images WHERE id = ?1", params![image_id])
             .map_err(|error| format!("删除临时参考图索引失败：{error}"))?;
@@ -2607,26 +2749,125 @@ fn cleanup_orphan_reference_images(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_missing_library_images(conn: &Connection) -> Result<(), String> {
+fn cleanup_missing_library_images_count(conn: &Connection) -> Result<i64, String> {
     let mut stmt = conn
-        .prepare("SELECT id, path FROM images WHERE source = 'library'")
+        .prepare(
+            "
+            SELECT i.id, i.path, f.path
+            FROM images i
+            LEFT JOIN folders f ON f.id = i.folder_id
+            WHERE i.source = 'library'
+            ",
+        )
         .map_err(|error| format!("读取图库图片索引失败：{error}"))?;
     let images = stmt
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
         })
         .map_err(|error| format!("读取图库图片索引失败：{error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("读取图库图片索引失败：{error}"))?;
     drop(stmt);
+    let mut removed = 0i64;
+    let mut root_online_cache = HashMap::<String, bool>::new();
 
-    for (image_id, path) in images {
+    for (image_id, path, folder_path) in images {
+        let Some(folder_path) = folder_path else {
+            continue;
+        };
+        let root_online = *root_online_cache
+            .entry(folder_path.clone())
+            .or_insert_with(|| {
+                let normalized = normalize_existing_or_stored_folder_path(&folder_path);
+                Path::new(&normalized).is_dir()
+            });
+        if !root_online {
+            continue;
+        }
         if !Path::new(&path).exists() {
             conn.execute("DELETE FROM images WHERE id = ?1", params![image_id])
                 .map_err(|error| format!("清理缺失图片索引失败：{error}"))?;
+            removed += 1;
         }
     }
-    Ok(())
+    Ok(removed)
+}
+
+fn cleanup_missing_library_images_batched(database_path: &Path, batch_size: usize) -> Result<i64, String> {
+    let conn = open_database(database_path)?;
+    let mut removed_total = 0i64;
+    let mut last_rowid = 0i64;
+    let limit = (batch_size.max(32)) as i64;
+    let mut root_online_cache = HashMap::<String, bool>::new();
+
+    loop {
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT i.rowid, i.id, i.path, f.path
+                FROM images i
+                LEFT JOIN folders f ON f.id = i.folder_id
+                WHERE i.source = 'library' AND i.rowid > ?1
+                ORDER BY i.rowid ASC
+                LIMIT ?2
+                ",
+            )
+            .map_err(|error| format!("Failed to load library image batch for startup cleanup: {error}"))?;
+
+        let rows = stmt
+            .query_map(params![last_rowid, limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|error| format!("Failed to load library image batch for startup cleanup: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to load library image batch for startup cleanup: {error}"))?;
+        drop(stmt);
+
+        if rows.is_empty() {
+            break;
+        }
+
+        let mut missing_ids = Vec::<String>::new();
+        let mut next_rowid = last_rowid;
+        for (rowid, image_id, path, folder_path) in rows {
+            next_rowid = rowid;
+            let Some(folder_path) = folder_path else {
+                continue;
+            };
+            let root_online = *root_online_cache
+                .entry(folder_path.clone())
+                .or_insert_with(|| {
+                    let normalized = normalize_existing_or_stored_folder_path(&folder_path);
+                    Path::new(&normalized).is_dir()
+                });
+            if !root_online {
+                continue;
+            }
+            if !Path::new(&path).exists() {
+                missing_ids.push(image_id);
+            }
+        }
+        last_rowid = next_rowid;
+
+        for image_id in missing_ids {
+            conn.execute("DELETE FROM images WHERE id = ?1", params![image_id])
+                .map_err(|error| format!("Failed to delete missing image during startup cleanup: {error}"))?;
+            removed_total += 1;
+        }
+
+        thread::sleep(std::time::Duration::from_millis(2));
+    }
+
+    Ok(removed_total)
 }
 
 fn scan_all_folders_and_collect_new_images(
@@ -2636,7 +2877,10 @@ fn scan_all_folders_and_collect_new_images(
     let conn = open_database(database_path)?;
     let scanned_at = now_ms();
     let mut seen_paths = HashSet::new();
+    let removed_missing_images = cleanup_missing_library_images_count(&conn)?;
+    set_scan_progress_removed_missing_images(progress, removed_missing_images);
     let mut known_paths = load_known_paths(&conn)?;
+    let mut existing_meta = load_existing_library_image_meta(&conn)?;
 
     let folders = conn
         .prepare(
@@ -2655,6 +2899,8 @@ fn scan_all_folders_and_collect_new_images(
     set_scan_progress_total_folders(progress, folders.len() as i64);
 
     let mut new_image_ids = Vec::<String>::new();
+    let mut updated_images = 0i64;
+    let mut skipped_images = 0i64;
     let mut scanned_folders = 0i64;
 
     for (_, folder_path) in folders {
@@ -2665,18 +2911,42 @@ fn scan_all_folders_and_collect_new_images(
             continue;
         }
         let folder_id = upsert_folder(&conn, &folder_path, scanned_at)?;
-        let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths);
+        let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths, &existing_meta);
         let found_count = found.len() as i64;
         for image in found {
+            let previous = existing_meta.get(&image.path).copied();
             let is_new = !known_paths.contains(&image.path);
             upsert_image(&conn, folder_id, &image)?;
+            existing_meta.insert(
+                image.path.clone(),
+                ExistingImageMeta {
+                    width: image.width,
+                    height: image.height,
+                    file_size: image.file_size,
+                    modified_at: image.modified_at,
+                },
+            );
             if is_new {
                 known_paths.insert(image.path.clone());
                 new_image_ids.push(image.path);
+            } else if let Some(meta) = previous {
+                if meta.modified_at != image.modified_at
+                    || meta.file_size != image.file_size
+                    || meta.width != image.width
+                    || meta.height != image.height
+                {
+                    updated_images += 1;
+                } else {
+                    skipped_images += 1;
+                }
+            } else {
+                updated_images += 1;
             }
         }
         scanned_folders += 1;
         set_scan_progress_new_images(progress, new_image_ids.len() as i64);
+        set_scan_progress_updated_images(progress, updated_images);
+        set_scan_progress_skipped_images(progress, skipped_images);
         set_scan_progress_scanned_folders(progress, scanned_folders);
         if found_count > 0 {
             eprintln!("[wd-scan] folder scanned, new images: {found_count}");
@@ -2711,6 +2981,7 @@ fn tag_images_with_wd_model(
     if !model_path.is_file() || !tags_path.is_file() || !script_path.is_file() {
         let err = "Model files or wd_tagger_test.py not found; skip tagging".to_string();
         set_scan_progress_error(progress, &err);
+        push_scan_progress_recent_error(progress, &err);
         eprintln!("[wd-tag] {err}");
         return Ok(());
     }
@@ -2738,6 +3009,7 @@ fn tag_images_with_wd_model(
                 eprintln!("[wd-tag] {error}");
                 increment_scan_progress_failed(progress);
                 set_scan_progress_error(progress, &error);
+                push_scan_progress_recent_error(progress, &error);
             }
         }
     }
@@ -3097,6 +3369,27 @@ fn set_scan_progress_new_images(progress: &Arc<Mutex<BackgroundScanProgress>>, n
     });
 }
 
+fn set_scan_progress_updated_images(progress: &Arc<Mutex<BackgroundScanProgress>>, updated_images: i64) {
+    update_scan_progress(progress, |state| {
+        state.updated_images = updated_images.max(0);
+    });
+}
+
+fn set_scan_progress_skipped_images(progress: &Arc<Mutex<BackgroundScanProgress>>, skipped_images: i64) {
+    update_scan_progress(progress, |state| {
+        state.skipped_images = skipped_images.max(0);
+    });
+}
+
+fn set_scan_progress_removed_missing_images(
+    progress: &Arc<Mutex<BackgroundScanProgress>>,
+    removed_missing_images: i64,
+) {
+    update_scan_progress(progress, |state| {
+        state.removed_missing_images = removed_missing_images.max(0);
+    });
+}
+
 fn set_scan_progress_queued_images(progress: &Arc<Mutex<BackgroundScanProgress>>, queued_images: i64) {
     update_scan_progress(progress, |state| {
         state.queued_images = queued_images.max(0);
@@ -3118,6 +3411,20 @@ fn increment_scan_progress_failed(progress: &Arc<Mutex<BackgroundScanProgress>>)
 fn set_scan_progress_error(progress: &Arc<Mutex<BackgroundScanProgress>>, error: &str) {
     update_scan_progress(progress, |state| {
         state.last_error = Some(error.to_string());
+    });
+}
+
+fn push_scan_progress_recent_error(progress: &Arc<Mutex<BackgroundScanProgress>>, error: &str) {
+    update_scan_progress(progress, |state| {
+        let text = error.trim();
+        if text.is_empty() {
+            return;
+        }
+        state.recent_errors.push(text.to_string());
+        if state.recent_errors.len() > 12 {
+            let overflow = state.recent_errors.len() - 12;
+            state.recent_errors.drain(0..overflow);
+        }
     });
 }
 
@@ -3249,6 +3556,36 @@ fn load_known_paths(conn: &Connection) -> Result<HashSet<String>, String> {
     Ok(paths)
 }
 
+fn load_existing_library_image_meta(conn: &Connection) -> Result<HashMap<String, ExistingImageMeta>, String> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT path, width, height, file_size, modified_at
+            FROM images
+            WHERE source = 'library'
+            ",
+        )
+        .map_err(|error| format!("Failed to load existing library image metadata: {error}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ExistingImageMeta {
+                    width: row.get::<_, u32>(1)?,
+                    height: row.get::<_, u32>(2)?,
+                    file_size: row.get::<_, i64>(3)?,
+                    modified_at: row.get::<_, i64>(4)?,
+                },
+            ))
+        })
+        .map_err(|error| format!("Failed to load existing library image metadata: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load existing library image metadata: {error}"))?;
+
+    Ok(rows.into_iter().collect())
+}
+
 fn upsert_image(conn: &Connection, folder_id: i64, image: &ScannedImage) -> Result<(), String> {
     conn.execute(
         "
@@ -3322,7 +3659,8 @@ fn mime_type_for_extension(ext: &str) -> &'static str {
 fn scan_images(
     folder_path: &Path,
     imported_at: i64,
-    known_paths: &mut HashSet<String>,
+    seen_paths: &mut HashSet<String>,
+    existing_meta: &HashMap<String, ExistingImageMeta>,
 ) -> Vec<ScannedImage> {
     let mut images = Vec::new();
 
@@ -3347,15 +3685,32 @@ fn scan_images(
             .unwrap_or(imported_at);
         let path_text = path.to_string_lossy().to_string();
 
-        if !known_paths.insert(path_text.clone()) {
+        if !seen_paths.insert(path_text.clone()) {
             continue;
         }
 
-        let Ok(reader) = ImageReader::open(path) else {
-            continue;
-        };
-        let Ok((width, height)) = reader.into_dimensions() else {
-            continue;
+        let file_size = metadata.len() as i64;
+        let cached = existing_meta.get(&path_text);
+        let (width, height) = if let Some(meta) = cached {
+            if meta.modified_at == modified_at && meta.file_size == file_size {
+                (meta.width, meta.height)
+            } else {
+                let Ok(reader) = ImageReader::open(path) else {
+                    continue;
+                };
+                let Ok((width, height)) = reader.into_dimensions() else {
+                    continue;
+                };
+                (width, height)
+            }
+        } else {
+            let Ok(reader) = ImageReader::open(path) else {
+                continue;
+            };
+            let Ok((width, height)) = reader.into_dimensions() else {
+                continue;
+            };
+            (width, height)
         };
 
         images.push(ScannedImage {
@@ -3370,7 +3725,7 @@ fn scan_images(
                 .unwrap_or_default(),
             width,
             height,
-            file_size: metadata.len() as i64,
+            file_size,
             modified_at,
             imported_at,
         });

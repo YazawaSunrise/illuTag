@@ -162,16 +162,25 @@ type BackgroundScanStatus = {
   running: boolean
 }
 
+type StartupCleanupStatus = {
+  running: boolean
+  generation: number
+}
+
 type BackgroundScanProgress = {
   running: boolean
   phase: string
   scannedFolders: number
   totalFolders: number
   newImages: number
+  updatedImages: number
+  skippedImages: number
+  removedMissingImages: number
   queuedImages: number
   taggedImages: number
   failedImages: number
   lastError?: string | null
+  recentErrors?: string[] | null
 }
 
 type ReferenceBoardCanvasMenu =
@@ -338,6 +347,7 @@ const autoFixRightSidebarOnPreview = ref(false)
 const autoScanOnStartup = ref(false)
 const isBackgroundScanRunning = ref(false)
 const scanProgressText = ref('')
+const scanRecentErrors = ref<string[]>([])
 const galleryScrollTop = ref(0)
 const galleryViewportHeight = ref(0)
 const previewDragOverDeleteZone = ref(false)
@@ -379,6 +389,7 @@ const scanProgressPollTimer = ref<number | null>(null)
 const scanProgressSignature = ref('')
 const scanLibraryRefreshInFlight = ref(false)
 const scanLibraryRefreshAt = ref(0)
+const startupCleanupObservedGeneration = ref(0)
 const previewBoardPointerId = ref<number | null>(null)
 const dragReferenceBoardFolderCollapseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
@@ -808,6 +819,7 @@ onMounted(async () => {
   scanProgressPollTimer.value = window.setInterval(() => {
     void refreshBackgroundScanStatus()
   }, 1200)
+  void startStartupCleanup()
   if (autoScanOnStartup.value) {
     void startScanAllFolders()
   }
@@ -3908,11 +3920,21 @@ async function startScanAllFolders() {
       isBackgroundScanRunning.value = true
       scanProgressText.value = '扫描任务已启动'
     } else {
-      scanProgressText.value = '扫描任务已在后台运行'
+      scanProgressText.value = '扫描任务已在后台运行，已排队下一轮扫描'
     }
     await refreshBackgroundScanStatus()
   } catch (error) {
     errorText.value = formatError(error)
+  }
+}
+
+async function startStartupCleanup() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke<boolean>('start_startup_cleanup_command')
+    await refreshStartupCleanupStatus()
+  } catch {
+    // startup cleanup is best-effort; keep silent to avoid noisy cold-start errors
   }
 }
 
@@ -3926,6 +3948,9 @@ async function refreshBackgroundScanStatus() {
     const progress = await invoke<BackgroundScanProgress>('background_scan_progress_command')
     isBackgroundScanRunning.value = Boolean(progress.running)
     scanProgressText.value = buildScanProgressText(progress)
+    scanRecentErrors.value = Array.isArray(progress.recentErrors)
+      ? progress.recentErrors.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : []
 
     const signature = [
       progress.running ? '1' : '0',
@@ -3933,6 +3958,9 @@ async function refreshBackgroundScanStatus() {
       progress.scannedFolders,
       progress.totalFolders,
       progress.newImages,
+      progress.updatedImages,
+      progress.skippedImages,
+      progress.removedMissingImages,
       progress.queuedImages,
       progress.taggedImages,
       progress.failedImages,
@@ -3942,7 +3970,10 @@ async function refreshBackgroundScanStatus() {
 
     const now = Date.now()
     const becameIdle = wasRunning && !progress.running
-    const shouldLiveRefresh = progress.running && changed && now - scanLibraryRefreshAt.value >= 1200
+    const refreshIntervalMs =
+      progress.phase === 'collecting' ? 900 : progress.phase === 'tagging' ? 2400 : 1200
+    const shouldLiveRefresh =
+      progress.running && changed && now - scanLibraryRefreshAt.value >= refreshIntervalMs
     if ((becameIdle || shouldLiveRefresh) && !scanLibraryRefreshInFlight.value) {
       scanLibraryRefreshInFlight.value = true
       scanLibraryRefreshAt.value = now
@@ -3952,6 +3983,7 @@ async function refreshBackgroundScanStatus() {
         scanLibraryRefreshInFlight.value = false
       }
     }
+    await refreshStartupCleanupStatus()
   } catch (error) {
     if (isBackgroundScanRunning.value) {
       errorText.value = formatError(error)
@@ -3959,13 +3991,37 @@ async function refreshBackgroundScanStatus() {
   }
 }
 
+async function refreshStartupCleanupStatus() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const status = await invoke<StartupCleanupStatus>('startup_cleanup_status_command')
+    const previousGeneration = startupCleanupObservedGeneration.value
+    startupCleanupObservedGeneration.value = status.generation
+    const cleanupJustFinished = !status.running && status.generation > previousGeneration
+    if (!cleanupJustFinished || scanLibraryRefreshInFlight.value) return
+
+    scanLibraryRefreshInFlight.value = true
+    scanLibraryRefreshAt.value = Date.now()
+    try {
+      await loadLibrary()
+    } finally {
+      scanLibraryRefreshInFlight.value = false
+    }
+  } catch {
+    // ignore startup cleanup polling failure to avoid disturbing normal scan progress flow
+  }
+}
+
 function buildScanProgressText(progress: BackgroundScanProgress) {
   const phaseLabel = scanPhaseLabel(progress.phase)
   const folders = `${progress.scannedFolders}/${progress.totalFolders}`
   const tagged = `${progress.taggedImages}/${progress.queuedImages}`
-  const base = `${phaseLabel}｜文件夹 ${folders}｜新增 ${progress.newImages}｜打标 ${tagged}｜失败 ${progress.failedImages}`
+  const base = `${phaseLabel}｜文件夹 ${folders}｜新增 ${progress.newImages}｜更新 ${progress.updatedImages}｜跳过 ${progress.skippedImages}｜清理 ${progress.removedMissingImages}｜打标 ${tagged}｜失败 ${progress.failedImages}`
   if (progress.lastError) {
     return `${base}｜错误：${progress.lastError}`
+  }
+  if (!progress.running && progress.phase === 'idle') {
+    return `上次扫描完成｜${base}`
   }
   return base
 }
@@ -4255,6 +4311,7 @@ function formatError(error: unknown) {
         :auto-scan-on-startup="autoScanOnStartup"
         :is-background-scan-running="isBackgroundScanRunning"
         :scan-progress-text="scanProgressText"
+        :scan-recent-errors="scanRecentErrors"
         :theme-mode="themeMode"
         :folder-path-input="folderPathInput"
         :is-loading="isLoading"

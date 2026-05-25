@@ -8,7 +8,7 @@ use illutag_core::library::{
     duplicate_reference_board_item, export_gallery_image_from_state, export_reference_board_item_from_state,
     import_reference_board_item_to_library, list_library_from_state,
     list_image_auto_tags,
-    search_gallery_image_ids, suggest_known_auto_tags,
+    search_gallery_image_ids, start_startup_cleanup, startup_cleanup_status, suggest_known_auto_tags,
     move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
     restore_image_from_trash,
@@ -16,7 +16,7 @@ use illutag_core::library::{
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
-    AppState, BackgroundScanProgress, BackgroundScanStatus, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore,
+    AppState, BackgroundScanProgress, BackgroundScanStatus, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, StartupCleanupStatus,
     WdTaggerTestResult,
 };
 use std::sync::{Arc, Mutex};
@@ -105,6 +105,16 @@ fn background_scan_status_command(state: State<AppState>) -> Result<BackgroundSc
 #[tauri::command]
 fn background_scan_progress_command(state: State<AppState>) -> Result<BackgroundScanProgress, String> {
     background_scan_progress(&state)
+}
+
+#[tauri::command]
+fn start_startup_cleanup_command(state: State<AppState>) -> Result<bool, String> {
+    start_startup_cleanup(&state)
+}
+
+#[tauri::command]
+fn startup_cleanup_status_command(state: State<AppState>) -> Result<StartupCleanupStatus, String> {
+    startup_cleanup_status(&state)
 }
 
 #[tauri::command]
@@ -428,7 +438,10 @@ fn main() {
                 database_path: app_data_dir.join("illutag.sqlite"),
                 library: Arc::new(Mutex::new(None)),
                 background_scan_running: Arc::new(Mutex::new(false)),
+                background_scan_pending: Arc::new(Mutex::new(false)),
                 background_scan_progress: Arc::new(Mutex::new(BackgroundScanProgress::default())),
+                startup_cleanup_running: Arc::new(Mutex::new(false)),
+                startup_cleanup_generation: Arc::new(Mutex::new(0)),
             });
 
             Ok(())
@@ -445,6 +458,8 @@ fn main() {
             start_scan_all_folders_with_tagging_command,
             background_scan_status_command,
             background_scan_progress_command,
+            start_startup_cleanup_command,
+            startup_cleanup_status_command,
             list_image_auto_tags_command,
             suggest_known_auto_tags_command,
             search_gallery_image_ids_command,

@@ -11,6 +11,7 @@ defineProps<{
   autoScanOnStartup: boolean
   isBackgroundScanRunning: boolean
   scanProgressText: string
+  scanRecentErrors: string[]
   themeMode: ThemeMode
   folderPathInput: string
   isLoading: boolean
@@ -74,6 +75,12 @@ defineProps<{
       {{ isBackgroundScanRunning ? '后台扫描中...' : '开始扫描所有文件夹' }}
     </button>
     <p v-if="scanProgressText" class="settings__progress">{{ scanProgressText }}</p>
+    <div v-if="scanRecentErrors.length > 0" class="settings__scan-errors">
+      <p class="settings__scan-errors-title">最近扫描错误</p>
+      <ul>
+        <li v-for="(entry, index) in scanRecentErrors" :key="`${index}-${entry}`">{{ entry }}</li>
+      </ul>
+    </div>
 
     <form class="folder-form" @submit.prevent="handlers.addFolder()">
       <input
