@@ -2,6 +2,7 @@ use illutag_core::library::{
     add_gallery_folder, add_image_to_reference_board, assign_image_to_user_folder,
     background_scan_progress,
     background_scan_status,
+    copy_image_to_system_clipboard,
     auto_arrange_reference_board, create_reference_board, create_reference_board_folder,
     create_user_folder, delete_reference_board, delete_reference_board_folder, delete_user_folder,
     duplicate_reference_board_item, export_gallery_image_from_state, export_reference_board_item_from_state,
@@ -10,6 +11,7 @@ use illutag_core::library::{
     search_gallery_image_ids, suggest_known_auto_tags,
     move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
+    restore_reference_board_item,
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
@@ -54,6 +56,14 @@ fn read_image_bytes_command(
     state: State<AppState>,
 ) -> Result<ImageBytes, String> {
     read_image_bytes(image_id, &state)
+}
+
+#[tauri::command]
+fn copy_image_to_system_clipboard_command(
+    image_id: String,
+    state: State<AppState>,
+) -> Result<(), String> {
+    copy_image_to_system_clipboard(image_id, &state)
 }
 
 #[tauri::command]
@@ -212,6 +222,23 @@ fn duplicate_reference_board_item_command(
     state: State<AppState>,
 ) -> Result<LibraryStore, String> {
     duplicate_reference_board_item(item_id, x, y, &state)
+}
+
+#[tauri::command]
+fn restore_reference_board_item_command(
+    board_id: i64,
+    image_id: String,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    rotation: f32,
+    z_index: i64,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    restore_reference_board_item(
+        board_id, image_id, x, y, width, height, rotation, z_index, &state,
+    )
 }
 
 #[tauri::command]
@@ -403,6 +430,7 @@ fn main() {
             remove_gallery_folder_command,
             remove_image_from_index_command,
             read_image_bytes_command,
+            copy_image_to_system_clipboard_command,
             test_wd_swinv2_tagger_command,
             start_scan_all_folders_with_tagging_command,
             background_scan_status_command,
@@ -421,6 +449,7 @@ fn main() {
             add_image_to_reference_board_command,
             paste_image_to_reference_board_command,
             duplicate_reference_board_item_command,
+            restore_reference_board_item_command,
             import_reference_board_item_to_library_command,
             export_reference_board_item_command,
             export_gallery_image_command,

@@ -26,6 +26,7 @@ defineProps<{
   activeReferenceBoardItems: Array<{ item: ReferenceBoardItem; image: ReferenceBoardImage }>
   boardPan: { x: number; y: number }
   boardScale: number
+  boardCanvasBounds: { minX: number; minY: number; maxX: number; maxY: number }
   selectedReferenceBoardItemId: number | null
   handlers: Record<string, (...args: any[]) => any>
 }>()
@@ -53,6 +54,15 @@ defineProps<{
         transform: `translate3d(${boardPan.x}px, ${boardPan.y}px, 0) scale(${boardScale})`,
       }"
     >
+      <div
+        class="reference-board-canvas__surface"
+        :style="{
+          left: `${boardCanvasBounds.minX}px`,
+          top: `${boardCanvasBounds.minY}px`,
+          width: `${Math.max(1, boardCanvasBounds.maxX - boardCanvasBounds.minX)}px`,
+          height: `${Math.max(1, boardCanvasBounds.maxY - boardCanvasBounds.minY)}px`,
+        }"
+      />
       <div
         v-for="{ item, image } in activeReferenceBoardItems"
         :key="item.id"

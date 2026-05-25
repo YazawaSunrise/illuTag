@@ -8,6 +8,7 @@ name = "illutag_core"
 path = "src/lib.rs"
 
 [dependencies]
+arboard = "3.4"
 calamine = "0.26"
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

@@ -202,6 +202,63 @@ type ImageTagRecord = {
   category?: string | null
 }
 
+type InternalBoardCopyRef = {
+  itemId: number
+  imageId: string
+  width: number
+  height: number
+  rotation: number
+  copiedAt: number
+}
+
+type BoardCanvasBounds = {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
+type BoardItemLayout = {
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation: number
+}
+
+type BoardHistoryChange = {
+  itemId: number
+  before: BoardItemLayout
+  after: BoardItemLayout
+}
+
+type DeletedBoardItemSnapshot = {
+  itemId: number
+  boardId: number
+  imageId: string
+  layout: BoardItemLayout
+  zIndex: number
+}
+
+type BoardLayoutHistoryEntry = {
+  kind: 'layout'
+  boardId: number
+  changes: BoardHistoryChange[]
+  selectionBefore: number | null
+  selectionAfter: number | null
+}
+
+type BoardDeleteHistoryEntry = {
+  kind: 'delete'
+  boardId: number
+  deletedItems: DeletedBoardItemSnapshot[]
+  restoredItemIds: number[]
+  selectionBefore: number | null
+  selectionAfter: number | null
+}
+
+type BoardHistoryEntry = BoardLayoutHistoryEntry | BoardDeleteHistoryEntry
+
 const sidebarPinnedStorageKey = 'illutag.sidebarPinned'
 const rightSidebarPinnedStorageKey = 'illutag.rightSidebarPinned'
 const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoardFolderIds'
@@ -287,6 +344,7 @@ const previewDragOverDeleteZone = ref(false)
 const previewBoardItemDrag = ref<PreviewBoardItemDragState | null>(null)
 const lastImageDragEndedAt = ref(0)
 const lastPreviewBoardDragEndedAt = ref(0)
+const boardCanvasBoundsById = ref<Record<number, BoardCanvasBounds>>({})
 const searchZhInput = ref('')
 const searchZhSelected = ref<KnownAutoTagSuggestion[]>([])
 const searchZhSuggestions = ref<KnownAutoTagSuggestion[]>([])
@@ -300,8 +358,14 @@ const searchError = ref('')
 const isSearchFocused = ref(false)
 const isSearchPointerInside = ref(false)
 const selectedReferenceBoardItemId = ref<number | null>(null)
-const copiedReferenceBoardItemId = ref<number | null>(null)
 const referenceBoardCanvasMenu = ref<ReferenceBoardCanvasMenu>(null)
+const lastBoardPointerWorld = ref<{ x: number; y: number; at: number } | null>(null)
+const clipboardWriteTask = ref<Promise<void> | null>(null)
+const internalBoardCopyRef = ref<InternalBoardCopyRef | null>(null)
+const boardUndoStack = ref<BoardHistoryEntry[]>([])
+const boardRedoStack = ref<BoardHistoryEntry[]>([])
+const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
+const isApplyingBoardHistory = ref(false)
 const activeImageDetailId = ref<string | null>(null)
 const imageDetailContextMenu = ref<ImageDetailContextMenu>(null)
 const galleryImageContextMenu = ref<GalleryImageContextMenu>(null)
@@ -314,8 +378,12 @@ const searchSuggestTimer = ref<number | null>(null)
 const scanProgressPollTimer = ref<number | null>(null)
 const previewBoardPointerId = ref<number | null>(null)
 const dragReferenceBoardFolderCollapseTimer = ref<number | null>(null)
+const boardPointerUseMaxAgeMs = 5000
+const internalBoardCopyMaxAgeMs = 10 * 60 * 1000
 
 const gap = 12
+const defaultBoardCanvasWidth = 1440
+const defaultBoardCanvasHeight = 960
 const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
 const sidebarOpen = computed(() => sidebarPinnedEffective.value || sidebarHoverOpen.value)
@@ -504,6 +572,26 @@ const activeReferenceBoardItems = computed(() => {
     .filter((item) => item.boardId === activeReferenceBoardId.value)
     .map((item) => ({ item, image: imagesById.get(item.imageId) }))
     .filter((entry): entry is { item: ReferenceBoardItem; image: GalleryImage } => Boolean(entry.image))
+})
+
+function createDefaultBoardCanvasBounds(): BoardCanvasBounds {
+  return {
+    minX: 0,
+    minY: 0,
+    maxX: defaultBoardCanvasWidth,
+    maxY: defaultBoardCanvasHeight,
+  }
+}
+
+function getBoardCanvasBounds(boardId: number) {
+  return boardCanvasBoundsById.value[boardId] ?? createDefaultBoardCanvasBounds()
+}
+
+const activeBoardCanvasBounds = computed(() => {
+  if (activeReferenceBoardId.value === null) {
+    return createDefaultBoardCanvasBounds()
+  }
+  return getBoardCanvasBounds(activeReferenceBoardId.value)
 })
 
 const folderTree = computed<FolderTreeItem[]>(() => buildFolderTree(expandedFolderIds.value))
@@ -698,6 +786,7 @@ onMounted(async () => {
   window.addEventListener('pointermove', movePreviewBoardItemPointerDrag)
   window.addEventListener('pointermove', moveFolderPointer)
   window.addEventListener('pointermove', moveBoardInteraction)
+  window.addEventListener('pointermove', trackBoardPointer)
   window.addEventListener('pointerup', finishImageDrag)
   window.addEventListener('pointerup', finishPreviewBoardItemPointerDrag)
   window.addEventListener('pointerup', finishFolderPointer)
@@ -735,6 +824,7 @@ onUnmounted(() => {
   window.removeEventListener('pointermove', movePreviewBoardItemPointerDrag)
   window.removeEventListener('pointermove', moveFolderPointer)
   window.removeEventListener('pointermove', moveBoardInteraction)
+  window.removeEventListener('pointermove', trackBoardPointer)
   window.removeEventListener('pointerup', finishImageDrag)
   window.removeEventListener('pointerup', finishPreviewBoardItemPointerDrag)
   window.removeEventListener('pointerup', finishFolderPointer)
@@ -774,6 +864,19 @@ watch(previewReferenceBoardIds, (value) => {
   )
 })
 
+watch(activeReferenceBoardId, () => {
+  boardUndoStack.value = []
+  boardRedoStack.value = []
+  boardSpaceFocusMode.value = 'item'
+  if (activeReferenceBoardId.value !== null) {
+    ensureBoardCanvasBoundsFor(activeReferenceBoardId.value)
+  }
+})
+
+watch(selectedReferenceBoardItemId, () => {
+  boardSpaceFocusMode.value = 'item'
+})
+
 watch(
   () => library.value.referenceBoards.map((board) => board.id).join(','),
   () => {
@@ -782,6 +885,11 @@ watch(
     if (next.size !== previewReferenceBoardIds.value.size) {
       previewReferenceBoardIds.value = next
     }
+    const nextBounds: Record<number, BoardCanvasBounds> = {}
+    for (const boardId of exists) {
+      nextBounds[boardId] = boardCanvasBoundsById.value[boardId] ?? createDefaultBoardCanvasBounds()
+    }
+    boardCanvasBoundsById.value = nextBounds
   },
 )
 
@@ -824,6 +932,9 @@ async function loadLibrary() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     library.value = await invoke<LibraryStore>('list_library')
+    for (const board of library.value.referenceBoards) {
+      ensureBoardCanvasBoundsFor(board.id)
+    }
     updateStatus()
   } catch (error) {
     errorText.value = formatError(error)
@@ -1173,6 +1284,7 @@ function onReferenceBoardFolderRowClick(folderId: number) {
 
 function showReferenceBoard(boardId: number) {
   activeReferenceBoardId.value = boardId
+  ensureBoardCanvasBoundsFor(boardId)
   viewMode.value = 'board'
 }
 
@@ -1194,6 +1306,13 @@ function closeImageDetailContextMenu() {
 
 function closeGalleryImageContextMenu() {
   galleryImageContextMenu.value = null
+}
+
+function isEditableKeyboardTarget(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null
+  if (!target) return false
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true
+  return target.isContentEditable
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
@@ -1226,7 +1345,33 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return
   }
 
+  if (event.isComposing || isEditableKeyboardTarget(event)) return
+
   if (viewMode.value !== 'board' || !activeReferenceBoard.value) return
+
+  if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+    const key = event.key.toLowerCase()
+    if (key === 'z') {
+      event.preventDefault()
+      if (event.shiftKey) {
+        void redoReferenceBoardHistory()
+      } else {
+        void undoReferenceBoardHistory()
+      }
+      return
+    }
+    if (key === 'y') {
+      event.preventDefault()
+      void redoReferenceBoardHistory()
+      return
+    }
+  }
+
+  if (event.code === 'Space' || event.key === ' ') {
+    event.preventDefault()
+    focusReferenceBoardBySpaceShortcut()
+    return
+  }
 
   if (event.key === 'Delete' && selectedReferenceBoardItemId.value !== null) {
     event.preventDefault()
@@ -1237,7 +1382,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
     if (selectedReferenceBoardItemId.value !== null) {
       event.preventDefault()
-      copyReferenceBoardItemToClipboard(selectedReferenceBoardItemId.value)
+      void copyReferenceBoardItemToClipboard(selectedReferenceBoardItemId.value)
     }
     return
   }
@@ -1508,15 +1653,7 @@ async function finishPreviewBoardItemPointerDrag(event: PointerEvent) {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     if (state.targetKind === 'gallery') {
-      library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
-        itemId: state.itemId,
-      })
-      if (selectedReferenceBoardItemId.value === state.itemId) {
-        selectedReferenceBoardItemId.value = null
-      }
-      if (copiedReferenceBoardItemId.value === state.itemId) {
-        copiedReferenceBoardItemId.value = null
-      }
+      await removeReferenceBoardItemsWithHistory([state.itemId])
       return
     }
 
@@ -1526,19 +1663,21 @@ async function finishPreviewBoardItemPointerDrag(event: PointerEvent) {
           imageId: state.imageId,
           boardId: state.targetBoardId,
         })
+        ensureBoardCanvasBoundsFor(state.targetBoardId)
       } else if (state.sourceBoardId !== state.targetBoardId) {
         library.value = await invoke<LibraryStore>('add_image_to_reference_board_command', {
           imageId: state.imageId,
           boardId: state.targetBoardId,
         })
+        ensureBoardCanvasBoundsFor(state.targetBoardId)
         library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
           itemId: state.itemId,
         })
         if (selectedReferenceBoardItemId.value === state.itemId) {
           selectedReferenceBoardItemId.value = null
         }
-        if (copiedReferenceBoardItemId.value === state.itemId) {
-          copiedReferenceBoardItemId.value = null
+        if (internalBoardCopyRef.value?.itemId === state.itemId) {
+          internalBoardCopyRef.value = null
         }
       }
     }
@@ -1579,19 +1718,21 @@ async function dropPreviewBoardItem(boardId: number, event: DragEvent) {
         imageId: state.imageId,
         boardId,
       })
+      ensureBoardCanvasBoundsFor(boardId)
     } else if (state.sourceBoardId !== boardId) {
       library.value = await invoke<LibraryStore>('add_image_to_reference_board_command', {
         imageId: state.imageId,
         boardId,
       })
+      ensureBoardCanvasBoundsFor(boardId)
       library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
         itemId: state.itemId,
       })
       if (selectedReferenceBoardItemId.value === state.itemId) {
         selectedReferenceBoardItemId.value = null
       }
-      if (copiedReferenceBoardItemId.value === state.itemId) {
-        copiedReferenceBoardItemId.value = null
+      if (internalBoardCopyRef.value?.itemId === state.itemId) {
+        internalBoardCopyRef.value = null
       }
     }
   } catch (error) {
@@ -1625,16 +1766,7 @@ async function onGalleryPreviewBoardItemDrop(event: DragEvent) {
   event.preventDefault()
   event.stopPropagation()
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
-      itemId: state.itemId,
-    })
-    if (selectedReferenceBoardItemId.value === state.itemId) {
-      selectedReferenceBoardItemId.value = null
-    }
-    if (copiedReferenceBoardItemId.value === state.itemId) {
-      copiedReferenceBoardItemId.value = null
-    }
+    await removeReferenceBoardItemsWithHistory([state.itemId])
   } catch (error) {
     errorText.value = formatError(error)
   } finally {
@@ -1658,6 +1790,7 @@ async function addImageToReferenceBoard(boardId: number) {
     imageId: dragState.value.imageId,
     boardId,
   })
+  ensureBoardCanvasBoundsFor(boardId)
 }
 
 function startImagePress(item: GalleryLayoutItem, event: PointerEvent) {
@@ -2236,6 +2369,7 @@ async function deleteReferenceBoard(boardId: number) {
 function openReferenceBoardItemMenu(itemId: number, event: MouseEvent) {
   event.preventDefault()
   event.stopPropagation()
+  rememberBoardPointerFromClient(event.clientX, event.clientY)
   selectedReferenceBoardItemId.value = itemId
   referenceBoardCanvasMenu.value = {
     kind: 'item',
@@ -2253,21 +2387,41 @@ function openReferenceBoardCanvasMenu(event: MouseEvent) {
   const target = event.target as HTMLElement | null
   if (target?.closest('.reference-board-card')) return
 
-  const worldX = (event.clientX - boardPan.value.x) / Math.max(boardScale.value, 0.001)
-  const worldY = (event.clientY - boardPan.value.y) / Math.max(boardScale.value, 0.001)
+  rememberBoardPointerFromClient(event.clientX, event.clientY)
+  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
   referenceBoardCanvasMenu.value = {
     kind: 'canvas',
     x: event.clientX,
     y: event.clientY,
-    worldX,
-    worldY,
+    worldX: worldPoint.x,
+    worldY: worldPoint.y,
   }
 }
 
-function copyReferenceBoardItemToClipboard(itemId: number) {
-  copiedReferenceBoardItemId.value = itemId
+async function copyReferenceBoardItemToClipboard(itemId: number) {
+  const boardItem = library.value.referenceBoardItems.find((item) => item.id === itemId)
+  if (!boardItem) return
   selectedReferenceBoardItemId.value = itemId
+  internalBoardCopyRef.value = {
+    itemId: boardItem.id,
+    imageId: boardItem.imageId,
+    width: boardItem.width,
+    height: boardItem.height,
+    rotation: boardItem.rotation,
+    copiedAt: Date.now(),
+  }
   closeReferenceBoardCanvasMenu()
+  const task = copyImageToSystemClipboard(boardItem.imageId)
+  clipboardWriteTask.value = task
+  try {
+    await task
+  } catch (error) {
+    errorText.value = buildClipboardCopyErrorText(error, '参考板复制')
+  } finally {
+    if (clipboardWriteTask.value === task) {
+      clipboardWriteTask.value = null
+    }
+  }
 }
 
 async function pasteReferenceBoardContent(worldX?: number, worldY?: number) {
@@ -2275,6 +2429,11 @@ async function pasteReferenceBoardContent(worldX?: number, worldY?: number) {
 
   const pastePoint = resolveReferenceBoardPastePoint(worldX, worldY)
   try {
+    if (clipboardWriteTask.value) {
+      try {
+        await clipboardWriteTask.value
+      } catch {}
+    }
     const { invoke } = await import('@tauri-apps/api/core')
     const clipboardImage = await readClipboardImageForReferenceBoard()
     if (clipboardImage) {
@@ -2285,16 +2444,26 @@ async function pasteReferenceBoardContent(worldX?: number, worldY?: number) {
         x: pastePoint.x,
         y: pastePoint.y,
       })
+      ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
       return
     }
 
-    if (copiedReferenceBoardItemId.value !== null) {
-      library.value = await invoke<LibraryStore>('duplicate_reference_board_item_command', {
-        itemId: copiedReferenceBoardItemId.value,
-        x: pastePoint.x,
-        y: pastePoint.y,
-      })
-      return
+    if (
+      internalBoardCopyRef.value &&
+      Date.now() - internalBoardCopyRef.value.copiedAt <= internalBoardCopyMaxAgeMs
+    ) {
+      const copied = internalBoardCopyRef.value
+      const sourceStillExists = library.value.referenceBoardItems.some((item) => item.id === copied.itemId)
+      if (sourceStillExists) {
+        library.value = await invoke<LibraryStore>('duplicate_reference_board_item_command', {
+          itemId: copied.itemId,
+          x: pastePoint.x,
+          y: pastePoint.y,
+        })
+        ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
+        return
+      }
+      internalBoardCopyRef.value = null
     }
 
     errorText.value = '剪贴板中没有可粘贴的图片。'
@@ -2310,10 +2479,21 @@ function resolveReferenceBoardPastePoint(worldX?: number, worldY?: number) {
     return { x: Number(worldX), y: Number(worldY) }
   }
 
+  if (
+    lastBoardPointerWorld.value &&
+    Date.now() - lastBoardPointerWorld.value.at <= boardPointerUseMaxAgeMs
+  ) {
+    return {
+      x: lastBoardPointerWorld.value.x,
+      y: lastBoardPointerWorld.value.y,
+    }
+  }
+
+  const viewport = getReferenceBoardViewportMetrics()
   const scale = Math.max(boardScale.value, 0.001)
   return {
-    x: (window.innerWidth * 0.5 - boardPan.value.x) / scale,
-    y: (window.innerHeight * 0.5 - boardPan.value.y) / scale,
+    x: ((viewport?.width ?? window.innerWidth) * 0.5 - boardPan.value.x) / scale,
+    y: ((viewport?.height ?? window.innerHeight) * 0.5 - boardPan.value.y) / scale,
   }
 }
 
@@ -2340,12 +2520,397 @@ async function readClipboardImageForReferenceBoard() {
   }
 }
 
+function cloneBoardItemLayout(item: ReferenceBoardItem): BoardItemLayout {
+  return {
+    x: item.x,
+    y: item.y,
+    width: item.width,
+    height: item.height,
+    rotation: item.rotation,
+  }
+}
+
+function boardLayoutEquals(a: BoardItemLayout, b: BoardItemLayout) {
+  const epsilon = 0.001
+  return (
+    Math.abs(a.x - b.x) <= epsilon &&
+    Math.abs(a.y - b.y) <= epsilon &&
+    Math.abs(a.width - b.width) <= epsilon &&
+    Math.abs(a.height - b.height) <= epsilon &&
+    Math.abs(a.rotation - b.rotation) <= epsilon
+  )
+}
+
+function collectBoardLayoutMap(boardId: number) {
+  const map = new Map<number, BoardItemLayout>()
+  for (const item of library.value.referenceBoardItems) {
+    if (item.boardId !== boardId) continue
+    map.set(item.id, cloneBoardItemLayout(item))
+  }
+  return map
+}
+
+function buildBoardHistoryChanges(
+  beforeMap: Map<number, BoardItemLayout>,
+  afterMap: Map<number, BoardItemLayout>,
+) {
+  const changes: BoardHistoryChange[] = []
+  for (const [itemId, before] of beforeMap) {
+    const after = afterMap.get(itemId)
+    if (!after) continue
+    if (!boardLayoutEquals(before, after)) {
+      changes.push({ itemId, before, after })
+    }
+  }
+  return changes
+}
+
+function pushBoardHistory(entry: BoardHistoryEntry) {
+  if (isApplyingBoardHistory.value) return
+  if (entry.kind === 'layout' && entry.changes.length === 0) return
+  if (entry.kind === 'delete' && entry.deletedItems.length === 0) return
+  boardUndoStack.value.push(entry)
+  if (boardUndoStack.value.length > 200) {
+    boardUndoStack.value.splice(0, boardUndoStack.value.length - 200)
+  }
+  boardRedoStack.value = []
+}
+
+async function applyBoardHistorySnapshot(
+  boardId: number,
+  changes: BoardHistoryChange[],
+  kind: 'before' | 'after',
+  selectedItemId: number | null,
+) {
+  const targets: Array<{ change: BoardHistoryChange; item: ReferenceBoardItem }> = []
+  for (const change of changes) {
+    const item = library.value.referenceBoardItems.find((entry) => entry.id === change.itemId)
+    if (!item || item.boardId !== boardId) continue
+    targets.push({ change, item })
+  }
+
+  if (targets.length === 0) {
+    selectedReferenceBoardItemId.value = null
+    return
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core')
+  for (const { change, item } of targets) {
+    const layout = kind === 'before' ? change.before : change.after
+    library.value = await invoke<LibraryStore>('update_reference_board_item_layout_command', {
+      itemId: item.id,
+      x: layout.x,
+      y: layout.y,
+      width: layout.width,
+      height: layout.height,
+      rotation: layout.rotation,
+    })
+  }
+
+  const hasSelected = selectedItemId !== null && library.value.referenceBoardItems.some((item) => item.id === selectedItemId)
+  selectedReferenceBoardItemId.value = hasSelected ? selectedItemId : null
+}
+
+function snapshotDeletedBoardItems(itemIds: number[]) {
+  const uniqueIds = [...new Set(itemIds)]
+  const snapshots: DeletedBoardItemSnapshot[] = []
+  for (const itemId of uniqueIds) {
+    const item = library.value.referenceBoardItems.find((entry) => entry.id === itemId)
+    if (!item) continue
+    snapshots.push({
+      itemId: item.id,
+      boardId: item.boardId,
+      imageId: item.imageId,
+      layout: cloneBoardItemLayout(item),
+      zIndex: item.zIndex,
+    })
+  }
+  return snapshots
+}
+
+async function applyBoardDeleteUndo(entry: BoardDeleteHistoryEntry) {
+  const { invoke } = await import('@tauri-apps/api/core')
+  const restoredItemIds: number[] = []
+
+  const deletedItems = [...entry.deletedItems].sort((a, b) => a.zIndex - b.zIndex || a.itemId - b.itemId)
+  for (const deletedItem of deletedItems) {
+    const beforeIds = new Set(
+      library.value.referenceBoardItems.filter((item) => item.boardId === entry.boardId).map((item) => item.id),
+    )
+    library.value = await invoke<LibraryStore>('restore_reference_board_item_command', {
+      boardId: entry.boardId,
+      imageId: deletedItem.imageId,
+      x: deletedItem.layout.x,
+      y: deletedItem.layout.y,
+      width: deletedItem.layout.width,
+      height: deletedItem.layout.height,
+      rotation: deletedItem.layout.rotation,
+      zIndex: deletedItem.zIndex,
+    })
+    const created = library.value.referenceBoardItems.find(
+      (item) => item.boardId === entry.boardId && !beforeIds.has(item.id),
+    )
+    if (!created) continue
+    restoredItemIds.push(created.id)
+  }
+
+  entry.restoredItemIds = restoredItemIds
+  ensureBoardCanvasBoundsFor(entry.boardId)
+}
+
+async function applyBoardDeleteRedo(entry: BoardDeleteHistoryEntry) {
+  const { invoke } = await import('@tauri-apps/api/core')
+  for (const itemId of entry.restoredItemIds) {
+    if (!library.value.referenceBoardItems.some((item) => item.id === itemId && item.boardId === entry.boardId)) continue
+    library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
+      itemId,
+    })
+  }
+  entry.restoredItemIds = []
+}
+
+async function undoReferenceBoardHistory() {
+  if (boardUndoStack.value.length === 0 || isApplyingBoardHistory.value) return
+  const entry = boardUndoStack.value.pop()
+  if (!entry) return
+  if (activeReferenceBoardId.value !== entry.boardId) return
+
+  isApplyingBoardHistory.value = true
+  try {
+    if (entry.kind === 'layout') {
+      await applyBoardHistorySnapshot(entry.boardId, entry.changes, 'before', entry.selectionBefore)
+    } else {
+      await applyBoardDeleteUndo(entry)
+      const selectedId = entry.restoredItemIds[entry.restoredItemIds.length - 1] ?? null
+      selectedReferenceBoardItemId.value = selectedId
+    }
+    boardRedoStack.value.push(entry)
+  } catch (error) {
+    errorText.value = formatError(error)
+    boardUndoStack.value.push(entry)
+  } finally {
+    isApplyingBoardHistory.value = false
+  }
+}
+
+async function redoReferenceBoardHistory() {
+  if (boardRedoStack.value.length === 0 || isApplyingBoardHistory.value) return
+  const entry = boardRedoStack.value.pop()
+  if (!entry) return
+  if (activeReferenceBoardId.value !== entry.boardId) return
+
+  isApplyingBoardHistory.value = true
+  try {
+    if (entry.kind === 'layout') {
+      await applyBoardHistorySnapshot(entry.boardId, entry.changes, 'after', entry.selectionAfter)
+    } else {
+      await applyBoardDeleteRedo(entry)
+      selectedReferenceBoardItemId.value = null
+    }
+    boardUndoStack.value.push(entry)
+  } catch (error) {
+    errorText.value = formatError(error)
+    boardRedoStack.value.push(entry)
+  } finally {
+    isApplyingBoardHistory.value = false
+  }
+}
+
+type BoardWorldBounds = { minX: number; minY: number; maxX: number; maxY: number }
+
+function boundsOfReferenceBoardItem(item: ReferenceBoardItem): BoardWorldBounds {
+  const radians = (item.rotation * Math.PI) / 180
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  const halfW = item.width / 2
+  const halfH = item.height / 2
+  const centerX = item.x + halfW
+  const centerY = item.y + halfH
+  const corners = [
+    { x: -halfW, y: -halfH },
+    { x: halfW, y: -halfH },
+    { x: halfW, y: halfH },
+    { x: -halfW, y: halfH },
+  ]
+  const rotated = corners.map(({ x, y }) => ({
+    x: centerX + x * cos - y * sin,
+    y: centerY + x * sin + y * cos,
+  }))
+  return {
+    minX: Math.min(...rotated.map((point) => point.x)),
+    minY: Math.min(...rotated.map((point) => point.y)),
+    maxX: Math.max(...rotated.map((point) => point.x)),
+    maxY: Math.max(...rotated.map((point) => point.y)),
+  }
+}
+
+function mergeBoardBounds(bounds: BoardWorldBounds[]) {
+  return bounds.reduce(
+    (acc, entry) => ({
+      minX: Math.min(acc.minX, entry.minX),
+      minY: Math.min(acc.minY, entry.minY),
+      maxX: Math.max(acc.maxX, entry.maxX),
+      maxY: Math.max(acc.maxY, entry.maxY),
+    }),
+    { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY, maxX: Number.NEGATIVE_INFINITY, maxY: Number.NEGATIVE_INFINITY },
+  )
+}
+
+function setBoardCanvasBounds(boardId: number, bounds: BoardCanvasBounds) {
+  boardCanvasBoundsById.value = {
+    ...boardCanvasBoundsById.value,
+    [boardId]: bounds,
+  }
+}
+
+function ensureBoardCanvasBoundsFor(boardId: number) {
+  const current = getBoardCanvasBounds(boardId)
+  const items = library.value.referenceBoardItems.filter((item) => item.boardId === boardId)
+  if (items.length === 0) {
+    setBoardCanvasBounds(boardId, current)
+    return
+  }
+  const itemsBounds = mergeBoardBounds(items.map(boundsOfReferenceBoardItem))
+  const next: BoardCanvasBounds = {
+    minX: Math.min(current.minX, itemsBounds.minX),
+    minY: Math.min(current.minY, itemsBounds.minY),
+    maxX: Math.max(current.maxX, itemsBounds.maxX),
+    maxY: Math.max(current.maxY, itemsBounds.maxY),
+  }
+  if (
+    next.minX !== current.minX ||
+    next.minY !== current.minY ||
+    next.maxX !== current.maxX ||
+    next.maxY !== current.maxY
+  ) {
+    setBoardCanvasBounds(boardId, next)
+  }
+}
+
+function ensureBoardCanvasBoundsForActiveBoard() {
+  if (!activeReferenceBoard.value) return
+  ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
+}
+
+function getReferenceBoardViewportMetrics() {
+  const page = document.querySelector<HTMLElement>('.reference-board-page')
+  if (!page) return null
+  const rect = page.getBoundingClientRect()
+  const styles = window.getComputedStyle(page)
+  const paddingLeft = Number.parseFloat(styles.paddingLeft || '0') || 0
+  const paddingRight = Number.parseFloat(styles.paddingRight || '0') || 0
+  const paddingTop = Number.parseFloat(styles.paddingTop || '0') || 0
+  const paddingBottom = Number.parseFloat(styles.paddingBottom || '0') || 0
+  return {
+    left: rect.left + paddingLeft,
+    top: rect.top + paddingTop,
+    width: Math.max(1, page.clientWidth - paddingLeft - paddingRight),
+    height: Math.max(1, page.clientHeight - paddingTop - paddingBottom),
+  }
+}
+
+function worldPointFromClient(clientX: number, clientY: number) {
+  const viewport = getReferenceBoardViewportMetrics()
+  const scale = Math.max(0.001, boardScale.value)
+  if (!viewport) {
+    return {
+      x: (clientX - boardPan.value.x) / scale,
+      y: (clientY - boardPan.value.y) / scale,
+    }
+  }
+  return {
+    x: (clientX - viewport.left - boardPan.value.x) / scale,
+    y: (clientY - viewport.top - boardPan.value.y) / scale,
+  }
+}
+
+function rememberBoardPointerFromClient(clientX: number, clientY: number) {
+  if (viewMode.value !== 'board' || !activeReferenceBoard.value) return
+  const viewport = getReferenceBoardViewportMetrics()
+  if (
+    viewport &&
+    (clientX < viewport.left ||
+      clientX > viewport.left + viewport.width ||
+      clientY < viewport.top ||
+      clientY > viewport.top + viewport.height)
+  ) {
+    return
+  }
+  const world = worldPointFromClient(clientX, clientY)
+  lastBoardPointerWorld.value = {
+    x: world.x,
+    y: world.y,
+    at: Date.now(),
+  }
+}
+
+function trackBoardPointer(event: PointerEvent) {
+  rememberBoardPointerFromClient(event.clientX, event.clientY)
+}
+
+function focusReferenceBoardBounds(bounds: BoardWorldBounds) {
+  const viewport = getReferenceBoardViewportMetrics()
+  if (!viewport) return false
+
+  const width = Math.max(1, bounds.maxX - bounds.minX)
+  const height = Math.max(1, bounds.maxY - bounds.minY)
+  const nextScale = clamp(Math.min(viewport.width / width, viewport.height / height), 0.2, 4)
+  const centerX = (bounds.minX + bounds.maxX) / 2
+  const centerY = (bounds.minY + bounds.maxY) / 2
+  boardScale.value = nextScale
+  boardPan.value = {
+    x: viewport.width / 2 - centerX * nextScale,
+    y: viewport.height / 2 - centerY * nextScale,
+  }
+  return true
+}
+
+function focusActiveReferenceBoardCanvas() {
+  if (!activeReferenceBoard.value) return false
+  const items = library.value.referenceBoardItems.filter((item) => item.boardId === activeReferenceBoard.value?.id)
+  if (items.length === 0) return false
+  const bounds = mergeBoardBounds(items.map(boundsOfReferenceBoardItem))
+  return focusReferenceBoardBounds(bounds)
+}
+
+function focusSelectedReferenceBoardItem() {
+  const selectedId = selectedReferenceBoardItemId.value
+  if (selectedId === null) return false
+  const item = library.value.referenceBoardItems.find((entry) => entry.id === selectedId)
+  if (!item) return false
+  return focusReferenceBoardBounds(boundsOfReferenceBoardItem(item))
+}
+
+function focusReferenceBoardBySpaceShortcut() {
+  if (boardSpaceFocusMode.value === 'item' && selectedReferenceBoardItemId.value !== null) {
+    if (focusSelectedReferenceBoardItem()) {
+      boardSpaceFocusMode.value = 'canvas'
+      return
+    }
+  }
+  if (focusActiveReferenceBoardCanvas()) {
+    boardSpaceFocusMode.value = 'item'
+  }
+}
+
 async function autoArrangeActiveReferenceBoard() {
   if (!activeReferenceBoard.value) return
+  const boardId = activeReferenceBoard.value.id
+  const beforeMap = collectBoardLayoutMap(boardId)
+  const selectionBefore = selectedReferenceBoardItemId.value
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     library.value = await invoke<LibraryStore>('auto_arrange_reference_board_command', {
-      boardId: activeReferenceBoard.value.id,
+      boardId,
+    })
+    ensureBoardCanvasBoundsFor(boardId)
+    const afterMap = collectBoardLayoutMap(boardId)
+    pushBoardHistory({
+      kind: 'layout',
+      boardId,
+      changes: buildBoardHistoryChanges(beforeMap, afterMap),
+      selectionBefore,
+      selectionAfter: selectedReferenceBoardItemId.value,
     })
   } catch (error) {
     errorText.value = formatError(error)
@@ -2401,13 +2966,15 @@ function zoomReferenceBoard(event: WheelEvent) {
   if (!activeReferenceBoard.value) return
   event.preventDefault()
 
+  const viewport = getReferenceBoardViewportMetrics()
   const nextScale = clamp(boardScale.value * (event.deltaY < 0 ? 1.08 : 0.92), 0.2, 4)
-  const worldX = (event.clientX - boardPan.value.x) / boardScale.value
-  const worldY = (event.clientY - boardPan.value.y) / boardScale.value
+  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
+  const baseLeft = viewport?.left ?? 0
+  const baseTop = viewport?.top ?? 0
   boardScale.value = nextScale
   boardPan.value = {
-    x: event.clientX - worldX * nextScale,
-    y: event.clientY - worldY * nextScale,
+    x: event.clientX - baseLeft - worldPoint.x * nextScale,
+    y: event.clientY - baseTop - worldPoint.y * nextScale,
   }
 }
 
@@ -2451,13 +3018,12 @@ function moveBoardInteraction(event: PointerEvent) {
   if (!item) return
 
   if (interaction.mode === 'rotate') {
-    const scale = Math.max(0.001, boardScale.value)
     const centerX = interaction.itemX + interaction.itemWidth / 2
     const centerY = interaction.itemY + interaction.itemHeight / 2
-    const worldX = (event.clientX - boardPan.value.x) / scale
-    const worldY = (event.clientY - boardPan.value.y) / scale
-    const angle = (Math.atan2(worldY - centerY, worldX - centerX) * 180) / Math.PI
-    item.rotation = interaction.itemRotation + (angle - interaction.rotateStartAngle)
+    const worldPoint = worldPointFromClient(event.clientX, event.clientY)
+    const angle = (Math.atan2(worldPoint.y - centerY, worldPoint.x - centerX) * 180) / Math.PI
+    const nextRotation = interaction.itemRotation + (angle - interaction.rotateStartAngle)
+    item.rotation = event.shiftKey ? Math.round(nextRotation / 45) * 45 : nextRotation
     return
   }
 
@@ -2498,6 +3064,17 @@ async function finishBoardInteraction(event: PointerEvent) {
   if (interaction.mode === 'pan') return
   const item = library.value.referenceBoardItems.find((entry) => entry.id === interaction.itemId)
   if (!item) return
+  const boardId = item.boardId
+  const before: BoardItemLayout = {
+    x: interaction.itemX,
+    y: interaction.itemY,
+    width: interaction.itemWidth,
+    height: interaction.itemHeight,
+    rotation: interaction.itemRotation,
+  }
+  const after = cloneBoardItemLayout(item)
+  const selectionBefore = interaction.itemId
+  const selectionAfter = selectedReferenceBoardItemId.value
 
   try {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -2509,6 +3086,16 @@ async function finishBoardInteraction(event: PointerEvent) {
       height: item.height,
       rotation: item.rotation,
     })
+    ensureBoardCanvasBoundsFor(boardId)
+    if (!boardLayoutEquals(before, after)) {
+      pushBoardHistory({
+        kind: 'layout',
+        boardId,
+        changes: [{ itemId: item.id, before, after }],
+        selectionBefore,
+        selectionAfter,
+      })
+    }
   } catch (error) {
     errorText.value = formatError(error)
   }
@@ -2582,12 +3169,10 @@ function startBoardItemRotate(item: ReferenceBoardItem, event: PointerEvent) {
   closeReferenceBoardCanvasMenu()
   void bringReferenceBoardItemToFront(item.id)
 
-  const scale = Math.max(0.001, boardScale.value)
   const centerX = item.x + item.width / 2
   const centerY = item.y + item.height / 2
-  const worldX = (event.clientX - boardPan.value.x) / scale
-  const worldY = (event.clientY - boardPan.value.y) / scale
-  const rotateStartAngle = (Math.atan2(worldY - centerY, worldX - centerX) * 180) / Math.PI
+  const worldPoint = worldPointFromClient(event.clientX, event.clientY)
+  const rotateStartAngle = (Math.atan2(worldPoint.y - centerY, worldPoint.x - centerX) * 180) / Math.PI
 
   boardInteraction.value = {
     itemId: item.id,
@@ -2607,17 +3192,42 @@ function startBoardItemRotate(item: ReferenceBoardItem, event: PointerEvent) {
 }
 
 async function removeReferenceBoardItem(itemId: number) {
+  await removeReferenceBoardItemsWithHistory([itemId])
+}
+
+async function removeReferenceBoardItemsWithHistory(itemIds: number[]) {
+  const snapshots = snapshotDeletedBoardItems(itemIds)
+  if (snapshots.length === 0) return
+  const boardId = snapshots[0].boardId
+  const allSameBoard = snapshots.every((item) => item.boardId === boardId)
+  if (!allSameBoard) return
+  const selectionBefore = selectedReferenceBoardItemId.value
+
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
-      itemId,
-    })
-    if (selectedReferenceBoardItemId.value === itemId) {
+    for (const snapshot of snapshots) {
+      library.value = await invoke<LibraryStore>('remove_reference_board_item_command', {
+        itemId: snapshot.itemId,
+      })
+    }
+
+    const removedIds = new Set(snapshots.map((item) => item.itemId))
+    if (selectedReferenceBoardItemId.value !== null && removedIds.has(selectedReferenceBoardItemId.value)) {
       selectedReferenceBoardItemId.value = null
     }
-    if (copiedReferenceBoardItemId.value === itemId) {
-      copiedReferenceBoardItemId.value = null
+    if (internalBoardCopyRef.value && removedIds.has(internalBoardCopyRef.value.itemId)) {
+      internalBoardCopyRef.value = null
     }
+
+    pushBoardHistory({
+      kind: 'delete',
+      boardId,
+      deletedItems: snapshots,
+      restoredItemIds: [],
+      selectionBefore,
+      selectionAfter: selectedReferenceBoardItemId.value,
+    })
+
     closeReferenceBoardCanvasMenu()
   } catch (error) {
     errorText.value = formatError(error)
@@ -3017,20 +3627,147 @@ async function removeGalleryImageFromFolder(imageId: string) {
 
 async function copyGalleryImageToClipboard(imageId: string) {
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const payload = await invoke<{ bytes: number[]; mime_type?: string; mimeType?: string }>('read_image_bytes_command', {
-      imageId,
-    })
-    const mimeType = payload.mime_type || payload.mimeType || 'image/png'
-    const blob = new Blob([new Uint8Array(payload.bytes)], { type: mimeType })
-    if ('clipboard' in navigator && 'write' in navigator.clipboard && typeof ClipboardItem !== 'undefined') {
-      await navigator.clipboard.write([new ClipboardItem({ [mimeType]: blob })])
-    }
+    await copyImageToSystemClipboard(imageId)
   } catch (error) {
-    errorText.value = formatError(error)
+    errorText.value = buildClipboardCopyErrorText(error, '图库复制')
   } finally {
     imageDetailContextMenu.value = null
+    closeGalleryImageContextMenu()
   }
+}
+
+async function copyImageToSystemClipboard(imageId: string) {
+  const { invoke } = await import('@tauri-apps/api/core')
+  let backendError: unknown = null
+  try {
+    await invoke('copy_image_to_system_clipboard_command', { imageId })
+    return
+  } catch (error) {
+    backendError = error
+  }
+
+  try {
+    await copyImageToSystemClipboardByWebApi(imageId)
+    return
+  } catch (error) {
+    const backendRaw = formatRawErrorNameMessage(backendError)
+    const fallbackRaw = formatRawErrorNameMessage(error)
+    throw new Error(
+      [
+        `后端系统剪贴板写入失败：${backendRaw}`,
+        `Web Clipboard 回退失败：${fallbackRaw}`,
+        `能力检测：${formatClipboardFeatureAvailability()}`,
+      ].join('\n'),
+    )
+  }
+}
+
+async function copyImageToSystemClipboardByWebApi(imageId: string) {
+  const { invoke } = await import('@tauri-apps/api/core')
+  const payload = await invoke<{ bytes: number[]; mime_type?: string; mimeType?: string }>('read_image_bytes_command', {
+    imageId,
+  })
+  const mimeType = payload.mime_type || payload.mimeType || 'image/png'
+  const sourceBlob = new Blob([new Uint8Array(payload.bytes)], { type: mimeType })
+  const features = clipboardFeatureAvailability()
+  if (!features.hasClipboardWrite || !features.hasClipboardItem) {
+    throw new Error(`Clipboard API 不可用：${formatClipboardFeatureAvailability(features)}`)
+  }
+
+  let convertError: unknown = null
+  let pngBlob: Blob | null = null
+  try {
+    pngBlob = await convertImageBlobToPng(sourceBlob)
+  } catch (error) {
+    convertError = error
+  }
+
+  const data: Record<string, Blob> = {}
+  if (pngBlob) {
+    // 某些环境会因包含 image/jpeg/webp 等类型而直接拒绝 write，这里优先只写 PNG。
+    data['image/png'] = pngBlob
+  } else {
+    data[mimeType] = sourceBlob
+  }
+
+  try {
+    await navigator.clipboard.write([new ClipboardItem(data)])
+  } catch (error) {
+    const rawWrite = formatRawErrorNameMessage(error)
+    const rawConvert = convertError ? formatRawErrorNameMessage(convertError) : null
+    throw new Error(
+      [
+        `系统剪贴板写入失败：${rawWrite}`,
+        rawConvert ? `PNG 转换错误：${rawConvert}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    )
+  }
+}
+
+async function convertImageBlobToPng(blob: Blob) {
+  if (typeof createImageBitmap !== 'function') {
+    return null
+  }
+  const bitmap = await createImageBitmap(blob)
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      throw new Error('Canvas 2D 上下文不可用')
+    }
+    ctx.drawImage(bitmap, 0, 0)
+    return await new Promise<Blob | null>((resolve, reject) => {
+      canvas.toBlob((png) => {
+        if (png) resolve(png)
+        else reject(new Error('canvas.toBlob 返回空结果'))
+      }, 'image/png')
+    })
+  } finally {
+    bitmap.close()
+  }
+}
+
+function formatRawErrorNameMessage(error: unknown) {
+  if (error instanceof Error) return `${error.name}: ${error.message}`
+  const maybe = error as { name?: unknown; message?: unknown } | null
+  if (maybe && typeof maybe === 'object') {
+    const name = typeof maybe.name === 'string' ? maybe.name : 'UnknownError'
+    const message = typeof maybe.message === 'string' ? maybe.message : String(error)
+    return `${name}: ${message}`
+  }
+  return `UnknownError: ${String(error)}`
+}
+
+function clipboardFeatureAvailability() {
+  const hasNavigator = typeof navigator !== 'undefined'
+  const hasClipboard = hasNavigator && 'clipboard' in navigator && !!navigator.clipboard
+  const hasClipboardWrite =
+    hasClipboard && typeof (navigator.clipboard as Clipboard).write === 'function'
+  const hasClipboardItem = typeof ClipboardItem !== 'undefined'
+  const hasCreateImageBitmap = typeof createImageBitmap === 'function'
+  return {
+    hasNavigator,
+    hasClipboard,
+    hasClipboardWrite,
+    hasClipboardItem,
+    hasCreateImageBitmap,
+  }
+}
+
+function formatClipboardFeatureAvailability(features = clipboardFeatureAvailability()) {
+  return `navigator=${features.hasNavigator}, clipboard=${features.hasClipboard}, clipboard.write=${features.hasClipboardWrite}, ClipboardItem=${features.hasClipboardItem}, createImageBitmap=${features.hasCreateImageBitmap}`
+}
+
+function buildClipboardCopyErrorText(error: unknown, scene: string) {
+  return [
+    `${scene}失败`,
+    `原始错误：${formatRawErrorNameMessage(error)}`,
+    `能力检测：${formatClipboardFeatureAvailability()}`,
+  ].join('\n')
 }
 
 function formatFileSize(bytes: number) {
@@ -3437,6 +4174,7 @@ function formatError(error: unknown) {
         :active-reference-board-items="activeReferenceBoardItems"
         :board-pan="boardPan"
         :board-scale="boardScale"
+        :board-canvas-bounds="activeBoardCanvasBounds"
         :selected-reference-board-item-id="selectedReferenceBoardItemId"
         :handlers="referenceBoardViewHandlers"
       />

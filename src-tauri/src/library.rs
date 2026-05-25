@@ -3,6 +3,7 @@ use image::ImageReader;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     env,
     fs,
@@ -336,6 +337,52 @@ pub fn read_image_bytes(image_id: String, state: &AppState) -> Result<ImageBytes
         mime_type: mime_type_for_extension(&image.ext).to_string(),
         file_name: image.file_name,
     })
+}
+
+pub fn copy_image_to_system_clipboard(image_id: String, state: &AppState) -> Result<(), String> {
+    let conn = open_database(&state.database_path)?;
+    let image = load_image_record(&conn, &image_id)?;
+    let image_path = PathBuf::from(&image.path);
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|error| format!("访问系统剪贴板失败：{error}"))?;
+
+    // 优先写文件列表（Windows: CF_HDROP），速度更接近资源管理器复制文件行为。
+    let file_copy_result = clipboard.set().file_list(&[image_path.clone()]);
+    if file_copy_result.is_ok() {
+        return Ok(());
+    }
+    let file_copy_error = file_copy_result
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // 文件列表写入失败时，回退到像素写入，保证尽可能兼容图片粘贴目标。
+    let bytes = fs::read(&image_path).map_err(|error| {
+        format!(
+            "文件路径复制失败：{file_copy_error}\n图像像素 fallback 失败：读取图片文件失败：{error}"
+        )
+    })?;
+    let decoded = image::load_from_memory(&bytes).map_err(|error| {
+        format!(
+            "文件路径复制失败：{file_copy_error}\n图像像素 fallback 失败：解码图片失败：{error}"
+        )
+    })?;
+    let rgba = decoded.to_rgba8();
+    let (width, height) = rgba.dimensions();
+
+    clipboard
+        .set_image(arboard::ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: Cow::Owned(rgba.into_raw()),
+        })
+        .map_err(|error| {
+            format!(
+                "文件路径复制失败：{file_copy_error}\n图像像素 fallback 失败：写入系统剪贴板失败：{error}"
+            )
+        })?;
+
+    Ok(())
 }
 
 pub fn test_wd_swinv2_tagger(
@@ -1512,6 +1559,48 @@ pub fn duplicate_reference_board_item(
         ],
     )
     .map_err(|error| format!("复制参考图失败：{error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
+}
+
+pub fn restore_reference_board_item(
+    board_id: i64,
+    image_id: String,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    rotation: f32,
+    z_index: i64,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let conn = open_database(&state.database_path)?;
+    conn.execute(
+        "
+        INSERT INTO reference_board_items (
+          board_id, image_id, x, y, width, height, rotation, z_index, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        ",
+        params![
+            board_id,
+            image_id,
+            x,
+            y,
+            width.max(48.0),
+            height.max(48.0),
+            rotation,
+            z_index,
+            now_ms(),
+        ],
+    )
+    .map_err(|error| format!("恢复参考图失败：{error}"))?;
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());

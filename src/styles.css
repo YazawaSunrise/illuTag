@@ -1141,7 +1141,13 @@ button {
 .reference-board-canvas {
   position: relative;
   transform-origin: 0 0;
-  background: #20262d;
+}
+
+.reference-board-canvas__surface {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: none;
+  background-color: #171b20;
 }
 
 .reference-board-card {
@@ -1166,9 +1172,10 @@ button {
 }
 
 .reference-board-card.is-selected {
-  border-color: #82d5b8;
-  border-width: 3px;
-  box-shadow: 0 14px 34px rgb(0 0 0 / 0.3);
+  border-width: 0;
+  box-shadow:
+    0 0 0 3px #82d5b8,
+    0 14px 34px rgb(0 0 0 / 0.3);
 }
 
 .reference-board-card img {
@@ -2328,7 +2335,10 @@ button {
 }
 
 .app-shell.theme-light .reference-board-canvas {
-  background: #f1f4f8;
+}
+
+.app-shell.theme-light .reference-board-canvas__surface {
+  background-color: #f5f7fa;
 }
 
 .app-shell.theme-light .reference-board-card {
@@ -2337,7 +2347,9 @@ button {
 }
 
 .app-shell.theme-light .reference-board-card.is-selected {
-  box-shadow: 0 12px 26px rgb(19 33 51 / 0.15);
+  box-shadow:
+    0 0 0 3px #82d5b8,
+    0 12px 26px rgb(19 33 51 / 0.15);
 }
 
 .app-shell.theme-light .reference-board-card__resize,
