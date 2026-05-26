@@ -398,6 +398,8 @@ const {
   onGalleryScroll,
   onGalleryWheel,
   updateViewportSize,
+  saveGalleryScrollPosition,
+  restoreGalleryScrollPosition,
 } = useGalleryMasonry({
   visibleImages,
   convertFileSrc,
@@ -604,6 +606,24 @@ watch([visibleImages, sidebarPinned], async () => {
   await nextTick()
   updateViewportSize()
 })
+
+watch(
+  [viewMode, activeUserFolderId],
+  async ([nextViewMode, nextFolderId], [prevViewMode, prevFolderId]) => {
+    const prevScopeKey = galleryScrollScopeKeyOf(prevFolderId)
+    const nextScopeKey = galleryScrollScopeKeyOf(nextFolderId)
+
+    if (prevViewMode === 'gallery') {
+      saveGalleryScrollPosition(prevScopeKey)
+    }
+
+    if (nextViewMode === 'gallery') {
+      restoreGalleryScrollPosition(nextScopeKey)
+      await nextTick()
+      updateViewportSize()
+    }
+  },
+)
 
 async function loadLibrary() {
   isLoading.value = true
@@ -1323,6 +1343,12 @@ function readStoredIdSet(key: string) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function galleryScrollScopeKeyOf(folderId: number | 'all' | 'trash') {
+  if (folderId === 'all') return 'all'
+  if (folderId === 'trash') return 'trash'
+  return `folder:${folderId}`
 }
 
 function formatError(error: unknown) {

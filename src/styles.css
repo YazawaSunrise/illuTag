@@ -24,6 +24,7 @@ button {
 }
 
 .app-shell {
+  --app-titlebar-offset: 38px;
   display: flex;
   height: 100vh;
   overflow: hidden;
@@ -762,6 +763,23 @@ button {
   margin-top: 0;
 }
 
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar-hotspot,
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .right-sidebar-hotspot {
+  top: var(--app-titlebar-offset);
+  height: calc(100vh - var(--app-titlebar-offset));
+}
+
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar:not(.is-pinned),
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .right-sidebar {
+  top: var(--app-titlebar-offset);
+  height: calc(100vh - var(--app-titlebar-offset));
+}
+
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar.is-pinned {
+  margin-top: var(--app-titlebar-offset);
+  height: calc(100vh - var(--app-titlebar-offset));
+}
+
 .workspace.is-reference-preview-active {
   margin-right: 232px;
 }
@@ -883,6 +901,7 @@ button {
 
 .gallery-page {
   --gallery-search-hotspot-height: 192px;
+  --gallery-search-hotspot-side-inset: clamp(96px, 12vw, 192px);
   position: relative;
   flex: 1;
   min-height: 0;
@@ -891,10 +910,16 @@ button {
   overflow-x: hidden;
 }
 
+.app-shell:not(.is-window-maximized) .gallery-page {
+  padding-top: 52px;
+}
+
 .gallery-search-hotspot {
   position: sticky;
   z-index: 5;
   top: -10px;
+  width: max(0px, calc(100% - var(--gallery-search-hotspot-side-inset) * 2));
+  margin-left: var(--gallery-search-hotspot-side-inset);
   height: var(--gallery-search-hotspot-height);
   margin-bottom: calc(-1 * var(--gallery-search-hotspot-height) + 10px);
   pointer-events: none;

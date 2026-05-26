@@ -39,15 +39,33 @@ const props = defineProps<{
 
 const gallerySectionEl = ref<HTMLElement | null>(null)
 const searchPanelEl = ref<HTMLElement | null>(null)
+const gallerySectionResizeObserver = ref<ResizeObserver | null>(null)
 const searchPanelResizeObserver = ref<ResizeObserver | null>(null)
 const searchHideTimer = ref<number | null>(null)
 const lastPointerClient = ref<{ x: number; y: number } | null>(null)
+const viewportSyncRaf = ref<number | null>(null)
+const suppressOutsideClickOnce = ref(false)
 
 function clearSearchHideTimer() {
   if (searchHideTimer.value !== null) {
     window.clearTimeout(searchHideTimer.value)
     searchHideTimer.value = null
   }
+}
+
+function clearViewportSyncRaf() {
+  if (viewportSyncRaf.value !== null) {
+    window.cancelAnimationFrame(viewportSyncRaf.value)
+    viewportSyncRaf.value = null
+  }
+}
+
+function scheduleSearchViewportSync() {
+  clearViewportSyncRaf()
+  viewportSyncRaf.value = window.requestAnimationFrame(() => {
+    viewportSyncRaf.value = null
+    syncSearchViewportState()
+  })
 }
 
 function syncSearchViewportState() {
@@ -68,19 +86,30 @@ onMounted(() => {
     props.handlers.onGalleryScroll(gallerySectionEl.value.scrollTop, gallerySectionEl.value.clientHeight)
   }
   syncSearchViewportState()
+  if (gallerySectionEl.value && typeof ResizeObserver !== 'undefined') {
+    gallerySectionResizeObserver.value = new ResizeObserver(() => {
+      scheduleSearchViewportSync()
+    })
+    gallerySectionResizeObserver.value.observe(gallerySectionEl.value)
+  }
   if (searchPanelEl.value && typeof ResizeObserver !== 'undefined') {
     searchPanelResizeObserver.value = new ResizeObserver(() => {
-      syncSearchViewportState()
+      scheduleSearchViewportSync()
     })
     searchPanelResizeObserver.value.observe(searchPanelEl.value)
   }
+  window.addEventListener('resize', scheduleSearchViewportSync, { passive: true })
   window.addEventListener('pointermove', trackPointerPosition, { passive: true })
 })
 
 onBeforeUnmount(() => {
   clearSearchHideTimer()
+  clearViewportSyncRaf()
+  gallerySectionResizeObserver.value?.disconnect()
+  gallerySectionResizeObserver.value = null
   searchPanelResizeObserver.value?.disconnect()
   searchPanelResizeObserver.value = null
+  window.removeEventListener('resize', scheduleSearchViewportSync)
   window.removeEventListener('pointermove', trackPointerPosition)
   props.handlers.setGalleryElement(null)
   props.handlers.setSearchPointerInside(false)
@@ -114,6 +143,7 @@ function isPointerInSearchSafeArea() {
 }
 
 function onSearchFocusIn() {
+  suppressOutsideClickOnce.value = false
   props.handlers.setSearchFocus(true)
 }
 
@@ -125,6 +155,7 @@ function onSearchFocusOut(event: FocusEvent) {
 }
 
 function onSearchPointerEnter() {
+  suppressOutsideClickOnce.value = false
   clearSearchHideTimer()
   props.handlers.setSearchPointerInside(true)
 }
@@ -155,6 +186,50 @@ function onGalleryScrollEvent(event: Event) {
 function onSearchHotspotEnter() {
   clearSearchHideTimer()
   props.handlers.triggerSearchRevealByHotspot()
+}
+
+function isTargetInsideSearch(target: EventTarget | null) {
+  return target instanceof HTMLElement && Boolean(target.closest('.gallery-search'))
+}
+
+function dismissSearchFocus() {
+  const active = document.activeElement as HTMLElement | null
+  if (active && searchPanelEl.value?.contains(active)) {
+    active.blur()
+  }
+  props.handlers.setSearchFocus(false)
+  props.handlers.setSearchPointerInside(false)
+}
+
+function onGalleryPointerDownCapture(event: PointerEvent) {
+  if (!props.isSearchFocused) return
+  if (isTargetInsideSearch(event.target)) return
+  dismissSearchFocus()
+  suppressOutsideClickOnce.value = true
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function onGalleryClickCapture(event: MouseEvent) {
+  if (!suppressOutsideClickOnce.value) return
+  if (isTargetInsideSearch(event.target)) {
+    suppressOutsideClickOnce.value = false
+    return
+  }
+  suppressOutsideClickOnce.value = false
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function onGalleryWheelCapture(event: WheelEvent) {
+  if (!props.isSearchFocused) return
+  if (isTargetInsideSearch(event.target)) return
+  dismissSearchFocus()
+  suppressOutsideClickOnce.value = false
+}
+
+function onSearchPointerDown() {
+  suppressOutsideClickOnce.value = false
 }
 
 function canScrollContainer(container: HTMLElement, deltaY: number) {
@@ -191,6 +266,9 @@ function onSearchWheel(event: WheelEvent) {
     ref="gallerySectionEl"
     class="gallery-page"
     :class="{ 'is-preview-delete-target': previewDragOverDeleteZone }"
+    @pointerdown.capture="onGalleryPointerDownCapture($event)"
+    @click.capture="onGalleryClickCapture($event)"
+    @wheel.capture="onGalleryWheelCapture($event)"
     @dragover="handlers.onGalleryPreviewBoardItemDragOver($event)"
     @drop="handlers.onGalleryPreviewBoardItemDrop($event)"
     @wheel.passive="handlers.onGalleryWheel($event as WheelEvent)"
@@ -209,6 +287,7 @@ function onSearchWheel(event: WheelEvent) {
       :style="searchPanelStyle"
       @focusin="onSearchFocusIn"
       @focusout="onSearchFocusOut"
+      @pointerdown="onSearchPointerDown"
       @mouseenter="onSearchPointerEnter"
       @mouseleave="onSearchPointerLeave"
       @wheel="onSearchWheel"

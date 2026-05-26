@@ -16,6 +16,8 @@ export function useGalleryMasonry(options: UseGalleryMasonryOptions) {
   const viewportHeight = ref(720)
   const galleryScrollTop = ref(0)
   const galleryViewportHeight = ref(0)
+  const scrollTopByScope = new Map<string, number>()
+  const activeScrollScopeKey = ref('all')
 
   const columnCount = computed(() => {
     const width = viewportWidth.value
@@ -99,16 +101,39 @@ export function useGalleryMasonry(options: UseGalleryMasonryOptions) {
   function setGalleryElement(element: HTMLElement | null) {
     galleryEl.value = element
     galleryViewportHeight.value = element?.clientHeight ?? 0
-    galleryScrollTop.value = element?.scrollTop ?? 0
+    const savedTop = scrollTopByScope.get(activeScrollScopeKey.value) ?? galleryScrollTop.value
+    galleryScrollTop.value = savedTop
+    if (element) {
+      element.scrollTop = savedTop
+    }
     updateViewportSize()
   }
 
   function onGalleryScroll(scrollTop: number, clientHeight: number) {
     galleryScrollTop.value = scrollTop
     galleryViewportHeight.value = clientHeight
+    scrollTopByScope.set(activeScrollScopeKey.value, Math.max(0, scrollTop))
   }
 
   function onGalleryWheel(_event: WheelEvent) {}
+
+  function saveGalleryScrollPosition(scopeKey = activeScrollScopeKey.value) {
+    const nextTop = Math.max(0, galleryEl.value?.scrollTop ?? galleryScrollTop.value)
+    scrollTopByScope.set(scopeKey, nextTop)
+    if (scopeKey === activeScrollScopeKey.value) {
+      galleryScrollTop.value = nextTop
+    }
+  }
+
+  function restoreGalleryScrollPosition(scopeKey: string) {
+    activeScrollScopeKey.value = scopeKey
+    const restoredTop = Math.max(0, scrollTopByScope.get(scopeKey) ?? 0)
+    galleryScrollTop.value = restoredTop
+    if (galleryEl.value) {
+      galleryEl.value.scrollTop = restoredTop
+      galleryViewportHeight.value = galleryEl.value.clientHeight
+    }
+  }
 
   return {
     galleryEl,
@@ -123,6 +148,8 @@ export function useGalleryMasonry(options: UseGalleryMasonryOptions) {
     onGalleryScroll,
     onGalleryWheel,
     updateViewportSize,
+    saveGalleryScrollPosition,
+    restoreGalleryScrollPosition,
   }
 }
 
