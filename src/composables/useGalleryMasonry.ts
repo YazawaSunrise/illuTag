@@ -54,7 +54,7 @@ export function useGalleryMasonry(options: UseGalleryMasonryOptions) {
 
       result.push({
         id: image.id,
-        thumbnailUrl: options.convertFileSrc(image.path),
+        thumbnailUrl: options.convertFileSrc(image.thumbnailPath || image.path),
         x: columnIndex * (columnWidth.value + gap),
         y: columnHeights[columnIndex],
         width: columnWidth.value,

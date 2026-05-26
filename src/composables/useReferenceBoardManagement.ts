@@ -25,6 +25,7 @@ type ReferenceBoardItemLike = {
 type ImageLike = {
   id: string
   path: string
+  thumbnailPath?: string | null
 }
 
 type LibraryStoreLike = {
@@ -110,7 +111,7 @@ export function useReferenceBoardManagement<TLibraryStore extends LibraryStoreLi
           return {
             itemId: item.id,
             imageId: item.imageId,
-            thumbnailUrl: options.convertFileSrc(image.path),
+            thumbnailUrl: options.convertFileSrc(image.thumbnailPath || image.path),
           }
         })
         .filter(

@@ -1386,6 +1386,33 @@ button {
   font-size: 12px;
 }
 
+.settings__progress-group {
+  display: grid;
+  gap: 6px;
+  max-width: 920px;
+}
+
+.settings__thumbnail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 920px;
+}
+
+.settings__progressbar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #27303a;
+}
+
+.settings__progressbar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #82d5b8;
+  transition: width 180ms ease-out;
+}
+
 .primary-button,
 .secondary-button,
 .danger-button {
@@ -2373,6 +2400,14 @@ button {
 
 .app-shell.theme-light .settings__progress {
   color: #607085;
+}
+
+.app-shell.theme-light .settings__progressbar {
+  background: #dbe4ef;
+}
+
+.app-shell.theme-light .settings__progressbar-fill {
+  background: #6d879e;
 }
 
 .app-shell.theme-light .context-menu button {

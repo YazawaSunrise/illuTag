@@ -10,6 +10,7 @@ import ReferenceBoardView from './components/ReferenceBoardView.vue'
 import SettingsView from './components/SettingsView.vue'
 import { useAppSettings } from './composables/useAppSettings'
 import { useBackgroundScan } from './composables/useBackgroundScan'
+import { useThumbnailGeneration } from './composables/useThumbnailGeneration'
 import { useFolderManagement } from './composables/useFolderManagement'
 import { useGalleryMasonry } from './composables/useGalleryMasonry'
 import { useGallerySearch } from './composables/useGallerySearch'
@@ -105,11 +106,13 @@ const {
   rightSidebarPinned,
   autoFixRightSidebarOnPreview,
   themeMode,
+  thumbnailCacheEnabled,
   initAppSettingsFromStorage,
   setSidebarPinned,
   setRightSidebarPinned,
   setAutoFixRightSidebarOnPreview,
   setThemeMode,
+  setThumbnailCacheEnabled,
 } = useAppSettings()
 
 const {
@@ -429,6 +432,28 @@ const {
 })
 
 const {
+  isThumbnailGenerationRunning,
+  isThumbnailGenerationPaused,
+  thumbnailProgressText,
+  thumbnailProgressPercent,
+  thumbnailRecentErrors,
+  startThumbnailGeneration,
+  pauseThumbnailGeneration,
+  resumeThumbnailGeneration,
+  stopThumbnailGeneration,
+  clearThumbnailCache,
+  rebuildThumbnailCache,
+  startThumbnailGenerationPolling,
+  stopThumbnailGenerationPolling,
+} = useThumbnailGeneration({
+  loadLibrary,
+  formatError,
+  setErrorText(value) {
+    errorText.value = value
+  },
+})
+
+const {
   copyReferenceBoardItemToClipboard,
   pasteReferenceBoardContent,
   copyImageToSystemClipboard,
@@ -528,12 +553,17 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
   void refreshBackgroundScanStatus()
   startBackgroundScanPolling()
+  startThumbnailGenerationPolling()
   void startStartupCleanup()
   startAutoScanIfEnabled()
+  if (thumbnailCacheEnabled.value && !isBackgroundScanRunning.value) {
+    void startThumbnailGeneration()
+  }
 })
 
 onUnmounted(() => {
   stopBackgroundScanPolling()
+  stopThumbnailGenerationPolling()
   clearDragReferenceBoardFolderCollapseTimer()
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('pointermove', moveImageDrag)
@@ -624,6 +654,18 @@ watch(
     }
   },
 )
+
+watch(thumbnailCacheEnabled, (enabled) => {
+  if (!enabled) return
+  if (isBackgroundScanRunning.value) return
+  void startThumbnailGeneration()
+})
+
+watch(isBackgroundScanRunning, (running, wasRunning) => {
+  if (!wasRunning || running) return
+  if (!thumbnailCacheEnabled.value) return
+  void startThumbnailGeneration()
+})
 
 async function loadLibrary() {
   isLoading.value = true
@@ -1187,6 +1229,13 @@ const settingsViewHandlers = {
   setSidebarPinned,
   setThemeMode,
   setAutoFixRightSidebarOnPreview,
+  setThumbnailCacheEnabled,
+  startThumbnailGeneration,
+  pauseThumbnailGeneration,
+  resumeThumbnailGeneration,
+  stopThumbnailGeneration,
+  clearThumbnailCache,
+  rebuildThumbnailCache,
   setAutoScanOnStartup,
   startScanAllFolders,
   addFolder,
@@ -1457,6 +1506,12 @@ function formatError(error: unknown) {
         v-if="viewMode === 'settings'"
         :sidebar-pinned="sidebarPinned"
         :auto-fix-right-sidebar-on-preview="autoFixRightSidebarOnPreview"
+        :thumbnail-cache-enabled="thumbnailCacheEnabled"
+        :is-thumbnail-generation-running="isThumbnailGenerationRunning"
+        :is-thumbnail-generation-paused="isThumbnailGenerationPaused"
+        :thumbnail-progress-text="thumbnailProgressText"
+        :thumbnail-progress-percent="thumbnailProgressPercent"
+        :thumbnail-recent-errors="thumbnailRecentErrors"
         :auto-scan-on-startup="autoScanOnStartup"
         :is-background-scan-running="isBackgroundScanRunning"
         :scan-progress-text="scanProgressText"

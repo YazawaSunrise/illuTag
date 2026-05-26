@@ -1,5 +1,7 @@
 use calamine::{Data as ExcelCell, Reader, open_workbook_auto};
 use image::ImageReader;
+use image::imageops::FilterType;
+use image::GenericImageView;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -7,6 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fs,
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -16,6 +19,8 @@ use std::{
 use walkdir::WalkDir;
 
 const WD_TAGGER_MODEL_NAME: &str = "wd-swinv2-tagger-v3";
+const THUMBNAIL_LONG_EDGE: u32 = 768;
+const THUMBNAIL_WEBP_QUALITY: f32 = 82.0;
 
 pub struct AppState {
     pub database_path: PathBuf,
@@ -25,6 +30,11 @@ pub struct AppState {
     pub background_scan_progress: Arc<Mutex<BackgroundScanProgress>>,
     pub startup_cleanup_running: Arc<Mutex<bool>>,
     pub startup_cleanup_generation: Arc<Mutex<i64>>,
+    pub thumbnail_generation_running: Arc<Mutex<bool>>,
+    pub thumbnail_generation_pending: Arc<Mutex<bool>>,
+    pub thumbnail_generation_pause_requested: Arc<Mutex<bool>>,
+    pub thumbnail_generation_stop_requested: Arc<Mutex<bool>>,
+    pub thumbnail_generation_progress: Arc<Mutex<ThumbnailGenerationProgress>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -53,6 +63,7 @@ pub struct LibraryFolder {
 pub struct GalleryImage {
     pub id: String,
     pub path: String,
+    pub thumbnail_path: Option<String>,
     pub file_name: String,
     pub ext: String,
     pub width: u32,
@@ -213,6 +224,21 @@ pub struct BackgroundScanProgress {
     pub recent_errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailGenerationProgress {
+    pub running: bool,
+    pub paused: bool,
+    pub phase: String,
+    pub total_candidates: i64,
+    pub processed_images: i64,
+    pub generated_images: i64,
+    pub skipped_images: i64,
+    pub failed_images: i64,
+    pub last_error: Option<String>,
+    pub recent_errors: Vec<String>,
+}
+
 impl Default for BackgroundScanProgress {
     fn default() -> Self {
         Self {
@@ -226,6 +252,23 @@ impl Default for BackgroundScanProgress {
             removed_missing_images: 0,
             queued_images: 0,
             tagged_images: 0,
+            failed_images: 0,
+            last_error: None,
+            recent_errors: Vec::new(),
+        }
+    }
+}
+
+impl Default for ThumbnailGenerationProgress {
+    fn default() -> Self {
+        Self {
+            running: false,
+            paused: false,
+            phase: "idle".to_string(),
+            total_candidates: 0,
+            processed_images: 0,
+            generated_images: 0,
+            skipped_images: 0,
             failed_images: 0,
             last_error: None,
             recent_errors: Vec::new(),
@@ -254,6 +297,16 @@ struct ExistingImageMeta {
 
 struct ScanCollectResult {
     tag_queue_image_ids: Vec<String>,
+}
+
+struct ThumbnailCandidate {
+    image_id: String,
+    image_path: String,
+    modified_at: i64,
+    file_size: i64,
+    current_thumb_path: Option<String>,
+    current_source_modified_at: Option<i64>,
+    current_source_file_size: Option<i64>,
 }
 
 pub fn list_library_from_state(state: &AppState) -> Result<LibraryStore, String> {
@@ -693,6 +746,200 @@ pub fn startup_cleanup_status(state: &AppState) -> Result<StartupCleanupStatus, 
         running,
         generation,
     })
+}
+
+pub fn start_thumbnail_generation(state: &AppState) -> Result<bool, String> {
+    let mut running = state
+        .thumbnail_generation_running
+        .lock()
+        .map_err(|_| "Thumbnail generation state is locked".to_string())?;
+    if *running {
+        if let Ok(mut pending) = state.thumbnail_generation_pending.lock() {
+            *pending = true;
+        }
+        return Ok(false);
+    }
+    *running = true;
+    drop(running);
+
+    if let Ok(mut pending) = state.thumbnail_generation_pending.lock() {
+        *pending = false;
+    }
+    if let Ok(mut pause_requested) = state.thumbnail_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    if let Ok(mut stop_requested) = state.thumbnail_generation_stop_requested.lock() {
+        *stop_requested = false;
+    }
+    set_thumbnail_progress(
+        &state.thumbnail_generation_progress,
+        ThumbnailGenerationProgress {
+            running: true,
+            paused: false,
+            phase: "queueing".to_string(),
+            ..ThumbnailGenerationProgress::default()
+        },
+    );
+
+    let database_path = state.database_path.clone();
+    let library_cache = Arc::clone(&state.library);
+    let thumb_running = Arc::clone(&state.thumbnail_generation_running);
+    let thumb_pending = Arc::clone(&state.thumbnail_generation_pending);
+    let thumb_pause_requested = Arc::clone(&state.thumbnail_generation_pause_requested);
+    let thumb_stop_requested = Arc::clone(&state.thumbnail_generation_stop_requested);
+    let thumb_progress = Arc::clone(&state.thumbnail_generation_progress);
+
+    thread::spawn(move || {
+        loop {
+            set_thumbnail_progress_phase(&thumb_progress, "queueing");
+            match generate_thumbnails_once(
+                &database_path,
+                &thumb_progress,
+                &thumb_pause_requested,
+                &thumb_stop_requested,
+            ) {
+                Ok(generated) => {
+                    if generated > 0 {
+                        if let Ok(mut cache) = library_cache.lock() {
+                            *cache = None;
+                        }
+                    }
+                }
+                Err(error) => {
+                    set_thumbnail_progress_error(&thumb_progress, &error);
+                    push_thumbnail_progress_recent_error(&thumb_progress, &error);
+                }
+            }
+
+            let rerun = if let Ok(mut pending) = thumb_pending.lock() {
+                if *pending {
+                    *pending = false;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if rerun {
+                continue;
+            }
+            break;
+        }
+
+        set_thumbnail_progress_done(&thumb_progress);
+        if let Ok(mut running) = thumb_running.lock() {
+            *running = false;
+        }
+        if let Ok(mut pending) = thumb_pending.lock() {
+            *pending = false;
+        }
+        if let Ok(mut pause_requested) = thumb_pause_requested.lock() {
+            *pause_requested = false;
+        }
+        if let Ok(mut stop_requested) = thumb_stop_requested.lock() {
+            *stop_requested = false;
+        }
+    });
+
+    Ok(true)
+}
+
+pub fn thumbnail_generation_status(state: &AppState) -> Result<ThumbnailGenerationProgress, String> {
+    state
+        .thumbnail_generation_progress
+        .lock()
+        .map_err(|_| "Thumbnail generation progress state is locked".to_string())
+        .map(|value| value.clone())
+}
+
+pub fn pause_thumbnail_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .thumbnail_generation_running
+        .lock()
+        .map_err(|_| "Thumbnail generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.thumbnail_generation_pause_requested.lock() {
+        *pause_requested = true;
+    }
+    update_thumbnail_progress(&state.thumbnail_generation_progress, |progress| {
+        progress.paused = true;
+        progress.phase = "paused".to_string();
+    });
+    Ok(true)
+}
+
+pub fn resume_thumbnail_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .thumbnail_generation_running
+        .lock()
+        .map_err(|_| "Thumbnail generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.thumbnail_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_thumbnail_progress(&state.thumbnail_generation_progress, |progress| {
+        progress.paused = false;
+        if progress.phase == "paused" {
+            progress.phase = "generating".to_string();
+        }
+    });
+    Ok(true)
+}
+
+pub fn stop_thumbnail_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .thumbnail_generation_running
+        .lock()
+        .map_err(|_| "Thumbnail generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut stop_requested) = state.thumbnail_generation_stop_requested.lock() {
+        *stop_requested = true;
+    }
+    if let Ok(mut pause_requested) = state.thumbnail_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_thumbnail_progress(&state.thumbnail_generation_progress, |progress| {
+        progress.paused = false;
+        progress.phase = "stopping".to_string();
+    });
+    Ok(true)
+}
+
+pub fn clear_thumbnail_cache(state: &AppState) -> Result<(), String> {
+    let running = state
+        .thumbnail_generation_running
+        .lock()
+        .map_err(|_| "Thumbnail generation state is locked".to_string())
+        .map(|value| *value)?;
+    if running {
+        return Err("缩略图任务正在运行，请先停止后再清理缓存".to_string());
+    }
+
+    let conn = open_database(&state.database_path)?;
+    clear_thumbnail_cache_storage(&conn, &state.database_path)?;
+    if let Ok(mut cache) = state.library.lock() {
+        *cache = None;
+    }
+    set_thumbnail_progress(
+        &state.thumbnail_generation_progress,
+        ThumbnailGenerationProgress::default(),
+    );
+    Ok(())
+}
+
+pub fn rebuild_thumbnail_cache(state: &AppState) -> Result<bool, String> {
+    clear_thumbnail_cache(state)?;
+    start_thumbnail_generation(state)
 }
 
 pub fn list_image_auto_tags(
@@ -2054,6 +2301,18 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_known_image_tags_model_en
           ON known_image_tags(model_name, tag_en);
 
+        CREATE TABLE IF NOT EXISTS image_thumbnails (
+          image_id TEXT PRIMARY KEY,
+          thumb_path TEXT NOT NULL,
+          source_modified_at INTEGER NOT NULL,
+          source_file_size INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_thumbnails_updated_at
+          ON image_thumbnails(updated_at DESC);
+
         CREATE TRIGGER IF NOT EXISTS trg_image_auto_tags_insert_known
         AFTER INSERT ON image_auto_tags
         WHEN NOT EXISTS (
@@ -2149,6 +2408,7 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
     .map_err(|error| format!("初始化图库数据库失败：{error}"))?;
 
     ensure_library_columns(conn)?;
+    ensure_thumbnail_table(conn)?;
     ensure_user_folder_sort_order(conn)?;
     ensure_reference_board_items_allow_duplicates(conn)?;
     ensure_known_image_tags_bootstrap(conn)?;
@@ -2219,6 +2479,26 @@ fn ensure_library_columns(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|error| format!("Failed to upgrade images.trashed column: {error}"))?;
     }
+    Ok(())
+}
+
+fn ensure_thumbnail_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS image_thumbnails (
+          image_id TEXT PRIMARY KEY,
+          thumb_path TEXT NOT NULL,
+          source_modified_at INTEGER NOT NULL,
+          source_file_size INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_thumbnails_updated_at
+          ON image_thumbnails(updated_at DESC);
+        ",
+    )
+    .map_err(|error| format!("Failed to ensure image_thumbnails table: {error}"))?;
     Ok(())
 }
 
@@ -2353,9 +2633,10 @@ fn load_images(conn: &Connection) -> Result<Vec<GalleryImage>, String> {
         .prepare(
             "
             SELECT
-              id, path, file_name, ext, width, height, file_size, modified_at,
-              imported_at, folder_id, missing, trashed, source
-            FROM images
+              i.id, i.path, t.thumb_path, i.file_name, i.ext, i.width, i.height, i.file_size, i.modified_at,
+              i.imported_at, i.folder_id, i.missing, i.trashed, i.source
+            FROM images i
+            LEFT JOIN image_thumbnails t ON t.image_id = i.id
             ORDER BY modified_at DESC, path ASC
             ",
         )
@@ -2366,17 +2647,18 @@ fn load_images(conn: &Connection) -> Result<Vec<GalleryImage>, String> {
             Ok(GalleryImage {
                 id: row.get(0)?,
                 path: row.get(1)?,
-                file_name: row.get(2)?,
-                ext: row.get(3)?,
-                width: row.get(4)?,
-                height: row.get(5)?,
-                file_size: row.get(6)?,
-                modified_at: row.get(7)?,
-                imported_at: row.get(8)?,
-                folder_id: row.get(9)?,
-                missing: row.get::<_, i64>(10)? != 0,
-                trashed: row.get::<_, i64>(11)? != 0,
-                source: row.get(12)?,
+                thumbnail_path: row.get(2)?,
+                file_name: row.get(3)?,
+                ext: row.get(4)?,
+                width: row.get(5)?,
+                height: row.get(6)?,
+                file_size: row.get(7)?,
+                modified_at: row.get(8)?,
+                imported_at: row.get(9)?,
+                folder_id: row.get(10)?,
+                missing: row.get::<_, i64>(11)? != 0,
+                trashed: row.get::<_, i64>(12)? != 0,
+                source: row.get(13)?,
             })
         })
         .map_err(|error| format!("读取图片索引失败：{error}"))?
@@ -2600,27 +2882,29 @@ fn load_image_record(conn: &Connection, image_id: &str) -> Result<GalleryImage, 
     conn.query_row(
         "
         SELECT
-          id, path, file_name, ext, width, height, file_size, modified_at,
-          imported_at, folder_id, missing, trashed, source
-        FROM images
-        WHERE id = ?1
+          i.id, i.path, t.thumb_path, i.file_name, i.ext, i.width, i.height, i.file_size, i.modified_at,
+          i.imported_at, i.folder_id, i.missing, i.trashed, i.source
+        FROM images i
+        LEFT JOIN image_thumbnails t ON t.image_id = i.id
+        WHERE i.id = ?1
         ",
         params![image_id],
         |row| {
             Ok(GalleryImage {
                 id: row.get(0)?,
                 path: row.get(1)?,
-                file_name: row.get(2)?,
-                ext: row.get(3)?,
-                width: row.get(4)?,
-                height: row.get(5)?,
-                file_size: row.get(6)?,
-                modified_at: row.get(7)?,
-                imported_at: row.get(8)?,
-                folder_id: row.get(9)?,
-                missing: row.get::<_, i64>(10)? != 0,
-                trashed: row.get::<_, i64>(11)? != 0,
-                source: row.get(12)?,
+                thumbnail_path: row.get(2)?,
+                file_name: row.get(3)?,
+                ext: row.get(4)?,
+                width: row.get(5)?,
+                height: row.get(6)?,
+                file_size: row.get(7)?,
+                modified_at: row.get(8)?,
+                imported_at: row.get(9)?,
+                folder_id: row.get(10)?,
+                missing: row.get::<_, i64>(11)? != 0,
+                trashed: row.get::<_, i64>(12)? != 0,
+                source: row.get(13)?,
             })
         },
     )
@@ -3177,6 +3461,361 @@ fn collect_pending_tag_image_ids(conn: &Connection) -> Result<Vec<String>, Strin
     .map_err(|error| format!("Failed to collect pending tag images: {error}"))
 }
 
+fn generate_thumbnails_once(
+    database_path: &Path,
+    progress: &Arc<Mutex<ThumbnailGenerationProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
+) -> Result<i64, String> {
+    set_thumbnail_progress_phase(progress, "collecting");
+    let conn = open_database(database_path)?;
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT
+              i.id,
+              i.path,
+              i.modified_at,
+              i.file_size,
+              t.thumb_path,
+              t.source_modified_at,
+              t.source_file_size
+            FROM images i
+            LEFT JOIN image_thumbnails t ON t.image_id = i.id
+            WHERE i.source = 'library'
+              AND COALESCE(i.trashed, 0) = 0
+            ORDER BY i.modified_at DESC, i.id ASC
+            ",
+        )
+        .map_err(|error| format!("Failed to load thumbnail candidates: {error}"))?;
+    let candidates = stmt
+        .query_map([], |row| {
+            Ok(ThumbnailCandidate {
+                image_id: row.get(0)?,
+                image_path: row.get(1)?,
+                modified_at: row.get(2)?,
+                file_size: row.get(3)?,
+                current_thumb_path: row.get(4)?,
+                current_source_modified_at: row.get(5)?,
+                current_source_file_size: row.get(6)?,
+            })
+        })
+        .map_err(|error| format!("Failed to load thumbnail candidates: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load thumbnail candidates: {error}"))?;
+    drop(stmt);
+
+    set_thumbnail_progress_total(progress, candidates.len() as i64);
+    set_thumbnail_progress_phase(progress, "generating");
+
+    let thumb_root = ensure_thumbnail_root_dir(database_path)?;
+    let mut generated = 0i64;
+    let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut processed = 0i64;
+    let mut stop_now = false;
+
+    for candidate in candidates {
+        if thumbnail_stop_requested(stop_requested) {
+            stop_now = true;
+            break;
+        }
+        wait_for_thumbnail_resume(progress, pause_requested, stop_requested);
+        if thumbnail_stop_requested(stop_requested) {
+            stop_now = true;
+            break;
+        }
+
+        if !Path::new(&candidate.image_path).is_file() {
+            if let Err(error) = clear_thumbnail_for_missing_image(&conn, &candidate.image_id) {
+                set_thumbnail_progress_error(progress, &error);
+                push_thumbnail_progress_recent_error(progress, &error);
+                failed += 1;
+            } else {
+                skipped += 1;
+            }
+            processed += 1;
+            set_thumbnail_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        }
+
+        if thumbnail_up_to_date(&candidate) {
+            skipped += 1;
+            processed += 1;
+            set_thumbnail_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        }
+
+        match generate_single_thumbnail(&candidate, &thumb_root, THUMBNAIL_LONG_EDGE, THUMBNAIL_WEBP_QUALITY) {
+            Ok(next_thumb_path) => {
+                if let Err(error) = upsert_thumbnail_record(
+                    &conn,
+                    &candidate.image_id,
+                    &next_thumb_path,
+                    candidate.modified_at,
+                    candidate.file_size,
+                ) {
+                    set_thumbnail_progress_error(progress, &error);
+                    push_thumbnail_progress_recent_error(progress, &error);
+                    failed += 1;
+                } else {
+                    generated += 1;
+                    if let Some(previous_thumb) = candidate.current_thumb_path {
+                        if previous_thumb != next_thumb_path {
+                            let _ = fs::remove_file(previous_thumb);
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                set_thumbnail_progress_error(progress, &error);
+                push_thumbnail_progress_recent_error(progress, &error);
+                failed += 1;
+            }
+        }
+
+        processed += 1;
+        set_thumbnail_progress_counts(progress, processed, generated, skipped, failed);
+    }
+
+    cleanup_orphan_thumbnail_files(&conn, &thumb_root)?;
+    if stop_now {
+        set_thumbnail_progress_phase(progress, "idle");
+    }
+    Ok(generated)
+}
+
+fn ensure_thumbnail_root_dir(database_path: &Path) -> Result<PathBuf, String> {
+    let root = database_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("thumbs")
+        .join("library");
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("Failed to create thumbnail cache directory: {error}"))?;
+    Ok(root)
+}
+
+fn clear_thumbnail_for_missing_image(conn: &Connection, image_id: &str) -> Result<(), String> {
+    let previous_thumb: Option<String> = conn
+        .query_row(
+            "SELECT thumb_path FROM image_thumbnails WHERE image_id = ?1",
+            params![image_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Failed to query stale thumbnail: {error}"))?
+        .flatten();
+
+    conn.execute("DELETE FROM image_thumbnails WHERE image_id = ?1", params![image_id])
+        .map_err(|error| format!("Failed to clear stale thumbnail: {error}"))?;
+
+    if let Some(path) = previous_thumb {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
+
+fn clear_thumbnail_cache_storage(conn: &Connection, database_path: &Path) -> Result<(), String> {
+    conn.execute("DELETE FROM image_thumbnails", [])
+        .map_err(|error| format!("Failed to clear thumbnail table: {error}"))?;
+    let thumb_root = ensure_thumbnail_root_dir(database_path)?;
+    if thumb_root.exists() {
+        fs::remove_dir_all(&thumb_root)
+            .map_err(|error| format!("Failed to remove thumbnail cache directory: {error}"))?;
+    }
+    fs::create_dir_all(&thumb_root)
+        .map_err(|error| format!("Failed to recreate thumbnail cache directory: {error}"))?;
+    Ok(())
+}
+
+fn cleanup_orphan_thumbnail_files(conn: &Connection, thumb_root: &Path) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT image_id, thumb_path FROM image_thumbnails")
+        .map_err(|error| format!("Failed to query thumbnail paths: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|error| format!("Failed to query thumbnail paths: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to query thumbnail paths: {error}"))?;
+    drop(stmt);
+
+    let mut referenced_set = HashSet::<String>::new();
+    let mut stale_image_ids = Vec::<String>::new();
+    for (image_id, thumb_path) in rows {
+        if Path::new(&thumb_path).is_file() {
+            referenced_set.insert(thumb_path);
+        } else {
+            stale_image_ids.push(image_id);
+        }
+    }
+    for image_id in stale_image_ids {
+        conn.execute(
+            "DELETE FROM image_thumbnails WHERE image_id = ?1",
+            params![image_id],
+        )
+        .map_err(|error| format!("Failed to remove stale thumbnail record: {error}"))?;
+    }
+
+    if !thumb_root.exists() {
+        return Ok(());
+    }
+
+    for entry in WalkDir::new(thumb_root)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path_str = entry.path().to_string_lossy().to_string();
+        if !referenced_set.contains(&path_str) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
+fn thumbnail_stop_requested(stop_requested: &Arc<Mutex<bool>>) -> bool {
+    stop_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn thumbnail_pause_requested(pause_requested: &Arc<Mutex<bool>>) -> bool {
+    pause_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn wait_for_thumbnail_resume(
+    progress: &Arc<Mutex<ThumbnailGenerationProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
+) {
+    loop {
+        if thumbnail_stop_requested(stop_requested) {
+            return;
+        }
+        if thumbnail_pause_requested(pause_requested) {
+            set_thumbnail_progress_phase(progress, "paused");
+            thread::sleep(std::time::Duration::from_millis(120));
+            continue;
+        }
+        break;
+    }
+}
+
+fn thumbnail_up_to_date(candidate: &ThumbnailCandidate) -> bool {
+    let Some(thumb_path) = candidate.current_thumb_path.as_ref() else {
+        return false;
+    };
+    if !Path::new(thumb_path).is_file() {
+        return false;
+    }
+    match (
+        candidate.current_source_modified_at,
+        candidate.current_source_file_size,
+    ) {
+        (Some(modified_at), Some(file_size)) => {
+            modified_at == candidate.modified_at && file_size == candidate.file_size
+        }
+        _ => false,
+    }
+}
+
+fn generate_single_thumbnail(
+    candidate: &ThumbnailCandidate,
+    thumb_root: &Path,
+    long_edge: u32,
+    quality: f32,
+) -> Result<String, String> {
+    let source = ImageReader::open(&candidate.image_path)
+        .map_err(|error| format!("Failed to open image for thumbnail: {error}"))?
+        .decode()
+        .map_err(|error| format!("Failed to decode image for thumbnail: {error}"))?;
+
+    let (src_w, src_h) = source.dimensions();
+    if src_w == 0 || src_h == 0 {
+        return Err("Invalid image dimensions for thumbnail".to_string());
+    }
+    let (dst_w, dst_h) = fit_long_edge(src_w, src_h, long_edge);
+
+    let resized = if dst_w == src_w && dst_h == src_h {
+        source
+    } else {
+        source.resize(dst_w, dst_h, FilterType::Triangle)
+    };
+    let rgba = resized.to_rgba8();
+    let (encoded_w, encoded_h) = rgba.dimensions();
+    let mut encoded = Vec::<u8>::new();
+    {
+        let mut cursor = Cursor::new(&mut encoded);
+        let encoder = webp::Encoder::from_rgba(rgba.as_raw(), encoded_w, encoded_h);
+        let webp = encoder.encode(quality);
+        cursor
+            .write_all(webp.as_ref())
+            .map_err(|error| format!("Failed to encode thumbnail webp: {error}"))?;
+    }
+
+    let file_name = format!("{}.webp", stable_hash_hex(&candidate.image_id));
+    let thumb_path = thumb_root.join(file_name);
+    fs::write(&thumb_path, encoded)
+        .map_err(|error| format!("Failed to write thumbnail file: {error}"))?;
+    Ok(thumb_path.to_string_lossy().to_string())
+}
+
+fn fit_long_edge(width: u32, height: u32, max_long_edge: u32) -> (u32, u32) {
+    let max_side = width.max(height);
+    if max_side <= max_long_edge {
+        return (width.max(1), height.max(1));
+    }
+    let scale = max_long_edge as f64 / max_side as f64;
+    let dst_w = ((width as f64 * scale).round() as u32).max(1);
+    let dst_h = ((height as f64 * scale).round() as u32).max(1);
+    (dst_w, dst_h)
+}
+
+fn stable_hash_hex(value: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for &byte in value.as_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+fn upsert_thumbnail_record(
+    conn: &Connection,
+    image_id: &str,
+    thumb_path: &str,
+    source_modified_at: i64,
+    source_file_size: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "
+        INSERT INTO image_thumbnails (
+          image_id, thumb_path, source_modified_at, source_file_size, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(image_id) DO UPDATE SET
+          thumb_path = excluded.thumb_path,
+          source_modified_at = excluded.source_modified_at,
+          source_file_size = excluded.source_file_size,
+          updated_at = excluded.updated_at
+        ",
+        params![
+            image_id,
+            thumb_path,
+            source_modified_at,
+            source_file_size,
+            now_ms()
+        ],
+    )
+    .map_err(|error| format!("Failed to upsert thumbnail record: {error}"))?;
+    Ok(())
+}
+
 fn load_cn_tag_dictionary_map() -> Result<HashMap<String, String>, String> {
     let dictionary_path = resolve_dictionary_xlsx_path()?;
     if !dictionary_path.is_file() {
@@ -3328,6 +3967,84 @@ fn resolve_dictionary_xlsx_path() -> Result<PathBuf, String> {
         }
     }
     Ok(PathBuf::from("dictionary01.xlsx"))
+}
+
+fn set_thumbnail_progress(
+    progress: &Arc<Mutex<ThumbnailGenerationProgress>>,
+    next: ThumbnailGenerationProgress,
+) {
+    if let Ok(mut state) = progress.lock() {
+        *state = next;
+    }
+}
+
+fn update_thumbnail_progress<F>(progress: &Arc<Mutex<ThumbnailGenerationProgress>>, update: F)
+where
+    F: FnOnce(&mut ThumbnailGenerationProgress),
+{
+    if let Ok(mut state) = progress.lock() {
+        update(&mut state);
+    }
+}
+
+fn set_thumbnail_progress_phase(progress: &Arc<Mutex<ThumbnailGenerationProgress>>, phase: &str) {
+    update_thumbnail_progress(progress, |state| {
+        state.phase = phase.to_string();
+        state.running = phase != "idle";
+        state.paused = phase == "paused";
+    });
+}
+
+fn set_thumbnail_progress_total(progress: &Arc<Mutex<ThumbnailGenerationProgress>>, total: i64) {
+    update_thumbnail_progress(progress, |state| {
+        state.total_candidates = total.max(0);
+    });
+}
+
+fn set_thumbnail_progress_counts(
+    progress: &Arc<Mutex<ThumbnailGenerationProgress>>,
+    processed: i64,
+    generated: i64,
+    skipped: i64,
+    failed: i64,
+) {
+    update_thumbnail_progress(progress, |state| {
+        state.processed_images = processed.max(0);
+        state.generated_images = generated.max(0);
+        state.skipped_images = skipped.max(0);
+        state.failed_images = failed.max(0);
+    });
+}
+
+fn set_thumbnail_progress_error(progress: &Arc<Mutex<ThumbnailGenerationProgress>>, error: &str) {
+    update_thumbnail_progress(progress, |state| {
+        state.last_error = Some(error.to_string());
+    });
+}
+
+fn push_thumbnail_progress_recent_error(
+    progress: &Arc<Mutex<ThumbnailGenerationProgress>>,
+    error: &str,
+) {
+    update_thumbnail_progress(progress, |state| {
+        let text = error.trim();
+        if text.is_empty() {
+            return;
+        }
+        state.recent_errors.push(text.to_string());
+        if state.recent_errors.len() > 12 {
+            let overflow = state.recent_errors.len() - 12;
+            state.recent_errors.drain(0..overflow);
+        }
+    });
+}
+
+fn set_thumbnail_progress_done(progress: &Arc<Mutex<ThumbnailGenerationProgress>>) {
+    update_thumbnail_progress(progress, |state| {
+        state.running = false;
+        state.paused = false;
+        state.phase = "idle".to_string();
+    });
 }
 
 fn set_scan_progress(progress: &Arc<Mutex<BackgroundScanProgress>>, next: BackgroundScanProgress) {

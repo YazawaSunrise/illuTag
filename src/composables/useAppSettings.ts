@@ -7,6 +7,7 @@ type UseAppSettingsOptions = {
   rightSidebarPinnedStorageKey?: string
   autoFixRightSidebarOnPreviewStorageKey?: string
   themeModeStorageKey?: string
+  thumbnailCacheEnabledStorageKey?: string
 }
 
 const defaultKeys = {
@@ -14,6 +15,7 @@ const defaultKeys = {
   rightSidebarPinned: 'illutag.rightSidebarPinned',
   autoFixRightSidebarOnPreview: 'illutag.autoFixRightSidebarOnPreview',
   themeMode: 'illutag.themeMode',
+  thumbnailCacheEnabled: 'illutag.thumbnailCacheEnabled',
 }
 
 export function useAppSettings(options: UseAppSettingsOptions = {}) {
@@ -23,11 +25,14 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
   const autoFixRightSidebarOnPreviewStorageKey =
     options.autoFixRightSidebarOnPreviewStorageKey ?? defaultKeys.autoFixRightSidebarOnPreview
   const themeModeStorageKey = options.themeModeStorageKey ?? defaultKeys.themeMode
+  const thumbnailCacheEnabledStorageKey =
+    options.thumbnailCacheEnabledStorageKey ?? defaultKeys.thumbnailCacheEnabled
 
   const sidebarPinned = ref(false)
   const rightSidebarPinned = ref(false)
   const autoFixRightSidebarOnPreview = ref(false)
   const themeMode = ref<ThemeMode>('light')
+  const thumbnailCacheEnabled = ref(false)
 
   function applyTheme(value: ThemeMode) {
     document.documentElement.dataset.theme = value
@@ -40,6 +45,7 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
       localStorage.getItem(autoFixRightSidebarOnPreviewStorageKey) === 'true'
     const storedTheme = localStorage.getItem(themeModeStorageKey)
     themeMode.value = storedTheme === 'dark' ? 'dark' : 'light'
+    thumbnailCacheEnabled.value = localStorage.getItem(thumbnailCacheEnabledStorageKey) === 'true'
     applyTheme(themeMode.value)
   }
 
@@ -59,6 +65,10 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
     themeMode.value = value
   }
 
+  function setThumbnailCacheEnabled(value: boolean) {
+    thumbnailCacheEnabled.value = value
+  }
+
   watch(sidebarPinned, (value) => {
     localStorage.setItem(sidebarPinnedStorageKey, String(value))
   })
@@ -76,15 +86,21 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
     localStorage.setItem(themeModeStorageKey, value)
   })
 
+  watch(thumbnailCacheEnabled, (value) => {
+    localStorage.setItem(thumbnailCacheEnabledStorageKey, String(value))
+  })
+
   return {
     sidebarPinned,
     rightSidebarPinned,
     autoFixRightSidebarOnPreview,
     themeMode,
+    thumbnailCacheEnabled,
     initAppSettingsFromStorage,
     setSidebarPinned,
     setRightSidebarPinned,
     setAutoFixRightSidebarOnPreview,
     setThemeMode,
+    setThumbnailCacheEnabled,
   }
 }

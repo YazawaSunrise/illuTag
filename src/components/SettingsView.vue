@@ -8,6 +8,12 @@ type ThemeMode = 'light' | 'dark'
 defineProps<{
   sidebarPinned: boolean
   autoFixRightSidebarOnPreview: boolean
+  thumbnailCacheEnabled: boolean
+  isThumbnailGenerationRunning: boolean
+  isThumbnailGenerationPaused: boolean
+  thumbnailProgressText: string
+  thumbnailProgressPercent: number
+  thumbnailRecentErrors: string[]
   autoScanOnStartup: boolean
   isBackgroundScanRunning: boolean
   scanProgressText: string
@@ -26,7 +32,7 @@ defineProps<{
     <div class="settings__header">
       <div>
         <h2>图库文件夹</h2>
-        <p>输入或选择一个本地图片文件夹后，主页会按修改时间显示瀑布流。</p>
+        <p>添加本地图片文件夹后，主页会按修改时间展示瀑布流。</p>
       </div>
     </div>
 
@@ -56,6 +62,85 @@ defineProps<{
       />
       <span>预览参考板时自动固定右侧栏</span>
     </label>
+
+    <label class="setting-toggle">
+      <input
+        :checked="thumbnailCacheEnabled"
+        type="checkbox"
+        @change="handlers.setThumbnailCacheEnabled(($event.target as HTMLInputElement).checked)"
+      />
+      <span>启用缩略图缓存（WebP 768）</span>
+    </label>
+
+    <div class="settings__thumbnail-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
+        @click="handlers.startThumbnailGeneration()"
+      >
+        开始生成缩略图
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning || isThumbnailGenerationPaused"
+        @click="handlers.pauseThumbnailGeneration()"
+      >
+        暂停
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning || !isThumbnailGenerationPaused"
+        @click="handlers.resumeThumbnailGeneration()"
+      >
+        继续
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning"
+        @click="handlers.stopThumbnailGeneration()"
+      >
+        停止
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
+        @click="handlers.rebuildThumbnailCache()"
+      >
+        重建缩略图缓存
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
+        @click="handlers.clearThumbnailCache()"
+      >
+        清空缩略图缓存
+      </button>
+    </div>
+
+    <div v-if="thumbnailProgressText" class="settings__progress-group">
+      <p class="settings__progress">{{ thumbnailProgressText }}</p>
+      <div
+        class="settings__progressbar"
+        role="progressbar"
+        :aria-valuenow="thumbnailProgressPercent"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div class="settings__progressbar-fill" :style="{ width: `${thumbnailProgressPercent}%` }" />
+      </div>
+    </div>
+    <div v-if="thumbnailRecentErrors.length > 0" class="settings__scan-errors">
+      <p class="settings__scan-errors-title">缩略图最近错误</p>
+      <ul>
+        <li v-for="(entry, index) in thumbnailRecentErrors" :key="`thumb-${index}-${entry}`">{{ entry }}</li>
+      </ul>
+    </div>
 
     <label class="setting-toggle">
       <input
@@ -94,9 +179,7 @@ defineProps<{
       <button class="secondary-button" type="button" :disabled="isLoading" @click="handlers.pickFolder()">
         选择
       </button>
-      <button class="primary-button" type="submit" :disabled="isLoading">
-        添加图库文件夹
-      </button>
+      <button class="primary-button" type="submit" :disabled="isLoading">添加图库文件夹</button>
     </form>
 
     <p v-if="errorText" class="error">{{ errorText }}</p>

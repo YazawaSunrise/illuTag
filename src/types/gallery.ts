@@ -1,6 +1,7 @@
 export type GalleryImage = {
   id: string
   path: string
+  thumbnailPath?: string | null
   fileName: string
   ext: string
   width: number

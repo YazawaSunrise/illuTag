@@ -3,6 +3,13 @@ use illutag_core::library::{
     background_scan_progress,
     background_scan_status,
     copy_image_to_system_clipboard,
+    start_thumbnail_generation,
+    pause_thumbnail_generation,
+    resume_thumbnail_generation,
+    stop_thumbnail_generation,
+    clear_thumbnail_cache,
+    rebuild_thumbnail_cache,
+    thumbnail_generation_status,
     auto_arrange_reference_board, create_reference_board, create_reference_board_folder,
     create_user_folder, delete_reference_board, delete_reference_board_folder, delete_user_folder,
     duplicate_reference_board_item, export_gallery_image_from_state, export_reference_board_item_from_state,
@@ -16,7 +23,7 @@ use illutag_core::library::{
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
-    AppState, BackgroundScanProgress, BackgroundScanStatus, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, StartupCleanupStatus,
+    AppState, BackgroundScanProgress, BackgroundScanStatus, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, StartupCleanupStatus, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
 use std::sync::{Arc, Mutex};
@@ -115,6 +122,41 @@ fn start_startup_cleanup_command(state: State<AppState>) -> Result<bool, String>
 #[tauri::command]
 fn startup_cleanup_status_command(state: State<AppState>) -> Result<StartupCleanupStatus, String> {
     startup_cleanup_status(&state)
+}
+
+#[tauri::command]
+fn start_thumbnail_generation_command(state: State<AppState>) -> Result<bool, String> {
+    start_thumbnail_generation(&state)
+}
+
+#[tauri::command]
+fn thumbnail_generation_status_command(state: State<AppState>) -> Result<ThumbnailGenerationProgress, String> {
+    thumbnail_generation_status(&state)
+}
+
+#[tauri::command]
+fn pause_thumbnail_generation_command(state: State<AppState>) -> Result<bool, String> {
+    pause_thumbnail_generation(&state)
+}
+
+#[tauri::command]
+fn resume_thumbnail_generation_command(state: State<AppState>) -> Result<bool, String> {
+    resume_thumbnail_generation(&state)
+}
+
+#[tauri::command]
+fn stop_thumbnail_generation_command(state: State<AppState>) -> Result<bool, String> {
+    stop_thumbnail_generation(&state)
+}
+
+#[tauri::command]
+fn clear_thumbnail_cache_command(state: State<AppState>) -> Result<(), String> {
+    clear_thumbnail_cache(&state)
+}
+
+#[tauri::command]
+fn rebuild_thumbnail_cache_command(state: State<AppState>) -> Result<bool, String> {
+    rebuild_thumbnail_cache(&state)
 }
 
 #[tauri::command]
@@ -449,6 +491,11 @@ fn main() {
                 background_scan_progress: Arc::new(Mutex::new(BackgroundScanProgress::default())),
                 startup_cleanup_running: Arc::new(Mutex::new(false)),
                 startup_cleanup_generation: Arc::new(Mutex::new(0)),
+                thumbnail_generation_running: Arc::new(Mutex::new(false)),
+                thumbnail_generation_pending: Arc::new(Mutex::new(false)),
+                thumbnail_generation_pause_requested: Arc::new(Mutex::new(false)),
+                thumbnail_generation_stop_requested: Arc::new(Mutex::new(false)),
+                thumbnail_generation_progress: Arc::new(Mutex::new(ThumbnailGenerationProgress::default())),
             });
 
             Ok(())
@@ -467,6 +514,13 @@ fn main() {
             background_scan_progress_command,
             start_startup_cleanup_command,
             startup_cleanup_status_command,
+            start_thumbnail_generation_command,
+            thumbnail_generation_status_command,
+            pause_thumbnail_generation_command,
+            resume_thumbnail_generation_command,
+            stop_thumbnail_generation_command,
+            clear_thumbnail_cache_command,
+            rebuild_thumbnail_cache_command,
             list_image_auto_tags_command,
             suggest_known_auto_tags_command,
             search_gallery_image_ids_command,
