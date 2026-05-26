@@ -19,8 +19,8 @@ use std::{
 use walkdir::WalkDir;
 
 const WD_TAGGER_MODEL_NAME: &str = "wd-swinv2-tagger-v3";
-const THUMBNAIL_LONG_EDGE: u32 = 768;
-const THUMBNAIL_WEBP_QUALITY: f32 = 82.0;
+const THUMBNAIL_LONG_EDGE: u32 = 960;
+const THUMBNAIL_WEBP_QUALITY: f32 = 85.0;
 
 pub struct AppState {
     pub database_path: PathBuf,

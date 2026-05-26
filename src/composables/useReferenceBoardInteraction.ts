@@ -37,6 +37,7 @@ type BoardItemInteraction = {
   rotateStartAngle: number
   panX: number
   panY: number
+  panMoved: boolean
 }
 
 type BoardItemLayout = {
@@ -76,6 +77,7 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
   const selectedReferenceBoardItemId = ref<number | null>(null)
   const referenceBoardCanvasMenu = ref<ReferenceBoardCanvasMenu>(null)
   const lastBoardPointerWorld = ref<{ x: number; y: number; at: number } | null>(null)
+  const suppressNextCanvasContextMenu = ref(false)
 
   function closeReferenceBoardCanvasMenu() {
     referenceBoardCanvasMenu.value = null
@@ -98,6 +100,12 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
 
   function openReferenceBoardCanvasMenu(event: MouseEvent) {
     if (options.viewMode.value !== 'board') return
+    if (suppressNextCanvasContextMenu.value) {
+      suppressNextCanvasContextMenu.value = false
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     event.preventDefault()
     event.stopPropagation()
     options.closeImageDetailContextMenu()
@@ -190,7 +198,7 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
   }
 
   function startBoardPan(event: PointerEvent) {
-    if (event.button !== 0) return
+    if (event.button !== 2) return
     const target = event.target as HTMLElement | null
     if (target?.closest('.reference-board-card')) return
     closeReferenceBoardCanvasMenu()
@@ -210,6 +218,7 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
       rotateStartAngle: 0,
       panX: boardPan.value.x,
       panY: boardPan.value.y,
+      panMoved: false,
     }
   }
 
@@ -218,9 +227,14 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
     if (!interaction || interaction.pointerId !== event.pointerId) return
 
     if (interaction.mode === 'pan') {
+      const deltaX = event.clientX - interaction.startX
+      const deltaY = event.clientY - interaction.startY
+      if (!interaction.panMoved && (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2)) {
+        interaction.panMoved = true
+      }
       boardPan.value = {
-        x: interaction.panX + (event.clientX - interaction.startX),
-        y: interaction.panY + (event.clientY - interaction.startY),
+        x: interaction.panX + deltaX,
+        y: interaction.panY + deltaY,
       }
       return
     }
@@ -271,7 +285,12 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
     if (!interaction || interaction.pointerId !== event.pointerId) return
     boardInteraction.value = null
 
-    if (interaction.mode === 'pan') return
+    if (interaction.mode === 'pan') {
+      if (interaction.panMoved) {
+        suppressNextCanvasContextMenu.value = true
+      }
+      return
+    }
     const item = options.library.value.referenceBoardItems.find((entry) => entry.id === interaction.itemId)
     if (!item) return
     const boardId = item.boardId
@@ -343,6 +362,7 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
       rotateStartAngle: 0,
       panX: boardPan.value.x,
       panY: boardPan.value.y,
+      panMoved: false,
     }
   }
 
@@ -369,6 +389,7 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
       rotateStartAngle: 0,
       panX: boardPan.value.x,
       panY: boardPan.value.y,
+      panMoved: false,
     }
   }
 
@@ -399,6 +420,7 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
       rotateStartAngle,
       panX: boardPan.value.x,
       panY: boardPan.value.y,
+      panMoved: false,
     }
   }
 
