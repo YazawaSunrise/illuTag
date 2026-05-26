@@ -45,6 +45,12 @@ const searchHideTimer = ref<number | null>(null)
 const lastPointerClient = ref<{ x: number; y: number } | null>(null)
 const viewportSyncRaf = ref<number | null>(null)
 const suppressOutsideClickOnce = ref(false)
+const searchChipsEl = ref<HTMLElement | null>(null)
+const searchChipsDragState = ref<{
+  pointerId: number
+  startX: number
+  startScrollLeft: number
+} | null>(null)
 
 function clearSearchHideTimer() {
   if (searchHideTimer.value !== null) {
@@ -105,6 +111,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearSearchHideTimer()
   clearViewportSyncRaf()
+  finishSearchChipsDrag()
   gallerySectionResizeObserver.value?.disconnect()
   gallerySectionResizeObserver.value = null
   searchPanelResizeObserver.value?.disconnect()
@@ -232,6 +239,60 @@ function onSearchPointerDown() {
   suppressOutsideClickOnce.value = false
 }
 
+function finishSearchChipsDrag() {
+  const container = searchChipsEl.value
+  const state = searchChipsDragState.value
+  if (container && state && container.hasPointerCapture(state.pointerId)) {
+    container.releasePointerCapture(state.pointerId)
+  }
+  if (container) {
+    container.classList.remove('is-dragging')
+  }
+  searchChipsDragState.value = null
+}
+
+function onSearchChipsPointerDown(event: PointerEvent) {
+  if (event.button !== 0) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.gallery-search__chip-remove')) return
+  const container = searchChipsEl.value
+  if (!container) return
+  searchChipsDragState.value = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startScrollLeft: container.scrollLeft,
+  }
+  container.classList.add('is-dragging')
+  container.setPointerCapture(event.pointerId)
+  event.preventDefault()
+}
+
+function onSearchChipsPointerMove(event: PointerEvent) {
+  const state = searchChipsDragState.value
+  const container = searchChipsEl.value
+  if (!state || !container || state.pointerId !== event.pointerId) return
+  const deltaX = event.clientX - state.startX
+  container.scrollLeft = state.startScrollLeft - deltaX
+  event.preventDefault()
+}
+
+function onSearchChipsPointerUp(event: PointerEvent) {
+  const state = searchChipsDragState.value
+  if (!state || state.pointerId !== event.pointerId) return
+  finishSearchChipsDrag()
+}
+
+function onSearchChipsPointerCancel(event: PointerEvent) {
+  const state = searchChipsDragState.value
+  if (!state || state.pointerId !== event.pointerId) return
+  finishSearchChipsDrag()
+}
+
+function onSearchChipsLostPointerCapture() {
+  if (!searchChipsDragState.value) return
+  finishSearchChipsDrag()
+}
+
 function canScrollContainer(container: HTMLElement, deltaY: number) {
   if (container.scrollHeight <= container.clientHeight + 1) return false
   if (deltaY < 0) return container.scrollTop > 0
@@ -293,10 +354,19 @@ function onSearchWheel(event: WheelEvent) {
       @wheel="onSearchWheel"
     >
       <div class="gallery-search__grid">
-        <div class="gallery-search__cell gallery-search__cell--tags">
+        <div class="gallery-search__cell gallery-search__cell--tags" :class="{ 'is-chip-dragging': Boolean(searchChipsDragState) }">
           <div class="gallery-search__label-row">
             <div class="gallery-search__label">中文标签联想</div>
-            <div class="gallery-search__chips">
+            <div
+              ref="searchChipsEl"
+              class="gallery-search__chips"
+              :class="{ 'is-dragging': Boolean(searchChipsDragState) }"
+              @pointerdown="onSearchChipsPointerDown"
+              @pointermove="onSearchChipsPointerMove"
+              @pointerup="onSearchChipsPointerUp"
+              @pointercancel="onSearchChipsPointerCancel"
+              @lostpointercapture="onSearchChipsLostPointerCapture"
+            >
               <span v-for="tag in searchZhSelected" :key="tag.tagEn" class="gallery-search__chip">
                 <span class="gallery-search__chip-text">{{ tag.tagZh || tag.tagEn }}</span>
                 <button

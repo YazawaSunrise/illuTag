@@ -265,7 +265,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       searchZhOpen.value = false
       return
     }
-    searchZhSelected.value = [...searchZhSelected.value, item]
+    searchZhSelected.value = [item, ...searchZhSelected.value]
     searchZhInput.value = ''
     searchZhOpen.value = false
   }
@@ -303,12 +303,12 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     const exists = searchZhSelected.value.some((tag) => tag.tagEn === normalized)
     if (exists) return
     searchZhSelected.value = [
-      ...searchZhSelected.value,
       {
         tagEn: normalized,
         tagZh: tagZh ?? null,
         imageCount: 0,
       },
+      ...searchZhSelected.value,
     ]
   }
 

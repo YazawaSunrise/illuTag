@@ -55,6 +55,8 @@ const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
+const importLibraryFolderPickerItemId = ref<number | null>(null)
+const importLibraryFolderPickerResolve = ref<((folderId: number | null) => void) | null>(null)
 const boardPointerUseMaxAgeMs = 5000
 const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
@@ -549,6 +551,7 @@ onMounted(async () => {
   window.addEventListener('pointerup', finishBoardInteraction)
   window.addEventListener('click', closeFolderContextMenu)
   window.addEventListener('click', closeBoardContextMenu)
+  window.addEventListener('click', closeReferenceBoardCanvasMenu)
   window.addEventListener('click', closeImageDetailContextMenu)
   window.addEventListener('click', closeGalleryImageContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -578,9 +581,11 @@ onUnmounted(() => {
   window.removeEventListener('pointerup', finishBoardInteraction)
   window.removeEventListener('click', closeFolderContextMenu)
   window.removeEventListener('click', closeBoardContextMenu)
+  window.removeEventListener('click', closeReferenceBoardCanvasMenu)
   window.removeEventListener('click', closeImageDetailContextMenu)
   window.removeEventListener('click', closeGalleryImageContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
+  closeImportLibraryFolderPicker(null)
 })
 
 watch(sidebarPinned, async (value) => {
@@ -763,6 +768,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     cancelReferenceBoardFolderRename()
     cancelReferenceBoardRename()
     closeReferenceBoardCanvasMenu()
+    closeImportLibraryFolderPicker(null)
     closeImageDetail()
     closeGalleryImageContextMenu()
     cancelImageDrag()
@@ -909,7 +915,8 @@ async function importSelectedReferenceItemToLibrary(itemId: number) {
     return
   }
 
-  const folderId = pickImportedLibraryFolderIdForImport()
+  closeReferenceBoardCanvasMenu()
+  const folderId = await pickImportedLibraryFolderIdForImport(itemId)
   if (folderId === null) {
     return
   }
@@ -922,8 +929,6 @@ async function importSelectedReferenceItemToLibrary(itemId: number) {
     })
   } catch (error) {
     errorText.value = formatError(error)
-  } finally {
-    closeReferenceBoardCanvasMenu()
   }
 }
 
@@ -935,7 +940,24 @@ function canImportReferenceBoardItemToLibrary(itemId: number) {
   return image.source === 'reference'
 }
 
-function pickImportedLibraryFolderIdForImport() {
+function closeImportLibraryFolderPicker(selectedFolderId: number | null) {
+  importLibraryFolderPickerItemId.value = null
+  const resolve = importLibraryFolderPickerResolve.value
+  importLibraryFolderPickerResolve.value = null
+  resolve?.(selectedFolderId)
+}
+
+function openImportLibraryFolderPicker(itemId: number) {
+  if (importLibraryFolderPickerResolve.value) {
+    importLibraryFolderPickerResolve.value(null)
+  }
+  importLibraryFolderPickerItemId.value = itemId
+  return new Promise<number | null>((resolve) => {
+    importLibraryFolderPickerResolve.value = resolve
+  })
+}
+
+async function pickImportedLibraryFolderIdForImport(itemId: number) {
   const folders = library.value.folders
   if (folders.length === 0) {
     errorText.value = '请先在设置中导入至少一个本地图库文件夹。'
@@ -944,20 +966,7 @@ function pickImportedLibraryFolderIdForImport() {
   if (folders.length === 1) {
     return folders[0].id
   }
-
-  const options = folders.map((folder, index) => `${index + 1}. ${folder.path}`).join('\n')
-  const raw = window.prompt(
-    `选择要保存到的图库文件夹（输入序号）：\n${options}`,
-    '1',
-  )
-  if (raw === null) return null
-
-  const selectedIndex = Number.parseInt(raw.trim(), 10)
-  if (!Number.isFinite(selectedIndex) || selectedIndex < 1 || selectedIndex > folders.length) {
-    errorText.value = '无效选择，请输入列表中的序号。'
-    return null
-  }
-  return folders[selectedIndex - 1].id
+  return openImportLibraryFolderPicker(itemId)
 }
 
 async function exportReferenceBoardItem(itemId: number) {
@@ -1574,6 +1583,31 @@ function formatError(error: unknown) {
       :drop-folder-tree="dropFolderTree"
       :handlers="overlayHandlers"
     />
+
+    <div
+      v-if="importLibraryFolderPickerItemId !== null"
+      class="import-library-picker-layer"
+      @click="closeImportLibraryFolderPicker(null)"
+    >
+      <article class="import-library-picker" @click.stop>
+        <h3>加入图库</h3>
+        <p>选择要保存到的本地图库文件夹</p>
+        <div class="import-library-picker__list">
+          <button
+            v-for="folder in library.folders"
+            :key="folder.id"
+            type="button"
+            class="import-library-picker__option"
+            @click="closeImportLibraryFolderPicker(folder.id)"
+          >
+            {{ folder.path }}
+          </button>
+        </div>
+        <div class="import-library-picker__actions">
+          <button type="button" class="secondary-button" @click="closeImportLibraryFolderPicker(null)">取消</button>
+        </div>
+      </article>
+    </div>
 
     <div v-if="activeImageDetail" class="image-detail-layer" @click="closeImageDetail()">
       <article class="image-detail-modal" @click.stop>
