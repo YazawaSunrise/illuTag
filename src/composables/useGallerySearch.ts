@@ -290,6 +290,28 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchConfidenceMax.value = options.clamp(value, searchConfidenceMin.value, 1)
   }
 
+  function searchBySingleTag(tagEn: string, tagZh?: string | null) {
+    const normalized = tagEn.trim()
+    if (!normalized) return
+    searchZhInput.value = ''
+    searchZhOpen.value = false
+    searchZhSuggestions.value = []
+    searchEnQuery.value = ''
+    searchFileNameQuery.value = ''
+    searchConfidenceMin.value = 0
+    searchConfidenceMax.value = 1
+    const exists = searchZhSelected.value.some((tag) => tag.tagEn === normalized)
+    if (exists) return
+    searchZhSelected.value = [
+      ...searchZhSelected.value,
+      {
+        tagEn: normalized,
+        tagZh: tagZh ?? null,
+        imageCount: 0,
+      },
+    ]
+  }
+
   async function refreshSearchZhSuggestions() {
     const keyword = searchZhInput.value.trim()
     if (!keyword) {
@@ -430,6 +452,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     setSearchFileNameQuery,
     setSearchConfidenceMin,
     setSearchConfidenceMax,
+    searchBySingleTag,
     closeImageDetail,
     openGalleryImageDetail,
   }

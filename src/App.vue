@@ -376,6 +376,7 @@ const {
   setSearchFileNameQuery,
   setSearchConfidenceMin,
   setSearchConfidenceMax,
+  searchBySingleTag,
   closeImageDetail,
   openGalleryImageDetail,
 } = useGallerySearch<LibraryStore>({
@@ -1204,6 +1205,11 @@ async function copyGalleryImageToClipboard(imageId: string) {
   }
 }
 
+function searchByTagFromImageDetail(tagEn: string, tagZh?: string | null) {
+  searchBySingleTag(tagEn, tagZh ?? null)
+  closeImageDetail()
+}
+
 function formatFileSize(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -1619,6 +1625,11 @@ function formatError(error: unknown) {
                             v-for="tag in group.rows"
                             :key="`${group.key}:${tag.tagEn}`"
                             class="image-detail-modal__tag-item"
+                            role="button"
+                            tabindex="0"
+                            @click="searchByTagFromImageDetail(tag.tagEn, tag.tagZh)"
+                            @keydown.enter.prevent="searchByTagFromImageDetail(tag.tagEn, tag.tagZh)"
+                            @keydown.space.prevent="searchByTagFromImageDetail(tag.tagEn, tag.tagZh)"
                           >
                             <div class="image-detail-modal__tag-main">{{ tag.tagZh || tag.tagEn }}</div>
                             <div class="image-detail-modal__tag-sub">{{ tag.tagZh ? tag.tagEn : '' }}</div>

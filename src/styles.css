@@ -1895,6 +1895,17 @@ button {
   border: 1px solid #2d353e;
   border-radius: 6px;
   background: #11161c;
+  cursor: pointer;
+}
+
+.image-detail-modal__tag-item:hover {
+  border-color: #485565;
+  background: #151c24;
+}
+
+.image-detail-modal__tag-item:focus-visible {
+  outline: 2px solid #7aa7d9;
+  outline-offset: 1px;
 }
 
 .image-detail-modal__tag-main {
@@ -2360,6 +2371,15 @@ button {
 .app-shell.theme-light .image-detail-modal__tag-item {
   border-color: #d8e1ec;
   background: #f8fbff;
+}
+
+.app-shell.theme-light .image-detail-modal__tag-item:hover {
+  border-color: #b9c8da;
+  background: #f2f7ff;
+}
+
+.app-shell.theme-light .image-detail-modal__tag-item:focus-visible {
+  outline-color: #4a78a8;
 }
 
 .app-shell.theme-light .image-detail-modal__meta-scroll,
