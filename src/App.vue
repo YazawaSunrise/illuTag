@@ -20,77 +20,15 @@ import { useReferenceBoardManagement } from './composables/useReferenceBoardMana
 import { useReferenceBoardInteraction } from './composables/useReferenceBoardInteraction'
 import { useReferenceBoardClipboard } from './composables/useReferenceBoardClipboard'
 import { useReferenceBoardHistory } from './composables/useReferenceBoardHistory'
+import { useReferenceBoardViewport } from './composables/useReferenceBoardViewport'
 import type { GalleryImage, GalleryLayoutItem } from './types/gallery'
-
-type LibraryFolder = {
-  id: number
-  path: string
-  addedAt: number
-  lastScannedAt?: number | null
-}
-
-type UserFolder = {
-  id: number
-  parentId?: number | null
-  name: string
-  sortOrder: number
-  createdAt: number
-  updatedAt: number
-}
-
-type ImageFolderAssignment = {
-  imageId: string
-  folderId: number
-}
-
-type ReferenceBoardFolder = {
-  id: number
-  name: string
-  sortOrder: number
-  createdAt: number
-  updatedAt: number
-}
-
-type ReferenceBoard = {
-  id: number
-  folderId?: number | null
-  name: string
-  sortOrder: number
-  createdAt: number
-  updatedAt: number
-}
-
-type ReferenceBoardItem = {
-  id: number
-  boardId: number
-  imageId: string
-  x: number
-  y: number
-  width: number
-  height: number
-  rotation: number
-  zIndex: number
-  createdAt: number
-}
-
-type LibraryStore = {
-  folders: LibraryFolder[]
-  images: GalleryImage[]
-  userFolders: UserFolder[]
-  imageFolders: ImageFolderAssignment[]
-  referenceBoardFolders: ReferenceBoardFolder[]
-  referenceBoards: ReferenceBoard[]
-  referenceBoardItems: ReferenceBoardItem[]
-}
-
-type ViewMode = 'gallery' | 'settings' | 'board'
-
-type BoardCanvasBounds = {
-  minX: number
-  minY: number
-  maxX: number
-  maxY: number
-}
+import type {
+  BoardWorldBounds,
+  LibraryStore,
+  ReferenceBoard,
+  ReferenceBoardItem,
+  ViewMode,
+} from './types/app-state'
 
 const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoardFolderIds'
 const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
@@ -115,12 +53,8 @@ const folderPathInput = ref('')
 const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
-const boardCanvasBoundsById = ref<Record<number, BoardCanvasBounds>>({})
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const boardPointerUseMaxAgeMs = 5000
-
-const defaultBoardCanvasWidth = 1440
-const defaultBoardCanvasHeight = 960
 const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
 const sidebarOpen = computed(() => sidebarPinnedEffective.value || sidebarHoverOpen.value)
@@ -131,6 +65,18 @@ const activeReferenceBoard = computed(() =>
   library.value.referenceBoards.find((board) => board.id === activeReferenceBoardId.value) ?? null,
 )
 
+const {
+  activeBoardCanvasBounds,
+  boundsOfReferenceBoardItem,
+  mergeBoardBounds,
+  ensureBoardCanvasBoundsFor,
+  syncBoardCanvasBounds,
+} = useReferenceBoardViewport<LibraryStore>({
+  library,
+  activeReferenceBoardId,
+  activeReferenceBoard,
+})
+
 const activeReferenceBoardItems = computed(() => {
   if (activeReferenceBoardId.value === null) return []
   const imagesById = new Map(library.value.images.map((image) => [image.id, image]))
@@ -138,26 +84,6 @@ const activeReferenceBoardItems = computed(() => {
     .filter((item) => item.boardId === activeReferenceBoardId.value)
     .map((item) => ({ item, image: imagesById.get(item.imageId) }))
     .filter((entry): entry is { item: ReferenceBoardItem; image: GalleryImage } => Boolean(entry.image))
-})
-
-function createDefaultBoardCanvasBounds(): BoardCanvasBounds {
-  return {
-    minX: 0,
-    minY: 0,
-    maxX: defaultBoardCanvasWidth,
-    maxY: defaultBoardCanvasHeight,
-  }
-}
-
-function getBoardCanvasBounds(boardId: number) {
-  return boardCanvasBoundsById.value[boardId] ?? createDefaultBoardCanvasBounds()
-}
-
-const activeBoardCanvasBounds = computed(() => {
-  if (activeReferenceBoardId.value === null) {
-    return createDefaultBoardCanvasBounds()
-  }
-  return getBoardCanvasBounds(activeReferenceBoardId.value)
 })
 
 const referenceBoardCanvasMenuStyle = computed(() => {
@@ -665,11 +591,7 @@ watch(
     if (next.size !== previewReferenceBoardIds.value.size) {
       previewReferenceBoardIds.value = next
     }
-    const nextBounds: Record<number, BoardCanvasBounds> = {}
-    for (const boardId of exists) {
-      nextBounds[boardId] = boardCanvasBoundsById.value[boardId] ?? createDefaultBoardCanvasBounds()
-    }
-    boardCanvasBoundsById.value = nextBounds
+    syncBoardCanvasBounds(exists)
   },
 )
 
@@ -840,82 +762,6 @@ async function addImageToReferenceBoard(imageId: string, boardId: number) {
     boardId,
   })
   ensureBoardCanvasBoundsFor(boardId)
-}
-
-type BoardWorldBounds = { minX: number; minY: number; maxX: number; maxY: number }
-
-function boundsOfReferenceBoardItem(item: ReferenceBoardItem): BoardWorldBounds {
-  const radians = (item.rotation * Math.PI) / 180
-  const cos = Math.cos(radians)
-  const sin = Math.sin(radians)
-  const halfW = item.width / 2
-  const halfH = item.height / 2
-  const centerX = item.x + halfW
-  const centerY = item.y + halfH
-  const corners = [
-    { x: -halfW, y: -halfH },
-    { x: halfW, y: -halfH },
-    { x: halfW, y: halfH },
-    { x: -halfW, y: halfH },
-  ]
-  const rotated = corners.map(({ x, y }) => ({
-    x: centerX + x * cos - y * sin,
-    y: centerY + x * sin + y * cos,
-  }))
-  return {
-    minX: Math.min(...rotated.map((point) => point.x)),
-    minY: Math.min(...rotated.map((point) => point.y)),
-    maxX: Math.max(...rotated.map((point) => point.x)),
-    maxY: Math.max(...rotated.map((point) => point.y)),
-  }
-}
-
-function mergeBoardBounds(bounds: BoardWorldBounds[]) {
-  return bounds.reduce(
-    (acc, entry) => ({
-      minX: Math.min(acc.minX, entry.minX),
-      minY: Math.min(acc.minY, entry.minY),
-      maxX: Math.max(acc.maxX, entry.maxX),
-      maxY: Math.max(acc.maxY, entry.maxY),
-    }),
-    { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY, maxX: Number.NEGATIVE_INFINITY, maxY: Number.NEGATIVE_INFINITY },
-  )
-}
-
-function setBoardCanvasBounds(boardId: number, bounds: BoardCanvasBounds) {
-  boardCanvasBoundsById.value = {
-    ...boardCanvasBoundsById.value,
-    [boardId]: bounds,
-  }
-}
-
-function ensureBoardCanvasBoundsFor(boardId: number) {
-  const current = getBoardCanvasBounds(boardId)
-  const items = library.value.referenceBoardItems.filter((item) => item.boardId === boardId)
-  if (items.length === 0) {
-    setBoardCanvasBounds(boardId, current)
-    return
-  }
-  const itemsBounds = mergeBoardBounds(items.map(boundsOfReferenceBoardItem))
-  const next: BoardCanvasBounds = {
-    minX: Math.min(current.minX, itemsBounds.minX),
-    minY: Math.min(current.minY, itemsBounds.minY),
-    maxX: Math.max(current.maxX, itemsBounds.maxX),
-    maxY: Math.max(current.maxY, itemsBounds.maxY),
-  }
-  if (
-    next.minX !== current.minX ||
-    next.minY !== current.minY ||
-    next.maxX !== current.maxX ||
-    next.maxY !== current.maxY
-  ) {
-    setBoardCanvasBounds(boardId, next)
-  }
-}
-
-function ensureBoardCanvasBoundsForActiveBoard() {
-  if (!activeReferenceBoard.value) return
-  ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
 }
 
 function focusReferenceBoardBounds(bounds: BoardWorldBounds) {
