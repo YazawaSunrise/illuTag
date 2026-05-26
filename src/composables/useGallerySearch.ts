@@ -52,6 +52,14 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   const searchError = ref('')
   const isSearchFocused = ref(false)
   const isSearchPointerInside = ref(false)
+  const searchRevealMode = ref<'inline' | 'hidden' | 'floating'>('inline')
+  const searchRevealProgress = ref(1)
+  const searchRevealThreshold = 420
+  const searchTopOffset = ref(0)
+  const searchViewportTop = ref(0)
+  const searchViewportHeight = ref(0)
+  const searchPanelHeight = ref(0)
+  const searchFloatingArmed = ref(false)
 
   const activeImageDetailId = ref<string | null>(null)
   const activeImageTagRows = ref<ImageTagRecord[]>([])
@@ -60,6 +68,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   const searchSuggestRequestToken = ref(0)
   const searchTimer = ref<number | null>(null)
   const searchSuggestTimer = ref<number | null>(null)
+  const searchHideCommitTimer = ref<number | null>(null)
 
   const hasSearchFilters = computed(
     () =>
@@ -143,14 +152,97 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       window.clearTimeout(searchSuggestTimer.value)
       searchSuggestTimer.value = null
     }
+    if (searchHideCommitTimer.value !== null) {
+      window.clearTimeout(searchHideCommitTimer.value)
+      searchHideCommitTimer.value = null
+    }
   })
 
   function setSearchPointerInside(next: boolean) {
     isSearchPointerInside.value = next
+    updateSearchRevealMode()
   }
 
   function setSearchFocus(next: boolean) {
     isSearchFocused.value = next
+    updateSearchRevealMode()
+  }
+
+  function setSearchViewportState(scrollTop: number, clientHeight: number, panelHeight: number, topOffset = 0) {
+    searchTopOffset.value = topOffset
+    searchViewportTop.value = scrollTop
+    searchViewportHeight.value = clientHeight
+    searchPanelHeight.value = panelHeight
+    updateSearchRevealMode()
+  }
+
+  function triggerSearchRevealByHotspot() {
+    const distance = Math.max(0, searchViewportTop.value - searchTopOffset.value)
+    const panelBottom = searchTopOffset.value + searchPanelHeight.value
+    const viewportTop = searchViewportTop.value
+    const viewportBottom = viewportTop + searchViewportHeight.value
+    const panelVisible = panelBottom > viewportTop && searchTopOffset.value < viewportBottom
+    if (panelVisible) return
+    if (distance <= searchRevealThreshold) return
+    searchFloatingArmed.value = true
+    updateSearchRevealMode()
+  }
+
+  function hideSearchPanel() {
+    if (isSearchFocused.value || isSearchPointerInside.value) return
+    if (searchHideCommitTimer.value !== null) {
+      window.clearTimeout(searchHideCommitTimer.value)
+      searchHideCommitTimer.value = null
+    }
+
+    if (searchRevealMode.value === 'floating') {
+      searchFloatingArmed.value = false
+      searchRevealProgress.value = 0
+      searchHideCommitTimer.value = window.setTimeout(() => {
+        searchHideCommitTimer.value = null
+        updateSearchRevealMode()
+      }, 380)
+      return
+    }
+
+    searchFloatingArmed.value = false
+    updateSearchRevealMode()
+  }
+
+  function updateSearchRevealMode() {
+    if (searchHideCommitTimer.value !== null && (isSearchFocused.value || isSearchPointerInside.value)) {
+      window.clearTimeout(searchHideCommitTimer.value)
+      searchHideCommitTimer.value = null
+    }
+
+    const panelBottom = searchTopOffset.value + searchPanelHeight.value
+    const viewportTop = searchViewportTop.value
+    const viewportBottom = viewportTop + searchViewportHeight.value
+
+    const panelVisible = panelBottom > viewportTop && searchTopOffset.value < viewportBottom
+    if (isSearchFocused.value || isSearchPointerInside.value) {
+      searchRevealMode.value = panelVisible ? 'inline' : 'floating'
+      searchRevealProgress.value = 1
+      return
+    }
+
+    if (panelVisible) {
+      searchRevealMode.value = 'inline'
+      searchRevealProgress.value = 1
+      searchFloatingArmed.value = false
+      return
+    }
+
+    const distance = Math.max(0, viewportTop - searchTopOffset.value)
+    if (distance <= searchRevealThreshold) {
+      searchRevealMode.value = 'hidden'
+      searchRevealProgress.value = 0
+      searchFloatingArmed.value = false
+      return
+    }
+
+    searchRevealMode.value = searchFloatingArmed.value ? 'floating' : 'hidden'
+    searchRevealProgress.value = searchFloatingArmed.value ? 1 : 0
   }
 
   function setSearchZhInput(value: string) {
@@ -317,6 +409,11 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchError,
     isSearchFocused,
     isSearchPointerInside,
+    searchRevealMode,
+    searchRevealProgress,
+    setSearchViewportState,
+    triggerSearchRevealByHotspot,
+    hideSearchPanel,
     visibleImages,
     activeImageDetailId,
     activeImageDetail,

@@ -95,9 +95,9 @@ const referenceBoardCanvasMenuStyle = computed(() => {
 })
 
 const searchPanelStyle = computed<Record<string, string>>(() => ({
-  '--search-reveal': '1',
-  '--search-opacity': '1',
-  '--search-translate-y': '0%',
+  '--search-reveal': searchRevealProgress.value.toString(),
+  '--search-opacity': searchRevealProgress.value.toString(),
+  '--search-translate-y': `${(1 - searchRevealProgress.value) * -10}%`,
 }))
 
 const {
@@ -353,12 +353,17 @@ const {
   searchError,
   isSearchFocused,
   isSearchPointerInside,
+  searchRevealMode,
+  searchRevealProgress,
   visibleImages,
   activeImageDetailId,
   activeImageDetail,
   groupedImageTags,
   setSearchPointerInside,
   setSearchFocus,
+  setSearchViewportState,
+  triggerSearchRevealByHotspot,
+  hideSearchPanel: hideSearchPanelByState,
   setSearchZhInput,
   openSearchZhSuggestionPanel,
   closeSearchZhSuggestionPanelDeferred,
@@ -1034,7 +1039,9 @@ function openSettings() {
   sidebarHoverOpen.value = false
 }
 
-function hideSearchPanel() {}
+function hideSearchPanel() {
+  hideSearchPanelByState()
+}
 
 function setNewFolderName(value: string) {
   newFolderName.value = value
@@ -1263,6 +1270,8 @@ const referenceBoardViewHandlers = {
 const galleryViewHandlers = {
   setGalleryElement,
   onGalleryScroll,
+  setSearchViewportState,
+  triggerSearchRevealByHotspot,
   onGalleryWheel,
   onGalleryPreviewBoardItemDragOver,
   onGalleryPreviewBoardItemDrop,
@@ -1450,6 +1459,8 @@ function formatError(error: unknown) {
         :preview-drag-over-delete-zone="previewDragOverDeleteZone"
         :visible-images="visibleImages"
         :search-panel-style="searchPanelStyle"
+        :search-reveal-mode="searchRevealMode"
+        :is-search-focused="isSearchFocused"
         :search-zh-input="searchZhInput"
         :search-zh-selected="searchZhSelected"
         :search-zh-suggestions="searchZhSuggestions"
