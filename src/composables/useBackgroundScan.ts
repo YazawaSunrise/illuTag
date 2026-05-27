@@ -42,7 +42,7 @@ type NaturalLanguageScanProgress = {
 }
 
 type UseBackgroundScanOptions = {
-  loadLibrary: () => Promise<void>
+  loadLibrary: (options?: { silent?: boolean }) => Promise<void>
   formatError: (error: unknown) => string
   setErrorText: (value: string) => void
   autoScanOnStartupStorageKey?: string
@@ -70,6 +70,8 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
   const scanLibraryRefreshInFlight = ref(false)
   const scanLibraryRefreshAt = ref(0)
   const startupCleanupObservedGeneration = ref(0)
+  const collectLiveRefreshIntervalMs = 900
+  const taggingLiveRefreshIntervalMs = 25_000
 
   function initAutoScanOnStartupFromStorage() {
     autoScanOnStartup.value = localStorage.getItem(autoScanOnStartupStorageKey) === 'true'
@@ -157,14 +159,18 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
       const now = Date.now()
       const becameIdle = wasRunning && !progress.running
       const refreshIntervalMs =
-        progress.phase === 'collecting' ? 900 : progress.phase === 'tagging' ? 2400 : 1200
+        progress.phase === 'collecting'
+          ? collectLiveRefreshIntervalMs
+          : progress.phase === 'tagging'
+            ? taggingLiveRefreshIntervalMs
+            : 1200
       const shouldLiveRefresh =
         progress.running && changed && now - scanLibraryRefreshAt.value >= refreshIntervalMs
       if ((becameIdle || shouldLiveRefresh) && !scanLibraryRefreshInFlight.value) {
         scanLibraryRefreshInFlight.value = true
         scanLibraryRefreshAt.value = now
         try {
-          await options.loadLibrary()
+          await options.loadLibrary({ silent: true })
         } finally {
           scanLibraryRefreshInFlight.value = false
         }
@@ -210,7 +216,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
         scanLibraryRefreshInFlight.value = true
         scanLibraryRefreshAt.value = Date.now()
         try {
-          await options.loadLibrary()
+          await options.loadLibrary({ silent: true })
           naturalLanguageLastRefreshSignature.value = signature
         } finally {
           scanLibraryRefreshInFlight.value = false
@@ -235,7 +241,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
       scanLibraryRefreshInFlight.value = true
       scanLibraryRefreshAt.value = Date.now()
       try {
-        await options.loadLibrary()
+        await options.loadLibrary({ silent: true })
       } finally {
         scanLibraryRefreshInFlight.value = false
       }

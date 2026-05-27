@@ -6,22 +6,30 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::V
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap, HashSet},
     env,
     fs,
-    io::{Cursor, Write},
+    io::{BufRead, BufReader, Cursor, Write},
     path::{Path, PathBuf},
-    process::Command,
-    sync::{Arc, Mutex},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, TrySendError},
+    },
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
 
 const WD_TAGGER_MODEL_NAME: &str = "wd-swinv2-tagger-v3";
-const CHINESE_CLIP_MODEL_NAME: &str = "chinese-clip-vit-base-patch16";
+const CHINESE_CLIP_MODEL_ID: &str = "cn_clip_vit_base_patch16";
+const CHINESE_CLIP_MODEL_VERSION: &str = "onnx_v1";
 const THUMBNAIL_LONG_EDGE: u32 = 960;
 const THUMBNAIL_WEBP_QUALITY: f32 = 85.0;
+const THUMBNAIL_WORKER_COUNT: usize = 3;
+const THUMBNAIL_WORKER_QUEUE_CAPACITY: usize = 2;
+const NATURAL_LANGUAGE_SEARCH_DEFAULT_TOP_K: usize = 600;
 
 pub struct AppState {
     pub database_path: PathBuf,
@@ -39,6 +47,39 @@ pub struct AppState {
     pub natural_language_scan_running: Arc<Mutex<bool>>,
     pub natural_language_scan_pending: Arc<Mutex<bool>>,
     pub natural_language_scan_progress: Arc<Mutex<NaturalLanguageScanProgress>>,
+    pub clip_vector_cache: Arc<Mutex<Option<ClipImageVectorCache>>>,
+    pub clip_text_encoder_service: Arc<Mutex<Option<ClipTextEncoderService>>>,
+    pub clip_image_encoder_service: Arc<Mutex<Option<ClipImageEncoderService>>>,
+    pub wd_tagger_service: Arc<Mutex<Option<WdTaggerService>>>,
+}
+
+pub struct ClipImageVectorCache {
+    model_id: String,
+    model_version: String,
+    dimension: usize,
+    vectors: HashMap<String, Vec<f32>>,
+}
+
+pub struct ClipTextEncoderService {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    model_root: PathBuf,
+}
+
+pub struct ClipImageEncoderService {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    model_root: PathBuf,
+}
+
+pub struct WdTaggerService {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    model_path: PathBuf,
+    tags_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -349,13 +390,49 @@ struct ThumbnailCandidate {
     current_source_file_size: Option<i64>,
 }
 
+struct ThumbnailWorkerResult {
+    candidate: ThumbnailCandidate,
+    output: Result<String, String>,
+}
+
 struct NaturalLanguageEmbeddingCandidate {
     image_id: String,
     image_path: String,
     modified_at: i64,
-    file_size: i64,
     current_source_modified_at: Option<i64>,
-    current_source_file_size: Option<i64>,
+}
+
+#[derive(Debug)]
+struct NaturalLanguageSearchHeapEntry {
+    image_id: String,
+    score: f32,
+}
+
+impl PartialEq for NaturalLanguageSearchHeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.image_id == other.image_id && self.score.to_bits() == other.score.to_bits()
+    }
+}
+
+impl Eq for NaturalLanguageSearchHeapEntry {}
+
+impl PartialOrd for NaturalLanguageSearchHeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NaturalLanguageSearchHeapEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self
+            .score
+            .partial_cmp(&other.score)
+            .unwrap_or(Ordering::Less)
+        {
+            Ordering::Equal => self.image_id.cmp(&other.image_id),
+            ordering => ordering.reverse(),
+        }
+    }
 }
 
 pub fn list_library_from_state(state: &AppState) -> Result<LibraryStore, String> {
@@ -398,6 +475,9 @@ pub fn add_gallery_folder(folder_path: String, state: &AppState) -> Result<Libra
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
+    if let Ok(mut clip_cache) = state.clip_vector_cache.lock() {
+        *clip_cache = None;
+    }
     Ok(store)
 }
 
@@ -439,6 +519,9 @@ pub fn remove_gallery_folder(
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
+    if let Ok(mut clip_cache) = state.clip_vector_cache.lock() {
+        *clip_cache = None;
+    }
     Ok(store)
 }
 
@@ -455,6 +538,9 @@ pub fn remove_image_from_index(image_id: String, state: &AppState) -> Result<Lib
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
+    if let Ok(mut clip_cache) = state.clip_vector_cache.lock() {
+        *clip_cache = None;
+    }
     Ok(store)
 }
 
@@ -474,6 +560,9 @@ pub fn restore_image_from_trash(image_id: String, state: &AppState) -> Result<Li
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
+    if let Ok(mut clip_cache) = state.clip_vector_cache.lock() {
+        *clip_cache = None;
+    }
     Ok(store)
 }
 
@@ -707,6 +796,7 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
     let background_scan_pending = Arc::clone(&state.background_scan_pending);
     let background_scan_progress = Arc::clone(&state.background_scan_progress);
     let startup_cleanup_running = Arc::clone(&state.startup_cleanup_running);
+    let wd_tagger_service = Arc::clone(&state.wd_tagger_service);
     thread::spawn(move || {
         wait_until_startup_cleanup_finished(&startup_cleanup_running);
         eprintln!("[wd-scan] worker started");
@@ -729,6 +819,7 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
                         &database_path,
                         &scan_result.tag_queue_image_ids,
                         &background_scan_progress,
+                        &wd_tagger_service,
                     ) {
                         set_scan_progress_error(&background_scan_progress, &error);
                         push_scan_progress_recent_error(&background_scan_progress, &error);
@@ -1067,6 +1158,7 @@ pub fn rebuild_thumbnail_cache(state: &AppState) -> Result<bool, String> {
 }
 
 pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
+    ensure_clip_vector_cache_loaded(state)?;
     let mut running = state
         .natural_language_scan_running
         .lock()
@@ -1088,6 +1180,8 @@ pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
     let scan_running = Arc::clone(&state.natural_language_scan_running);
     let scan_pending = Arc::clone(&state.natural_language_scan_pending);
     let scan_progress = Arc::clone(&state.natural_language_scan_progress);
+    let clip_vector_cache = Arc::clone(&state.clip_vector_cache);
+    let clip_image_encoder_service = Arc::clone(&state.clip_image_encoder_service);
 
     thread::spawn(move || {
         loop {
@@ -1100,7 +1194,12 @@ pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
                 },
             );
 
-            if let Err(error) = generate_natural_language_embeddings_once(&database_path, &scan_progress) {
+            if let Err(error) = generate_natural_language_embeddings_once(
+                &database_path,
+                &scan_progress,
+                &clip_vector_cache,
+                &clip_image_encoder_service,
+            ) {
                 set_natural_language_scan_progress_error(&scan_progress, &error);
                 push_natural_language_scan_recent_error(&scan_progress, &error);
                 eprintln!("[clip-scan] {error}");
@@ -1166,10 +1265,8 @@ pub fn search_gallery_image_ids_by_natural_language(
         return Ok(Vec::new());
     }
 
-    let conn = open_database(&state.database_path)?;
-    let model_root = resolve_chinese_clip_model_dir(None)?;
-    let script_path = resolve_chinese_clip_embed_script_path()?;
-    let text_embedding = run_chinese_clip_text_embedding(trimmed_query, &model_root, &script_path)?;
+    ensure_clip_vector_cache_loaded(state)?;
+    let text_embedding = run_chinese_clip_text_embedding_via_service(trimmed_query, state)?;
     if text_embedding.is_empty() {
         return Ok(Vec::new());
     }
@@ -1184,46 +1281,55 @@ pub fn search_gallery_image_ids_by_natural_language(
         return Ok(Vec::new());
     }
 
-    let mut stmt = conn
-        .prepare(
-            "
-            SELECT e.image_id, e.vector_json
-            FROM image_clip_embeddings e
-            JOIN images i ON i.id = e.image_id
-            WHERE e.model_name = ?1
-              AND i.source = 'library'
-              AND COALESCE(i.trashed, 0) = 0
-            ",
-        )
-        .map_err(|error| format!("Failed to prepare natural language search query: {error}"))?;
-    let rows = stmt
-        .query_map(params![CHINESE_CLIP_MODEL_NAME], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| format!("Failed to run natural language search query: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Failed to run natural language search query: {error}"))?;
-    drop(stmt);
+    let cache_guard = state
+        .clip_vector_cache
+        .lock()
+        .map_err(|_| "Clip vector cache state is locked".to_string())?;
+    let cache = cache_guard
+        .as_ref()
+        .ok_or_else(|| "Clip vector cache not loaded".to_string())?;
+    if cache.model_id != CHINESE_CLIP_MODEL_ID || cache.model_version != CHINESE_CLIP_MODEL_VERSION {
+        return Ok(Vec::new());
+    }
+    if cache.dimension != text_embedding.len() {
+        return Ok(Vec::new());
+    }
 
-    let mut scored = Vec::<(String, f32)>::new();
-    for (image_id, vector_json) in rows {
+    let top_k = NATURAL_LANGUAGE_SEARCH_DEFAULT_TOP_K.max(1);
+    let mut heap = BinaryHeap::<NaturalLanguageSearchHeapEntry>::new();
+    for (image_id, vector) in &cache.vectors {
         if let Some(filter) = &candidate_filter {
-            if !filter.contains(&image_id) {
+            if !filter.contains(image_id) {
                 continue;
             }
         }
-        let vector: Vec<f32> = serde_json::from_str(&vector_json)
-            .map_err(|error| format!("Failed to parse image embedding for {image_id}: {error}"))?;
         if vector.len() != text_embedding.len() {
             continue;
         }
-        if let Some(score) = cosine_similarity(&text_embedding, &vector) {
-            scored.push((image_id, score));
+        let score = dot_product(&text_embedding, vector);
+        if !score.is_finite() {
+            continue;
+        }
+        heap.push(NaturalLanguageSearchHeapEntry {
+            image_id: image_id.clone(),
+            score,
+        });
+        if heap.len() > top_k {
+            let _ = heap.pop();
         }
     }
 
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(scored.into_iter().map(|(image_id, _)| image_id).collect())
+    let mut ranked = Vec::<NaturalLanguageSearchHeapEntry>::with_capacity(heap.len());
+    while let Some(entry) = heap.pop() {
+        ranked.push(entry);
+    }
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.image_id.cmp(&b.image_id))
+    });
+    Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
 }
 
 pub fn list_image_auto_tags(
@@ -2599,18 +2705,19 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
 
         CREATE TABLE IF NOT EXISTS image_clip_embeddings (
           image_id TEXT NOT NULL,
-          model_name TEXT NOT NULL,
-          dim INTEGER NOT NULL,
-          vector_json TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          model_version TEXT NOT NULL,
+          dimension INTEGER NOT NULL,
+          normalized INTEGER NOT NULL DEFAULT 1,
+          vector_blob BLOB NOT NULL,
           source_modified_at INTEGER NOT NULL,
-          source_file_size INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
-          PRIMARY KEY(image_id, model_name),
+          PRIMARY KEY(image_id, model_id, model_version),
           FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
         );
 
         CREATE INDEX IF NOT EXISTS idx_image_clip_embeddings_model_updated
-          ON image_clip_embeddings(model_name, updated_at DESC);
+          ON image_clip_embeddings(model_id, model_version, updated_at DESC);
 
         CREATE TRIGGER IF NOT EXISTS trg_image_auto_tags_insert_known
         AFTER INSERT ON image_auto_tags
@@ -2708,6 +2815,7 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
 
     ensure_library_columns(conn)?;
     ensure_thumbnail_table(conn)?;
+    ensure_clip_embedding_table(conn)?;
     ensure_user_folder_sort_order(conn)?;
     ensure_reference_board_items_allow_duplicates(conn)?;
     ensure_known_image_tags_bootstrap(conn)?;
@@ -2799,6 +2907,148 @@ fn ensure_thumbnail_table(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|error| format!("Failed to ensure image_thumbnails table: {error}"))?;
     Ok(())
+}
+
+fn ensure_clip_embedding_table(conn: &Connection) -> Result<(), String> {
+    if !table_exists(conn, "image_clip_embeddings")? {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS image_clip_embeddings (
+              image_id TEXT NOT NULL,
+              model_id TEXT NOT NULL,
+              model_version TEXT NOT NULL,
+              dimension INTEGER NOT NULL,
+              normalized INTEGER NOT NULL DEFAULT 1,
+              vector_blob BLOB NOT NULL,
+              source_modified_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY(image_id, model_id, model_version),
+              FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_image_clip_embeddings_model_updated
+              ON image_clip_embeddings(model_id, model_version, updated_at DESC);
+            ",
+        )
+        .map_err(|error| format!("Failed to ensure image_clip_embeddings table: {error}"))?;
+        return Ok(());
+    }
+
+    if table_has_column(conn, "image_clip_embeddings", "vector_blob")?
+        && table_has_column(conn, "image_clip_embeddings", "model_id")?
+        && table_has_column(conn, "image_clip_embeddings", "model_version")?
+        && table_has_column(conn, "image_clip_embeddings", "dimension")?
+        && table_has_column(conn, "image_clip_embeddings", "normalized")?
+    {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS image_clip_embeddings_v2 (
+          image_id TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          model_version TEXT NOT NULL,
+          dimension INTEGER NOT NULL,
+          normalized INTEGER NOT NULL DEFAULT 1,
+          vector_blob BLOB NOT NULL,
+          source_modified_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(image_id, model_id, model_version),
+          FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+        ",
+    )
+    .map_err(|error| format!("Failed to create image_clip_embeddings_v2: {error}"))?;
+
+    let has_vector_json = table_has_column(conn, "image_clip_embeddings", "vector_json")?;
+    if has_vector_json {
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT image_id, model_name, dim, vector_json, source_modified_at, updated_at
+                FROM image_clip_embeddings
+                ",
+            )
+            .map_err(|error| format!("Failed to read legacy clip embeddings: {error}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(|error| format!("Failed to read legacy clip embeddings: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to read legacy clip embeddings: {error}"))?;
+        drop(stmt);
+
+        for (image_id, legacy_model_name, legacy_dim, vector_json, source_modified_at, updated_at) in rows {
+            let parsed: Vec<f32> = match serde_json::from_str(&vector_json) {
+                Ok(values) => values,
+                Err(_) => continue,
+            };
+            if parsed.is_empty() {
+                continue;
+            }
+            let normalized = normalize_vector(&parsed);
+            let vector_blob = encode_f32_blob(&normalized);
+            let dimension = legacy_dim
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(normalized.len());
+            let model_id = legacy_model_name
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(legacy_model_name_to_model_id)
+                .unwrap_or(CHINESE_CLIP_MODEL_ID)
+                .to_string();
+
+            conn.execute(
+                "
+                INSERT OR REPLACE INTO image_clip_embeddings_v2 (
+                  image_id, model_id, model_version, dimension, normalized, vector_blob, source_modified_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)
+                ",
+                params![
+                    image_id,
+                    model_id,
+                    CHINESE_CLIP_MODEL_VERSION,
+                    i64::try_from(dimension).unwrap_or(0),
+                    vector_blob,
+                    source_modified_at,
+                    updated_at,
+                ],
+            )
+            .map_err(|error| format!("Failed to migrate legacy clip embedding: {error}"))?;
+        }
+    }
+
+    conn.execute_batch(
+        "
+        DROP TABLE IF EXISTS image_clip_embeddings;
+        ALTER TABLE image_clip_embeddings_v2 RENAME TO image_clip_embeddings;
+        CREATE INDEX IF NOT EXISTS idx_image_clip_embeddings_model_updated
+          ON image_clip_embeddings(model_id, model_version, updated_at DESC);
+        ",
+    )
+    .map_err(|error| format!("Failed to finalize clip embedding migration: {error}"))?;
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, table_name: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        params![table_name],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .map_err(|error| format!("Failed to inspect table existence: {error}"))
 }
 
 fn table_has_column(
@@ -3549,6 +3799,7 @@ fn tag_images_with_wd_model(
     database_path: &Path,
     image_ids: &[String],
     progress: &Arc<Mutex<BackgroundScanProgress>>,
+    wd_tagger_service: &Arc<Mutex<Option<WdTaggerService>>>,
 ) -> Result<(), String> {
     if image_ids.is_empty() {
         return Ok(());
@@ -3559,15 +3810,28 @@ fn tag_images_with_wd_model(
     let model_root = resolve_wd_tagger_model_dir(None)?;
     let model_path = model_root.join("model.onnx");
     let tags_path = model_root.join("selected_tags.csv");
-    let script_path = resolve_wd_tagger_script_path()?;
+    let script_path = resolve_wd_tagger_service_script_path()?;
 
     if !model_path.is_file() || !tags_path.is_file() || !script_path.is_file() {
-        let err = "Model files or wd_tagger_test.py not found; skip tagging".to_string();
+        let err = "Model files or wd_tagger_service.py not found; skip tagging".to_string();
         set_scan_progress_error(progress, &err);
         push_scan_progress_recent_error(progress, &err);
         eprintln!("[wd-tag] {err}");
         return Ok(());
     }
+
+    let mut service_guard = wd_tagger_service
+        .lock()
+        .map_err(|_| "WD tagger service state is locked".to_string())?;
+    ensure_wd_tagger_service_started(
+        &mut service_guard,
+        &model_path,
+        &tags_path,
+        &script_path,
+    )?;
+    let service = service_guard
+        .as_mut()
+        .ok_or_else(|| "WD tagger service unavailable".to_string())?;
 
     eprintln!("[wd-tag] queue size: {}", image_ids.len());
     for image_id in image_ids {
@@ -3575,12 +3839,10 @@ fn tag_images_with_wd_model(
             increment_scan_progress_failed(progress);
             continue;
         }
-        match run_wd_tagger_script(
+        match run_wd_tagger_via_service(
+            service,
             image_id,
             image_id,
-            &model_path,
-            &tags_path,
-            &script_path,
             0.35,
             0.85,
         ) {
@@ -3600,47 +3862,99 @@ fn tag_images_with_wd_model(
     Ok(())
 }
 
-fn run_wd_tagger_script(
-    image_id: &str,
-    image_path: &str,
+fn ensure_wd_tagger_service_started(
+    service: &mut Option<WdTaggerService>,
     model_path: &Path,
     tags_path: &Path,
     script_path: &Path,
-    general_threshold: f32,
-    character_threshold: f32,
-) -> Result<WdTaggerTestResult, String> {
-    let output = Command::new("python")
+) -> Result<(), String> {
+    let need_restart = match service.as_ref() {
+        None => true,
+        Some(existing) => existing.model_path != model_path || existing.tags_path != tags_path,
+    };
+    if !need_restart {
+        return Ok(());
+    }
+    if let Some(mut existing) = service.take() {
+        let _ = existing.child.kill();
+    }
+    *service = Some(spawn_wd_tagger_service(model_path, tags_path, script_path)?);
+    Ok(())
+}
+
+fn spawn_wd_tagger_service(
+    model_path: &Path,
+    tags_path: &Path,
+    script_path: &Path,
+) -> Result<WdTaggerService, String> {
+    let mut child = Command::new("python")
+        .arg("-X")
+        .arg("utf8")
         .arg(script_path)
-        .arg("--image")
-        .arg(image_path)
         .arg("--model")
         .arg(model_path)
         .arg("--tags")
         .arg(tags_path)
-        .arg("--general-threshold")
-        .arg(general_threshold.to_string())
-        .arg("--character-threshold")
-        .arg(character_threshold.to_string())
-        .arg("--image-id")
-        .arg(image_id)
-        .output()
-        .map_err(|error| format!("Failed to run wd tagger script: {error}"))?;
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| format!("Failed to start WD tagger service: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "WD tagger service stdin unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "WD tagger service stdout unavailable".to_string())?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if stderr.is_empty() {
-            "unknown error".to_string()
-        } else {
-            stderr
-        };
-        return Err(format!("WD tagger script failed: {detail}"));
-    }
+    Ok(WdTaggerService {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        model_path: model_path.to_path_buf(),
+        tags_path: tags_path.to_path_buf(),
+    })
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err("WD tagger script returned empty output".to_string());
+fn run_wd_tagger_via_service(
+    service: &mut WdTaggerService,
+    image_id: &str,
+    image_path: &str,
+    general_threshold: f32,
+    character_threshold: f32,
+) -> Result<WdTaggerTestResult, String> {
+    let request = serde_json::json!({
+        "image_id": image_id,
+        "image_path": image_path,
+        "general_threshold": general_threshold,
+        "character_threshold": character_threshold,
+    });
+    service
+        .stdin
+        .write_all(request.to_string().as_bytes())
+        .and_then(|_| service.stdin.write_all(b"\n"))
+        .and_then(|_| service.stdin.flush())
+        .map_err(|error| format!("Failed to write WD tagger service request: {error}"))?;
+
+    let mut response_line = String::new();
+    service
+        .stdout
+        .read_line(&mut response_line)
+        .map_err(|error| format!("Failed to read WD tagger service response: {error}"))?;
+    if response_line.trim().is_empty() {
+        return Err("WD tagger service returned empty response".to_string());
     }
-    serde_json::from_str(&stdout).map_err(|error| format!("Failed to parse wd tagger output: {error}"))
+    let value: serde_json::Value = serde_json::from_str(response_line.trim())
+        .map_err(|error| format!("Failed to parse WD tagger service response: {error}"))?;
+    if let Some(error_text) = value.get("error").and_then(|item| item.as_str()) {
+        return Err(format!("WD tagger service error: {error_text}"));
+    }
+    serde_json::from_value(value)
+        .map_err(|error| format!("Failed to parse WD tagger service output: {error}"))
 }
 
 fn save_wd_tagger_result(
@@ -3808,10 +4122,29 @@ fn generate_thumbnails_once(
     set_thumbnail_progress_phase(progress, "generating");
 
     let thumb_root = ensure_thumbnail_root_dir(database_path)?;
+    let worker_count = THUMBNAIL_WORKER_COUNT.max(1);
+    let queue_capacity = THUMBNAIL_WORKER_QUEUE_CAPACITY.max(1);
+    let (result_tx, result_rx) = mpsc::channel::<ThumbnailWorkerResult>();
+    let mut worker_senders = Vec::with_capacity(worker_count);
+    let mut worker_handles = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
+        let (job_tx, job_rx) = mpsc::sync_channel::<Option<ThumbnailCandidate>>(queue_capacity);
+        let worker_result_tx = result_tx.clone();
+        let worker_thumb_root = thumb_root.clone();
+        let handle = thread::spawn(move || {
+            thumbnail_worker_loop(job_rx, worker_result_tx, worker_thumb_root);
+        });
+        worker_senders.push(job_tx);
+        worker_handles.push(handle);
+    }
+    drop(result_tx);
+
     let mut generated = 0i64;
     let mut skipped = 0i64;
     let mut failed = 0i64;
     let mut processed = 0i64;
+    let mut in_flight = 0usize;
+    let mut next_worker_index = 0usize;
     let mut stop_now = false;
 
     for candidate in candidates {
@@ -3845,36 +4178,108 @@ fn generate_thumbnails_once(
             continue;
         }
 
-        match generate_single_thumbnail(&candidate, &thumb_root, THUMBNAIL_LONG_EDGE, THUMBNAIL_WEBP_QUALITY) {
-            Ok(next_thumb_path) => {
-                if let Err(error) = upsert_thumbnail_record(
-                    &conn,
-                    &candidate.image_id,
-                    &next_thumb_path,
-                    candidate.modified_at,
-                    candidate.file_size,
-                ) {
-                    set_thumbnail_progress_error(progress, &error);
-                    push_thumbnail_progress_recent_error(progress, &error);
-                    failed += 1;
-                } else {
-                    generated += 1;
-                    if let Some(previous_thumb) = candidate.current_thumb_path {
-                        if previous_thumb != next_thumb_path {
-                            let _ = fs::remove_file(previous_thumb);
+        let sender_index = next_worker_index % worker_senders.len();
+        next_worker_index += 1;
+        let sender = &worker_senders[sender_index];
+        let mut pending_candidate = Some(candidate);
+        while let Some(job_candidate) = pending_candidate.take() {
+            if thumbnail_stop_requested(stop_requested) {
+                stop_now = true;
+                break;
+            }
+            wait_for_thumbnail_resume(progress, pause_requested, stop_requested);
+            if thumbnail_stop_requested(stop_requested) {
+                stop_now = true;
+                break;
+            }
+            match sender.try_send(Some(job_candidate)) {
+                Ok(()) => {
+                    in_flight += 1;
+                }
+                Err(TrySendError::Full(returned_candidate)) => {
+                    pending_candidate = returned_candidate;
+                    match result_rx.recv_timeout(std::time::Duration::from_millis(40)) {
+                        Ok(result) => {
+                            in_flight = in_flight.saturating_sub(1);
+                            apply_thumbnail_worker_result(
+                                &conn,
+                                progress,
+                                result,
+                                &mut processed,
+                                &mut generated,
+                                skipped,
+                                &mut failed,
+                            );
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            let error = "Thumbnail workers disconnected unexpectedly".to_string();
+                            set_thumbnail_progress_error(progress, &error);
+                            push_thumbnail_progress_recent_error(progress, &error);
+                            failed += 1;
+                            processed += 1;
+                            set_thumbnail_progress_counts(
+                                progress, processed, generated, skipped, failed,
+                            );
+                            stop_now = true;
+                            break;
                         }
                     }
                 }
-            }
-            Err(error) => {
-                set_thumbnail_progress_error(progress, &error);
-                push_thumbnail_progress_recent_error(progress, &error);
-                failed += 1;
+                Err(TrySendError::Disconnected(returned_candidate)) => {
+                    let image_id = returned_candidate
+                        .as_ref()
+                        .map(|candidate| candidate.image_id.as_str())
+                        .unwrap_or("unknown");
+                    let error = format!(
+                        "Thumbnail worker disconnected before processing {}",
+                        image_id
+                    );
+                    set_thumbnail_progress_error(progress, &error);
+                    push_thumbnail_progress_recent_error(progress, &error);
+                    failed += 1;
+                    processed += 1;
+                    set_thumbnail_progress_counts(progress, processed, generated, skipped, failed);
+                }
             }
         }
+        if stop_now {
+            break;
+        }
+    }
 
-        processed += 1;
-        set_thumbnail_progress_counts(progress, processed, generated, skipped, failed);
+    drop(worker_senders);
+
+    while in_flight > 0 {
+        match result_rx.recv_timeout(std::time::Duration::from_millis(120)) {
+            Ok(result) => {
+                in_flight -= 1;
+                apply_thumbnail_worker_result(
+                    &conn,
+                    progress,
+                    result,
+                    &mut processed,
+                    &mut generated,
+                    skipped,
+                    &mut failed,
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let error = "Thumbnail worker result channel disconnected".to_string();
+                set_thumbnail_progress_error(progress, &error);
+                push_thumbnail_progress_recent_error(progress, &error);
+                break;
+            }
+        }
+    }
+
+    for handle in worker_handles {
+        if handle.join().is_err() {
+            let error = "Thumbnail worker thread panicked".to_string();
+            set_thumbnail_progress_error(progress, &error);
+            push_thumbnail_progress_recent_error(progress, &error);
+        }
     }
 
     cleanup_orphan_thumbnail_files(&conn, &thumb_root)?;
@@ -3884,9 +4289,67 @@ fn generate_thumbnails_once(
     Ok(generated)
 }
 
+fn thumbnail_worker_loop(
+    receiver: mpsc::Receiver<Option<ThumbnailCandidate>>,
+    sender: mpsc::Sender<ThumbnailWorkerResult>,
+    thumb_root: PathBuf,
+) {
+    while let Ok(job) = receiver.recv() {
+        let Some(candidate) = job else {
+            break;
+        };
+        let output =
+            generate_single_thumbnail(&candidate, &thumb_root, THUMBNAIL_LONG_EDGE, THUMBNAIL_WEBP_QUALITY);
+        let _ = sender.send(ThumbnailWorkerResult { candidate, output });
+    }
+}
+
+fn apply_thumbnail_worker_result(
+    conn: &Connection,
+    progress: &Arc<Mutex<ThumbnailGenerationProgress>>,
+    result: ThumbnailWorkerResult,
+    processed: &mut i64,
+    generated: &mut i64,
+    skipped: i64,
+    failed: &mut i64,
+) {
+    match result.output {
+        Ok(next_thumb_path) => {
+            if let Err(error) = upsert_thumbnail_record(
+                conn,
+                &result.candidate.image_id,
+                &next_thumb_path,
+                result.candidate.modified_at,
+                result.candidate.file_size,
+            ) {
+                set_thumbnail_progress_error(progress, &error);
+                push_thumbnail_progress_recent_error(progress, &error);
+                *failed += 1;
+            } else {
+                *generated += 1;
+                if let Some(previous_thumb) = result.candidate.current_thumb_path {
+                    if previous_thumb != next_thumb_path {
+                        let _ = fs::remove_file(previous_thumb);
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            set_thumbnail_progress_error(progress, &error);
+            push_thumbnail_progress_recent_error(progress, &error);
+            *failed += 1;
+        }
+    }
+
+    *processed += 1;
+    set_thumbnail_progress_counts(progress, *processed, *generated, skipped, *failed);
+}
+
 fn generate_natural_language_embeddings_once(
     database_path: &Path,
     progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    clip_vector_cache: &Arc<Mutex<Option<ClipImageVectorCache>>>,
+    clip_image_encoder_service: &Arc<Mutex<Option<ClipImageEncoderService>>>,
 ) -> Result<i64, String> {
     set_natural_language_scan_progress_phase(progress, "collecting");
     let conn = open_database(database_path)?;
@@ -3897,13 +4360,12 @@ fn generate_natural_language_embeddings_once(
               i.id,
               i.path,
               i.modified_at,
-              i.file_size,
-              e.source_modified_at,
-              e.source_file_size
+              e.source_modified_at
             FROM images i
             LEFT JOIN image_clip_embeddings e
               ON e.image_id = i.id
-             AND e.model_name = ?1
+             AND e.model_id = ?1
+             AND e.model_version = ?2
             WHERE i.source = 'library'
               AND COALESCE(i.trashed, 0) = 0
             ORDER BY i.modified_at DESC, i.id ASC
@@ -3911,14 +4373,12 @@ fn generate_natural_language_embeddings_once(
         )
         .map_err(|error| format!("Failed to load natural language scan candidates: {error}"))?;
     let candidates = stmt
-        .query_map(params![CHINESE_CLIP_MODEL_NAME], |row| {
+        .query_map(params![CHINESE_CLIP_MODEL_ID, CHINESE_CLIP_MODEL_VERSION], |row| {
             Ok(NaturalLanguageEmbeddingCandidate {
                 image_id: row.get(0)?,
                 image_path: row.get(1)?,
                 modified_at: row.get(2)?,
-                file_size: row.get(3)?,
-                current_source_modified_at: row.get(4)?,
-                current_source_file_size: row.get(5)?,
+                current_source_modified_at: row.get(3)?,
             })
         })
         .map_err(|error| format!("Failed to load natural language scan candidates: {error}"))?
@@ -3935,7 +4395,14 @@ fn generate_natural_language_embeddings_once(
     }
 
     let model_root = resolve_chinese_clip_model_dir(None)?;
-    let script_path = resolve_chinese_clip_embed_script_path()?;
+    let script_path = resolve_chinese_clip_image_service_script_path()?;
+    let mut image_service_guard = clip_image_encoder_service
+        .lock()
+        .map_err(|_| "Clip image encoder service is locked".to_string())?;
+    ensure_clip_image_service_started(&mut image_service_guard, &model_root, &script_path)?;
+    let image_service = image_service_guard
+        .as_mut()
+        .ok_or_else(|| "Clip image encoder service unavailable".to_string())?;
 
     let mut generated = 0i64;
     let mut skipped = 0i64;
@@ -3945,6 +4412,7 @@ fn generate_natural_language_embeddings_once(
     for candidate in candidates {
         if !Path::new(&candidate.image_path).is_file() {
             clear_image_clip_embedding(&conn, &candidate.image_id)?;
+            remove_clip_vector_cache_entry(clip_vector_cache, &candidate.image_id)?;
             skipped += 1;
             processed += 1;
             set_natural_language_scan_progress_counts(progress, processed, generated, skipped, failed);
@@ -3958,19 +4426,19 @@ fn generate_natural_language_embeddings_once(
             continue;
         }
 
-        match run_chinese_clip_image_embedding(&candidate.image_path, &model_root, &script_path) {
+        match run_chinese_clip_image_embedding_via_service(&candidate.image_path, image_service) {
             Ok(vector) => {
                 if let Err(error) = upsert_image_clip_embedding(
                     &conn,
                     &candidate.image_id,
                     &vector,
                     candidate.modified_at,
-                    candidate.file_size,
                 ) {
                     failed += 1;
                     set_natural_language_scan_progress_error(progress, &error);
                     push_natural_language_scan_recent_error(progress, &error);
                 } else {
+                    upsert_clip_vector_cache_entry(clip_vector_cache, &candidate.image_id, vector.clone());
                     generated += 1;
                 }
             }
@@ -3990,20 +4458,13 @@ fn generate_natural_language_embeddings_once(
 }
 
 fn natural_language_embedding_up_to_date(candidate: &NaturalLanguageEmbeddingCandidate) -> bool {
-    matches!(
-        (
-            candidate.current_source_modified_at,
-            candidate.current_source_file_size,
-        ),
-        (Some(source_modified_at), Some(source_file_size))
-            if source_modified_at == candidate.modified_at && source_file_size == candidate.file_size
-    )
+    matches!(candidate.current_source_modified_at, Some(source_modified_at) if source_modified_at == candidate.modified_at)
 }
 
 fn clear_image_clip_embedding(conn: &Connection, image_id: &str) -> Result<(), String> {
     conn.execute(
-        "DELETE FROM image_clip_embeddings WHERE image_id = ?1 AND model_name = ?2",
-        params![image_id, CHINESE_CLIP_MODEL_NAME],
+        "DELETE FROM image_clip_embeddings WHERE image_id = ?1 AND model_id = ?2 AND model_version = ?3",
+        params![image_id, CHINESE_CLIP_MODEL_ID, CHINESE_CLIP_MODEL_VERSION],
     )
     .map_err(|error| format!("Failed to clear stale clip embedding: {error}"))?;
     Ok(())
@@ -4014,35 +4475,34 @@ fn upsert_image_clip_embedding(
     image_id: &str,
     vector: &[f32],
     source_modified_at: i64,
-    source_file_size: i64,
 ) -> Result<(), String> {
     if vector.is_empty() {
         return Err("CLIP embedding is empty".to_string());
     }
-    let dim = i64::try_from(vector.len()).map_err(|_| "CLIP embedding dimension overflow".to_string())?;
-    let vector_json =
-        serde_json::to_string(vector).map_err(|error| format!("Failed to encode CLIP embedding: {error}"))?;
+    let normalized_vector = normalize_vector(vector);
+    let dim = i64::try_from(normalized_vector.len()).map_err(|_| "CLIP embedding dimension overflow".to_string())?;
+    let vector_blob = encode_f32_blob(&normalized_vector);
     let now = now_ms();
     conn.execute(
         "
         INSERT INTO image_clip_embeddings (
-          image_id, model_name, dim, vector_json, source_modified_at, source_file_size, updated_at
+          image_id, model_id, model_version, dimension, normalized, vector_blob, source_modified_at, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        ON CONFLICT(image_id, model_name) DO UPDATE SET
-          dim = excluded.dim,
-          vector_json = excluded.vector_json,
+        VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)
+        ON CONFLICT(image_id, model_id, model_version) DO UPDATE SET
+          dimension = excluded.dimension,
+          normalized = excluded.normalized,
+          vector_blob = excluded.vector_blob,
           source_modified_at = excluded.source_modified_at,
-          source_file_size = excluded.source_file_size,
           updated_at = excluded.updated_at
         ",
         params![
             image_id,
-            CHINESE_CLIP_MODEL_NAME,
+            CHINESE_CLIP_MODEL_ID,
+            CHINESE_CLIP_MODEL_VERSION,
             dim,
-            vector_json,
+            vector_blob,
             source_modified_at,
-            source_file_size,
             now
         ],
     )
@@ -4050,95 +4510,345 @@ fn upsert_image_clip_embedding(
     Ok(())
 }
 
-fn run_chinese_clip_image_embedding(
-    image_path: &str,
-    model_root: &Path,
-    script_path: &Path,
-) -> Result<Vec<f32>, String> {
-    let output = Command::new("python")
-        .arg("-X")
-        .arg("utf8")
-        .arg(script_path)
-        .arg("--model-dir")
-        .arg(model_root)
-        .arg("--mode")
-        .arg("image")
-        .arg("--image")
-        .arg(image_path)
-        .arg("--provider")
-        .arg("cpu")
-        .env("PYTHONUTF8", "1")
-        .env("PYTHONIOENCODING", "utf-8")
-        .output()
-        .map_err(|error| format!("Failed to run Chinese-CLIP image embedding script: {error}"))?;
-    parse_clip_embedding_script_output(output, "image")
+pub fn warmup_clip_vector_cache(state: &AppState) -> Result<(), String> {
+    ensure_clip_vector_cache_loaded(state)
 }
 
-fn run_chinese_clip_text_embedding(
+fn ensure_clip_vector_cache_loaded(state: &AppState) -> Result<(), String> {
+    {
+        let cache = state
+            .clip_vector_cache
+            .lock()
+            .map_err(|_| "Clip vector cache state is locked".to_string())?;
+        if cache.is_some() {
+            return Ok(());
+        }
+    }
+
+    let conn = open_database(&state.database_path)?;
+    let loaded = load_clip_vector_cache_from_database(&conn)?;
+    let mut cache = state
+        .clip_vector_cache
+        .lock()
+        .map_err(|_| "Clip vector cache state is locked".to_string())?;
+    *cache = Some(loaded);
+    Ok(())
+}
+
+fn load_clip_vector_cache_from_database(conn: &Connection) -> Result<ClipImageVectorCache, String> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT e.image_id, e.dimension, e.normalized, e.vector_blob
+            FROM image_clip_embeddings e
+            JOIN images i ON i.id = e.image_id
+            WHERE e.model_id = ?1
+              AND e.model_version = ?2
+              AND i.source = 'library'
+              AND COALESCE(i.trashed, 0) = 0
+            ",
+        )
+        .map_err(|error| format!("Failed to prepare clip vector cache query: {error}"))?;
+    let rows = stmt
+        .query_map(params![CHINESE_CLIP_MODEL_ID, CHINESE_CLIP_MODEL_VERSION], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to query clip vector cache: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to query clip vector cache: {error}"))?;
+    drop(stmt);
+
+    let mut vectors = HashMap::<String, Vec<f32>>::new();
+    let mut dimension = 0usize;
+    for (image_id, stored_dimension, normalized_flag, blob) in rows {
+        let mut vector = decode_f32_blob(&blob)?;
+        if vector.is_empty() {
+            continue;
+        }
+        if normalized_flag == 0 {
+            vector = normalize_vector(&vector);
+        }
+        let expected_dimension = usize::try_from(stored_dimension).unwrap_or(0);
+        if expected_dimension > 0 && vector.len() != expected_dimension {
+            continue;
+        }
+        if dimension == 0 {
+            dimension = vector.len();
+        }
+        if vector.len() != dimension {
+            continue;
+        }
+        vectors.insert(image_id, vector);
+    }
+
+    Ok(ClipImageVectorCache {
+        model_id: CHINESE_CLIP_MODEL_ID.to_string(),
+        model_version: CHINESE_CLIP_MODEL_VERSION.to_string(),
+        dimension,
+        vectors,
+    })
+}
+
+fn remove_clip_vector_cache_entry(
+    clip_vector_cache: &Arc<Mutex<Option<ClipImageVectorCache>>>,
+    image_id: &str,
+) -> Result<(), String> {
+    let mut cache = clip_vector_cache
+        .lock()
+        .map_err(|_| "Clip vector cache state is locked".to_string())?;
+    if let Some(cache) = cache.as_mut() {
+        cache.vectors.remove(image_id);
+    }
+    Ok(())
+}
+
+fn upsert_clip_vector_cache_entry(
+    clip_vector_cache: &Arc<Mutex<Option<ClipImageVectorCache>>>,
+    image_id: &str,
+    vector: Vec<f32>,
+) {
+    if vector.is_empty() {
+        return;
+    }
+    if let Ok(mut cache) = clip_vector_cache.lock() {
+        if let Some(cache) = cache.as_mut() {
+            if cache.dimension == 0 {
+                cache.dimension = vector.len();
+            }
+            if cache.dimension != vector.len() {
+                return;
+            }
+            cache.vectors.insert(image_id.to_string(), vector);
+        }
+    }
+}
+
+fn run_chinese_clip_text_embedding_via_service(
     text: &str,
+    state: &AppState,
+) -> Result<Vec<f32>, String> {
+    let model_root = resolve_chinese_clip_model_dir(None)?;
+    let script_path = resolve_chinese_clip_text_service_script_path()?;
+    let mut service_guard = state
+        .clip_text_encoder_service
+        .lock()
+        .map_err(|_| "Clip text encoder service is locked".to_string())?;
+    ensure_clip_text_service_started(&mut service_guard, &model_root, &script_path)?;
+    let service = service_guard
+        .as_mut()
+        .ok_or_else(|| "Clip text encoder service unavailable".to_string())?;
+
+    let request = serde_json::json!({ "text": text });
+    let vector = run_clip_service_request(
+        &mut service.stdin,
+        &mut service.stdout,
+        request,
+        "text",
+    )?;
+    if vector.is_empty() {
+        return Err("Clip text response embedding is empty".to_string());
+    }
+    Ok(normalize_vector(&vector))
+}
+
+fn ensure_clip_text_service_started(
+    service: &mut Option<ClipTextEncoderService>,
     model_root: &Path,
     script_path: &Path,
-) -> Result<Vec<f32>, String> {
-    let output = Command::new("python")
+) -> Result<(), String> {
+    let need_restart = match service.as_ref() {
+        None => true,
+        Some(existing) => existing.model_root != model_root,
+    };
+    if !need_restart {
+        return Ok(());
+    }
+
+    if let Some(mut existing) = service.take() {
+        let _ = existing.child.kill();
+    }
+    *service = Some(spawn_clip_text_service(model_root, script_path)?);
+    Ok(())
+}
+
+fn spawn_clip_text_service(model_root: &Path, script_path: &Path) -> Result<ClipTextEncoderService, String> {
+    let mut child = Command::new("python")
         .arg("-X")
         .arg("utf8")
         .arg(script_path)
         .arg("--model-dir")
         .arg(model_root)
-        .arg("--mode")
-        .arg("text")
-        .arg("--text")
-        .arg(text)
         .arg("--provider")
         .arg("cpu")
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
-        .output()
-        .map_err(|error| format!("Failed to run Chinese-CLIP text embedding script: {error}"))?;
-    parse_clip_embedding_script_output(output, "text")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to start clip text encoder service: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Clip text encoder stdin unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Clip text encoder stdout unavailable".to_string())?;
+
+    Ok(ClipTextEncoderService {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        model_root: model_root.to_path_buf(),
+    })
 }
 
-fn parse_clip_embedding_script_output(
-    output: std::process::Output,
+fn run_chinese_clip_image_embedding_via_service(
+    image_path: &str,
+    service: &mut ClipImageEncoderService,
+) -> Result<Vec<f32>, String> {
+    let request = serde_json::json!({ "image_path": image_path });
+    let vector = run_clip_service_request(
+        &mut service.stdin,
+        &mut service.stdout,
+        request,
+        "image",
+    )?;
+    if vector.is_empty() {
+        return Err("Clip image response embedding is empty".to_string());
+    }
+    Ok(normalize_vector(&vector))
+}
+
+fn ensure_clip_image_service_started(
+    service: &mut Option<ClipImageEncoderService>,
+    model_root: &Path,
+    script_path: &Path,
+) -> Result<(), String> {
+    let need_restart = match service.as_ref() {
+        None => true,
+        Some(existing) => existing.model_root != model_root,
+    };
+    if !need_restart {
+        return Ok(());
+    }
+
+    if let Some(mut existing) = service.take() {
+        let _ = existing.child.kill();
+    }
+    *service = Some(spawn_clip_image_service(model_root, script_path)?);
+    Ok(())
+}
+
+fn spawn_clip_image_service(model_root: &Path, script_path: &Path) -> Result<ClipImageEncoderService, String> {
+    let mut child = Command::new("python")
+        .arg("-X")
+        .arg("utf8")
+        .arg(script_path)
+        .arg("--model-dir")
+        .arg(model_root)
+        .arg("--provider")
+        .arg("cpu")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to start clip image encoder service: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Clip image encoder stdin unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Clip image encoder stdout unavailable".to_string())?;
+
+    Ok(ClipImageEncoderService {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        model_root: model_root.to_path_buf(),
+    })
+}
+
+fn run_clip_service_request(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    request: serde_json::Value,
     mode: &str,
 ) -> Result<Vec<f32>, String> {
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if stderr.is_empty() {
-            "unknown error".to_string()
-        } else {
-            stderr
-        };
-        return Err(format!(
-            "Chinese-CLIP {mode} embedding failed: {detail}. If dependency missing, run: pip install onnxruntime numpy pillow"
-        ));
-    }
+    stdin
+        .write_all(request.to_string().as_bytes())
+        .and_then(|_| stdin.write_all(b"\n"))
+        .and_then(|_| stdin.flush())
+        .map_err(|error| format!("Failed to write clip {mode} request: {error}"))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err(format!("Chinese-CLIP {mode} embedding returned empty output"));
+    let mut response_line = String::new();
+    stdout
+        .read_line(&mut response_line)
+        .map_err(|error| format!("Failed to read clip {mode} response: {error}"))?;
+    if response_line.trim().is_empty() {
+        return Err(format!("Clip {mode} encoder returned empty response"));
     }
-
-    let value: serde_json::Value =
-        serde_json::from_str(&stdout).map_err(|error| format!("Failed to parse CLIP embedding output: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(response_line.trim())
+        .map_err(|error| format!("Invalid clip {mode} response: {error}"))?;
+    if let Some(error_text) = value.get("error").and_then(|item| item.as_str()) {
+        return Err(format!("Clip {mode} encoder error: {error_text}"));
+    }
     let array = value
         .get("embedding")
         .and_then(|item| item.as_array())
-        .ok_or_else(|| "CLIP embedding output missing embedding array".to_string())?;
+        .ok_or_else(|| format!("Clip {mode} response missing embedding"))?;
     let mut vector = Vec::<f32>::with_capacity(array.len());
     for item in array {
         let number = item
             .as_f64()
-            .ok_or_else(|| "CLIP embedding output contains non-numeric value".to_string())?;
-        if !number.is_finite() {
-            return Err("CLIP embedding output contains invalid number".to_string());
-        }
+            .ok_or_else(|| format!("Clip {mode} response contains invalid value"))?;
         vector.push(number as f32);
     }
-    if vector.is_empty() {
-        return Err("CLIP embedding output is empty".to_string());
+    Ok(vector)
+}
+
+fn encode_f32_blob(vector: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::<u8>::with_capacity(vector.len() * 4);
+    for value in vector {
+        bytes.extend_from_slice(&value.to_le_bytes());
     }
-    Ok(normalize_vector(&vector))
+    bytes
+}
+
+fn decode_f32_blob(blob: &[u8]) -> Result<Vec<f32>, String> {
+    if blob.len() % 4 != 0 {
+        return Err("Invalid clip embedding blob length".to_string());
+    }
+    let mut values = Vec::<f32>::with_capacity(blob.len() / 4);
+    for chunk in blob.chunks_exact(4) {
+        values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
+fn dot_product(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .zip(right.iter())
+        .fold(0f32, |acc, (lv, rv)| acc + lv * rv)
+}
+
+fn legacy_model_name_to_model_id(legacy: &str) -> &str {
+    let normalized = legacy.trim().to_lowercase();
+    if normalized.contains("chinese-clip") || normalized.contains("cn_clip") {
+        CHINESE_CLIP_MODEL_ID
+    } else {
+        CHINESE_CLIP_MODEL_ID
+    }
 }
 
 fn normalize_vector(input: &[f32]) -> Vec<f32> {
@@ -4152,26 +4862,6 @@ fn normalize_vector(input: &[f32]) -> Vec<f32> {
     }
     let inv = 1.0f64 / sum.sqrt();
     input.iter().map(|value| (*value as f64 * inv) as f32).collect()
-}
-
-fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
-    if left.len() != right.len() || left.is_empty() {
-        return None;
-    }
-    let mut dot = 0f64;
-    let mut left_norm = 0f64;
-    let mut right_norm = 0f64;
-    for (lv, rv) in left.iter().zip(right.iter()) {
-        let l = *lv as f64;
-        let r = *rv as f64;
-        dot += l * r;
-        left_norm += l * l;
-        right_norm += r * r;
-    }
-    if left_norm <= 1e-18 || right_norm <= 1e-18 {
-        return None;
-    }
-    Some((dot / (left_norm.sqrt() * right_norm.sqrt())) as f32)
 }
 
 fn ensure_thumbnail_root_dir(database_path: &Path) -> Result<PathBuf, String> {
@@ -4889,6 +5579,36 @@ fn resolve_wd_tagger_script_path() -> Result<PathBuf, String> {
     Err("Cannot find wd_tagger_test.py under src-tauri/scripts".to_string())
 }
 
+fn resolve_wd_tagger_service_script_path() -> Result<PathBuf, String> {
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("src-tauri").join("scripts").join("wd_tagger_service.py"));
+        candidates.push(cwd.join("scripts").join("wd_tagger_service.py"));
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("scripts").join("wd_tagger_service.py"));
+            candidates.push(exe_dir.join("..").join("scripts").join("wd_tagger_service.py"));
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("..")
+                    .join("src-tauri")
+                    .join("scripts")
+                    .join("wd_tagger_service.py"),
+            );
+        }
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Cannot find wd_tagger_service.py under src-tauri/scripts".to_string())
+}
+
 fn resolve_chinese_clip_model_dir(explicit_dir: Option<&str>) -> Result<PathBuf, String> {
     if let Some(path) = explicit_dir {
         let dir = PathBuf::from(path);
@@ -4965,27 +5685,27 @@ fn resolve_chinese_clip_smoke_script_path() -> Result<PathBuf, String> {
     Err("Cannot find chinese_clip_onnx_smoke_test.py under src-tauri/scripts".to_string())
 }
 
-fn resolve_chinese_clip_embed_script_path() -> Result<PathBuf, String> {
+fn resolve_chinese_clip_image_service_script_path() -> Result<PathBuf, String> {
     let mut candidates = Vec::<PathBuf>::new();
     if let Ok(cwd) = env::current_dir() {
         candidates.push(
             cwd.join("src-tauri")
                 .join("scripts")
-                .join("chinese_clip_onnx_embed.py"),
+                .join("chinese_clip_image_service.py"),
         );
-        candidates.push(cwd.join("scripts").join("chinese_clip_onnx_embed.py"));
+        candidates.push(cwd.join("scripts").join("chinese_clip_image_service.py"));
     }
     if let Ok(exe_path) = env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            candidates.push(exe_dir.join("scripts").join("chinese_clip_onnx_embed.py"));
-            candidates.push(exe_dir.join("..").join("scripts").join("chinese_clip_onnx_embed.py"));
+            candidates.push(exe_dir.join("scripts").join("chinese_clip_image_service.py"));
+            candidates.push(exe_dir.join("..").join("scripts").join("chinese_clip_image_service.py"));
             candidates.push(
                 exe_dir
                     .join("..")
                     .join("..")
                     .join("src-tauri")
                     .join("scripts")
-                    .join("chinese_clip_onnx_embed.py"),
+                    .join("chinese_clip_image_service.py"),
             );
         }
     }
@@ -4996,7 +5716,41 @@ fn resolve_chinese_clip_embed_script_path() -> Result<PathBuf, String> {
         }
     }
 
-    Err("Cannot find chinese_clip_onnx_embed.py under src-tauri/scripts".to_string())
+    Err("Cannot find chinese_clip_image_service.py under src-tauri/scripts".to_string())
+}
+
+fn resolve_chinese_clip_text_service_script_path() -> Result<PathBuf, String> {
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(
+            cwd.join("src-tauri")
+                .join("scripts")
+                .join("chinese_clip_text_service.py"),
+        );
+        candidates.push(cwd.join("scripts").join("chinese_clip_text_service.py"));
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("scripts").join("chinese_clip_text_service.py"));
+            candidates.push(exe_dir.join("..").join("scripts").join("chinese_clip_text_service.py"));
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("..")
+                    .join("src-tauri")
+                    .join("scripts")
+                    .join("chinese_clip_text_service.py"),
+            );
+        }
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Cannot find chinese_clip_text_service.py under src-tauri/scripts".to_string())
 }
 
 fn upsert_folder(conn: &Connection, folder_path: &str, scanned_at: i64) -> Result<i64, String> {

@@ -70,6 +70,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   const searchRequestToken = ref(0)
   const searchSuggestRequestToken = ref(0)
   const searchSuggestTimer = ref<number | null>(null)
+  const searchExecuteTimer = ref<number | null>(null)
   const searchHideCommitTimer = ref<number | null>(null)
 
   const hasSearchFilters = computed(
@@ -140,7 +141,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   watch(
     () => searchZhSelected.value.map((item) => item.tagEn).sort().join('\u0000'),
     () => {
-      void executeGallerySearch()
+      queueGallerySearchExecution(120)
     },
     { immediate: true },
   )
@@ -153,6 +154,10 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     if (searchHideCommitTimer.value !== null) {
       window.clearTimeout(searchHideCommitTimer.value)
       searchHideCommitTimer.value = null
+    }
+    if (searchExecuteTimer.value !== null) {
+      window.clearTimeout(searchExecuteTimer.value)
+      searchExecuteTimer.value = null
     }
   })
 
@@ -417,7 +422,18 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
 
   async function executeGallerySearch() {
     searchNeedsApply.value = false
-    await runGallerySearch()
+    queueGallerySearchExecution(180)
+  }
+
+  function queueGallerySearchExecution(delayMs = 180) {
+    if (searchExecuteTimer.value !== null) {
+      window.clearTimeout(searchExecuteTimer.value)
+      searchExecuteTimer.value = null
+    }
+    searchExecuteTimer.value = window.setTimeout(() => {
+      searchExecuteTimer.value = null
+      void runGallerySearch()
+    }, Math.max(0, delayMs))
   }
 
   async function loadImageAutoTags(imageId: string) {

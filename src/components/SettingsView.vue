@@ -27,6 +27,8 @@ defineProps<{
   clipTestResultText: string
   clipTestRunning: boolean
   folderPathInput: string
+  isPickingFolder: boolean
+  isAddingFolder: boolean
   isLoading: boolean
   errorText: string
   folders: LibraryFolder[]
@@ -232,10 +234,17 @@ defineProps<{
         autocomplete="off"
         @input="handlers.setFolderPathInput(($event.target as HTMLInputElement).value)"
       />
-      <button class="secondary-button" type="button" :disabled="isLoading" @click="handlers.pickFolder()">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isPickingFolder || isAddingFolder"
+        @click="handlers.pickFolder()"
+      >
         选择
       </button>
-      <button class="primary-button" type="submit" :disabled="isLoading">添加图库文件夹</button>
+      <button class="primary-button" type="submit" :disabled="isPickingFolder || isAddingFolder">
+        添加图库文件夹
+      </button>
     </form>
 
     <p v-if="errorText" class="error">{{ errorText }}</p>

@@ -48,6 +48,8 @@ const library = ref<LibraryStore>({
   referenceBoardItems: [],
 })
 const isLoading = ref(false)
+const isPickingFolder = ref(false)
+const isAddingFolder = ref(false)
 const statusText = ref('还没有添加图库文件夹')
 const errorText = ref('')
 const folderPathInput = ref('')
@@ -685,9 +687,12 @@ watch(isBackgroundScanRunning, (running, wasRunning) => {
   void startThumbnailGeneration()
 })
 
-async function loadLibrary() {
-  isLoading.value = true
-  errorText.value = ''
+async function loadLibrary(options?: { silent?: boolean }) {
+  const silent = Boolean(options?.silent)
+  if (!silent) {
+    isLoading.value = true
+    errorText.value = ''
+  }
 
   try {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -697,24 +702,34 @@ async function loadLibrary() {
     }
     updateStatus()
   } catch (error) {
-    errorText.value = formatError(error)
+    if (!silent) {
+      errorText.value = formatError(error)
+    }
   } finally {
-    isLoading.value = false
+    if (!silent) {
+      isLoading.value = false
+    }
     await nextTick()
     updateViewportSize()
   }
 }
 
 async function pickFolder() {
+  if (isPickingFolder.value) return
+  isPickingFolder.value = true
   errorText.value = ''
-  const selected = await open({
-    directory: true,
-    multiple: false,
-    title: '选择图库文件夹',
-  })
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: '选择图库文件夹',
+    })
 
-  if (typeof selected === 'string') {
-    folderPathInput.value = selected
+    if (typeof selected === 'string') {
+      folderPathInput.value = selected
+    }
+  } finally {
+    isPickingFolder.value = false
   }
 }
 
@@ -774,6 +789,7 @@ async function runClipSearchSmokeTest() {
 }
 
 async function addFolder() {
+  if (isAddingFolder.value) return
   errorText.value = ''
 
   if (folderPathInput.value.trim().length === 0) {
@@ -781,7 +797,7 @@ async function addFolder() {
     return
   }
 
-  isLoading.value = true
+  isAddingFolder.value = true
   statusText.value = '正在扫描图库...'
 
   try {
@@ -796,7 +812,7 @@ async function addFolder() {
   } catch (error) {
     errorText.value = formatError(error)
   } finally {
-    isLoading.value = false
+    isAddingFolder.value = false
     await nextTick()
     updateViewportSize()
   }
@@ -1618,6 +1634,8 @@ function formatError(error: unknown) {
         :clip-test-result-text="clipTestResultText"
         :clip-test-running="clipTestRunning"
         :folder-path-input="folderPathInput"
+        :is-picking-folder="isPickingFolder"
+        :is-adding-folder="isAddingFolder"
         :is-loading="isLoading"
         :error-text="errorText"
         :folders="library.folders"

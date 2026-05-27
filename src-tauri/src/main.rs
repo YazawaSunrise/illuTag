@@ -6,6 +6,7 @@ use illutag_core::library::{
     natural_language_scan_status,
     search_gallery_image_ids_by_natural_language,
     start_natural_language_scan,
+    warmup_clip_vector_cache,
     copy_image_to_system_clipboard,
     start_thumbnail_generation,
     pause_thumbnail_generation,
@@ -523,7 +524,7 @@ fn main() {
                 .app_data_dir()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
 
-            app.manage(AppState {
+            let app_state = AppState {
                 database_path: app_data_dir.join("illutag.sqlite"),
                 library: Arc::new(Mutex::new(None)),
                 background_scan_running: Arc::new(Mutex::new(false)),
@@ -539,7 +540,13 @@ fn main() {
                 natural_language_scan_running: Arc::new(Mutex::new(false)),
                 natural_language_scan_pending: Arc::new(Mutex::new(false)),
                 natural_language_scan_progress: Arc::new(Mutex::new(NaturalLanguageScanProgress::default())),
-            });
+                clip_vector_cache: Arc::new(Mutex::new(None)),
+                clip_text_encoder_service: Arc::new(Mutex::new(None)),
+                clip_image_encoder_service: Arc::new(Mutex::new(None)),
+                wd_tagger_service: Arc::new(Mutex::new(None)),
+            };
+            let _ = warmup_clip_vector_cache(&app_state);
+            app.manage(app_state);
 
             Ok(())
         })

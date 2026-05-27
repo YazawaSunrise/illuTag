@@ -22,6 +22,7 @@ type UseThumbnailGenerationOptions = {
 
 export function useThumbnailGeneration(options: UseThumbnailGenerationOptions) {
   const pollIntervalMs = options.pollIntervalMs ?? 1200
+  const libraryRefreshIntervalMs = 25_000
 
   const isThumbnailGenerationRunning = ref(false)
   const isThumbnailGenerationPaused = ref(false)
@@ -127,7 +128,10 @@ export function useThumbnailGeneration(options: UseThumbnailGenerationOptions) {
       const now = Date.now()
       const becameIdle = wasRunning && !progress.running
       const shouldLiveRefresh =
-        progress.running && changed && !progress.paused && now - libraryRefreshAt.value >= 2400
+        progress.running &&
+        changed &&
+        !progress.paused &&
+        now - libraryRefreshAt.value >= libraryRefreshIntervalMs
       if ((becameIdle || shouldLiveRefresh) && !libraryRefreshInFlight.value) {
         libraryRefreshInFlight.value = true
         libraryRefreshAt.value = now
