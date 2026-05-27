@@ -2557,6 +2557,8 @@ fn open_database(database_path: &Path) -> Result<Connection, String> {
 
     let conn =
         Connection::open(database_path).map_err(|error| format!("打开图库数据库失败：{error}"))?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))
+        .map_err(|error| format!("Failed to set SQLite busy_timeout: {error}"))?;
     migrate_database(&conn)?;
     Ok(conn)
 }
@@ -3829,9 +3831,6 @@ fn tag_images_with_wd_model(
         &tags_path,
         &script_path,
     )?;
-    let service = service_guard
-        .as_mut()
-        .ok_or_else(|| "WD tagger service unavailable".to_string())?;
 
     eprintln!("[wd-tag] queue size: {}", image_ids.len());
     for image_id in image_ids {
@@ -3839,8 +3838,11 @@ fn tag_images_with_wd_model(
             increment_scan_progress_failed(progress);
             continue;
         }
-        match run_wd_tagger_via_service(
-            service,
+        match run_wd_tagger_via_service_with_recovery(
+            &mut service_guard,
+            &model_path,
+            &tags_path,
+            &script_path,
             image_id,
             image_id,
             0.35,
@@ -3860,6 +3862,49 @@ fn tag_images_with_wd_model(
     }
 
     Ok(())
+}
+
+fn run_wd_tagger_via_service_with_recovery(
+    service: &mut Option<WdTaggerService>,
+    model_path: &Path,
+    tags_path: &Path,
+    script_path: &Path,
+    image_id: &str,
+    image_path: &str,
+    general_threshold: f32,
+    character_threshold: f32,
+) -> Result<WdTaggerTestResult, String> {
+    ensure_wd_tagger_service_started(service, model_path, tags_path, script_path)?;
+    let primary = {
+        let running = service
+            .as_mut()
+            .ok_or_else(|| "WD tagger service unavailable".to_string())?;
+        run_wd_tagger_via_service(running, image_id, image_path, general_threshold, character_threshold)
+    };
+    match primary {
+        Ok(result) => Ok(result),
+        Err(first_error) => {
+            if let Some(mut stale) = service.take() {
+                let _ = stale.child.kill();
+            }
+            ensure_wd_tagger_service_started(service, model_path, tags_path, script_path)?;
+            let running = service
+                .as_mut()
+                .ok_or_else(|| "WD tagger service unavailable after restart".to_string())?;
+            run_wd_tagger_via_service(
+                running,
+                image_id,
+                image_path,
+                general_threshold,
+                character_threshold,
+            )
+            .map_err(|second_error| {
+                format!(
+                    "WD tagger service failed and restart retry also failed. first: {first_error}; second: {second_error}"
+                )
+            })
+        }
+    }
 }
 
 fn ensure_wd_tagger_service_started(
@@ -4400,9 +4445,6 @@ fn generate_natural_language_embeddings_once(
         .lock()
         .map_err(|_| "Clip image encoder service is locked".to_string())?;
     ensure_clip_image_service_started(&mut image_service_guard, &model_root, &script_path)?;
-    let image_service = image_service_guard
-        .as_mut()
-        .ok_or_else(|| "Clip image encoder service unavailable".to_string())?;
 
     let mut generated = 0i64;
     let mut skipped = 0i64;
@@ -4426,7 +4468,12 @@ fn generate_natural_language_embeddings_once(
             continue;
         }
 
-        match run_chinese_clip_image_embedding_via_service(&candidate.image_path, image_service) {
+        match run_chinese_clip_image_embedding_via_service_with_recovery(
+            &mut image_service_guard,
+            &model_root,
+            &script_path,
+            &candidate.image_path,
+        ) {
             Ok(vector) => {
                 if let Err(error) = upsert_image_clip_embedding(
                     &conn,
@@ -4639,17 +4686,31 @@ fn run_chinese_clip_text_embedding_via_service(
         .lock()
         .map_err(|_| "Clip text encoder service is locked".to_string())?;
     ensure_clip_text_service_started(&mut service_guard, &model_root, &script_path)?;
-    let service = service_guard
-        .as_mut()
-        .ok_or_else(|| "Clip text encoder service unavailable".to_string())?;
-
     let request = serde_json::json!({ "text": text });
-    let vector = run_clip_service_request(
-        &mut service.stdin,
-        &mut service.stdout,
-        request,
-        "text",
-    )?;
+    let primary = {
+        let service = service_guard
+            .as_mut()
+            .ok_or_else(|| "Clip text encoder service unavailable".to_string())?;
+        run_clip_service_request(&mut service.stdin, &mut service.stdout, request.clone(), "text")
+    };
+    let vector = match primary {
+        Ok(vector) => vector,
+        Err(first_error) => {
+            if let Some(mut stale) = service_guard.take() {
+                let _ = stale.child.kill();
+            }
+            ensure_clip_text_service_started(&mut service_guard, &model_root, &script_path)?;
+            let service = service_guard
+                .as_mut()
+                .ok_or_else(|| "Clip text encoder service unavailable after restart".to_string())?;
+            run_clip_service_request(&mut service.stdin, &mut service.stdout, request, "text")
+                .map_err(|second_error| {
+                    format!(
+                        "Clip text encoder failed and restart retry also failed. first: {first_error}; second: {second_error}"
+                    )
+                })?
+        }
+    };
     if vector.is_empty() {
         return Err("Clip text response embedding is empty".to_string());
     }
@@ -4724,6 +4785,38 @@ fn run_chinese_clip_image_embedding_via_service(
         return Err("Clip image response embedding is empty".to_string());
     }
     Ok(normalize_vector(&vector))
+}
+
+fn run_chinese_clip_image_embedding_via_service_with_recovery(
+    service: &mut Option<ClipImageEncoderService>,
+    model_root: &Path,
+    script_path: &Path,
+    image_path: &str,
+) -> Result<Vec<f32>, String> {
+    ensure_clip_image_service_started(service, model_root, script_path)?;
+    let primary = {
+        let running = service
+            .as_mut()
+            .ok_or_else(|| "Clip image encoder service unavailable".to_string())?;
+        run_chinese_clip_image_embedding_via_service(image_path, running)
+    };
+    match primary {
+        Ok(vector) => Ok(vector),
+        Err(first_error) => {
+            if let Some(mut stale) = service.take() {
+                let _ = stale.child.kill();
+            }
+            ensure_clip_image_service_started(service, model_root, script_path)?;
+            let running = service
+                .as_mut()
+                .ok_or_else(|| "Clip image encoder service unavailable after restart".to_string())?;
+            run_chinese_clip_image_embedding_via_service(image_path, running).map_err(|second_error| {
+                format!(
+                    "Clip image encoder failed and restart retry also failed. first: {first_error}; second: {second_error}"
+                )
+            })
+        }
+    }
 }
 
 fn ensure_clip_image_service_started(
