@@ -1007,7 +1007,7 @@ button {
 }
 
 .gallery-search__label-row {
-  --gallery-search-chips-width: 220px;
+  --gallery-search-chips-width: min(clamp(160px, 62%, 500px), calc(100% - 96px));
   position: relative;
   min-height: 14px;
   height: 14px;
@@ -1026,6 +1026,7 @@ button {
   position: absolute;
   right: 0;
   top: 0;
+  transform: translateY(-3px);
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
@@ -1186,30 +1187,66 @@ button {
 }
 
 .gallery-search__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
   color: #97a8ba;
   font-size: 11px;
   line-height: 1.2;
 }
 
+.gallery-search__status {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
 .gallery-search__submit {
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid #4a5c70;
+  position: absolute;
+  right: 14px;
+  top: 37px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
   border-radius: 6px;
   color: #dce6f1;
-  font-size: 11px;
-  background: #253243;
+  background: transparent;
   cursor: pointer;
 }
 
 .gallery-search__submit:hover:not(:disabled) {
-  border-color: #6e86a0;
-  background: #2e4055;
+  background: rgb(220 230 241 / 0.12);
 }
 
 .gallery-search__submit:disabled {
-  opacity: 0.55;
+  opacity: 0.82;
   cursor: not-allowed;
+}
+
+.gallery-search__grid > .gallery-search__cell:last-child .gallery-search__input {
+  padding-right: 34px;
+}
+
+.gallery-search__submit-icon {
+  display: block;
+}
+
+.gallery-search__submit-icon.is-loading {
+  animation: gallery-search-submit-spin 900ms linear infinite;
+}
+
+@keyframes gallery-search-submit-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .gallery-page.is-preview-delete-target .empty-panel,
@@ -2514,14 +2551,12 @@ button {
 }
 
 .app-shell.theme-light .gallery-search__submit {
-  border-color: #c5d2e0;
   color: #1f2937;
-  background: #eef3f8;
+  background: transparent;
 }
 
 .app-shell.theme-light .gallery-search__submit:hover:not(:disabled) {
-  border-color: #a8b9cb;
-  background: #e5ecf4;
+  background: rgb(15 23 42 / 0.08);
 }
 
 .app-shell.theme-light .image-detail-layer {

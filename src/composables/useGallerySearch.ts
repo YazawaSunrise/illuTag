@@ -50,7 +50,6 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   const searchConfidenceMin = ref(0)
   const searchConfidenceMax = ref(1)
   const searchRunning = ref(false)
-  const searchNeedsApply = ref(false)
   const searchError = ref('')
   const isSearchFocused = ref(false)
   const isSearchPointerInside = ref(false)
@@ -279,27 +278,22 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
 
   function setSearchEnQuery(value: string) {
     searchEnQuery.value = value
-    searchNeedsApply.value = true
   }
 
   function setSearchFileNameQuery(value: string) {
     searchFileNameQuery.value = value
-    searchNeedsApply.value = true
   }
 
   function setSearchNaturalLanguageQuery(value: string) {
     searchNaturalLanguageQuery.value = value
-    searchNeedsApply.value = true
   }
 
   function setSearchConfidenceMin(value: number) {
     searchConfidenceMin.value = options.clamp(value, 0, searchConfidenceMax.value)
-    searchNeedsApply.value = true
   }
 
   function setSearchConfidenceMax(value: number) {
     searchConfidenceMax.value = options.clamp(value, searchConfidenceMin.value, 1)
-    searchNeedsApply.value = true
   }
 
   function searchBySingleTag(tagEn: string, tagZh?: string | null) {
@@ -313,7 +307,6 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchNaturalLanguageQuery.value = ''
     searchConfidenceMin.value = 0
     searchConfidenceMax.value = 1
-    searchNeedsApply.value = false
     const exists = searchZhSelected.value.some((tag) => tag.tagEn === normalized)
     if (exists) return
     searchZhSelected.value = [
@@ -421,7 +414,6 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   }
 
   async function executeGallerySearch() {
-    searchNeedsApply.value = false
     queueGallerySearchExecution(180)
   }
 
@@ -483,7 +475,6 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchConfidenceMin,
     searchConfidenceMax,
     searchRunning,
-    searchNeedsApply,
     searchError,
     isSearchFocused,
     isSearchPointerInside,

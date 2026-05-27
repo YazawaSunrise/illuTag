@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { LoadingOne, Search } from '@icon-park/vue-next'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import SegmentedMasonry from './SegmentedMasonry.vue'
 import type { GalleryLayoutItem } from '../types/gallery'
@@ -29,7 +30,6 @@ const props = defineProps<{
   searchConfidenceMin: number
   searchConfidenceMax: number
   searchRunning: boolean
-  searchNeedsApply: boolean
   searchError: string
   isLoading: boolean
   layoutItems: GalleryLayoutItem[]
@@ -481,17 +481,37 @@ function onSearchWheel(event: WheelEvent) {
             @keydown.enter.prevent="handlers.executeGallerySearch()"
           />
           <div class="gallery-search__footer">
+            <div class="gallery-search__status">
+              <div v-if="searchError">{{ searchError }}</div>
+            </div>
             <button
               type="button"
               class="gallery-search__submit"
               :disabled="searchRunning"
               @click="handlers.executeGallerySearch()"
+              :aria-label="searchRunning ? '搜索中' : '开始搜索'"
             >
-              开始搜索
+              <LoadingOne
+                v-if="searchRunning"
+                class="gallery-search__submit-icon is-loading"
+                theme="outline"
+                :size="16"
+                :stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :fill="['currentColor']"
+              />
+              <Search
+                v-else
+                class="gallery-search__submit-icon"
+                theme="outline"
+                :size="16"
+                :stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :fill="['currentColor']"
+              />
             </button>
-            <div v-if="searchNeedsApply">有未应用的筛选条件</div>
-            <div>{{ searchRunning ? '搜索中…' : '搜索就绪' }}</div>
-            <div v-if="searchError">{{ searchError }}</div>
           </div>
         </div>
       </div>

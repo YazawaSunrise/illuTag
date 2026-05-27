@@ -362,7 +362,6 @@ const {
   searchConfidenceMin,
   searchConfidenceMax,
   searchRunning,
-  searchNeedsApply,
   searchError,
   isSearchFocused,
   isSearchPointerInside,
@@ -1670,7 +1669,6 @@ function formatError(error: unknown) {
         :search-confidence-min="searchConfidenceMin"
         :search-confidence-max="searchConfidenceMax"
         :search-running="searchRunning"
-        :search-needs-apply="searchNeedsApply"
         :search-error="searchError"
         :is-loading="isLoading"
         :layout-items="renderedLayoutItems"
