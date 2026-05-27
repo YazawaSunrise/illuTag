@@ -51,6 +51,10 @@ const isLoading = ref(false)
 const statusText = ref('还没有添加图库文件夹')
 const errorText = ref('')
 const folderPathInput = ref('')
+const clipTestImagePathInput = ref('')
+const clipTestTextsInput = ref('二次元插画\n黑发女孩\n城市夜景')
+const clipTestResultText = ref('')
+const clipTestRunning = ref(false)
 const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
@@ -352,9 +356,11 @@ const {
   searchZhOpen,
   searchEnQuery,
   searchFileNameQuery,
+  searchNaturalLanguageQuery,
   searchConfidenceMin,
   searchConfidenceMax,
   searchRunning,
+  searchNeedsApply,
   searchError,
   isSearchFocused,
   isSearchPointerInside,
@@ -376,8 +382,10 @@ const {
   removeSearchZhSuggestion,
   setSearchEnQuery,
   setSearchFileNameQuery,
+  setSearchNaturalLanguageQuery,
   setSearchConfidenceMin,
   setSearchConfidenceMax,
+  executeGallerySearch,
   searchBySingleTag,
   closeImageDetail,
   openGalleryImageDetail,
@@ -417,9 +425,13 @@ const {
   isBackgroundScanRunning,
   scanProgressText,
   scanRecentErrors,
+  isNaturalLanguageScanRunning,
+  naturalLanguageScanProgressText,
+  naturalLanguageScanRecentErrors,
   initAutoScanOnStartupFromStorage,
   setAutoScanOnStartup,
   startScanAllFolders,
+  startNaturalLanguageScan,
   startStartupCleanup,
   refreshBackgroundScanStatus,
   startBackgroundScanPolling,
@@ -703,6 +715,61 @@ async function pickFolder() {
 
   if (typeof selected === 'string') {
     folderPathInput.value = selected
+  }
+}
+
+async function pickClipTestImage() {
+  errorText.value = ''
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    title: '选择检索测试图片',
+    filters: [
+      {
+        name: 'Images',
+        extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'ico'],
+      },
+    ],
+  })
+  if (typeof selected === 'string') {
+    clipTestImagePathInput.value = selected
+  }
+}
+
+async function runClipSearchSmokeTest() {
+  errorText.value = ''
+  clipTestResultText.value = ''
+
+  const imagePath = clipTestImagePathInput.value.trim()
+  if (!imagePath) {
+    errorText.value = '请先选择一张测试图片'
+    return
+  }
+
+  const texts = clipTestTextsInput.value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+  if (texts.length === 0) {
+    errorText.value = '请至少输入一条候选文本（每行一条）'
+    return
+  }
+
+  clipTestRunning.value = true
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const result = await invoke<unknown>('test_chinese_clip_onnx_search_command', {
+      imagePath,
+      texts,
+      topK: Math.min(10, texts.length),
+      modelDir: null,
+      provider: 'cpu',
+    })
+    clipTestResultText.value = JSON.stringify(result, null, 2)
+  } catch (error) {
+    errorText.value = formatError(error)
+  } finally {
+    clipTestRunning.value = false
   }
 }
 
@@ -1253,10 +1320,19 @@ const settingsViewHandlers = {
   rebuildThumbnailCache,
   setAutoScanOnStartup,
   startScanAllFolders,
+  startNaturalLanguageScan,
   addFolder,
   pickFolder,
   setFolderPathInput(value: string) {
     folderPathInput.value = value
+  },
+  pickClipTestImage,
+  runClipSearchSmokeTest,
+  setClipTestImagePathInput(value: string) {
+    clipTestImagePathInput.value = value
+  },
+  setClipTestTextsInput(value: string) {
+    clipTestTextsInput.value = value
   },
   removeFolder,
 }
@@ -1370,8 +1446,10 @@ const galleryViewHandlers = {
   removeSearchZhSuggestion,
   setSearchEnQuery,
   setSearchFileNameQuery,
+  setSearchNaturalLanguageQuery,
   setSearchConfidenceMin,
   setSearchConfidenceMax,
+  executeGallerySearch,
   openSettings,
   startImagePress,
   clearImagePress,
@@ -1531,7 +1609,14 @@ function formatError(error: unknown) {
         :is-background-scan-running="isBackgroundScanRunning"
         :scan-progress-text="scanProgressText"
         :scan-recent-errors="scanRecentErrors"
+        :is-natural-language-scan-running="isNaturalLanguageScanRunning"
+        :natural-language-scan-progress-text="naturalLanguageScanProgressText"
+        :natural-language-scan-recent-errors="naturalLanguageScanRecentErrors"
         :theme-mode="themeMode"
+        :clip-test-image-path-input="clipTestImagePathInput"
+        :clip-test-texts-input="clipTestTextsInput"
+        :clip-test-result-text="clipTestResultText"
+        :clip-test-running="clipTestRunning"
         :folder-path-input="folderPathInput"
         :is-loading="isLoading"
         :error-text="errorText"
@@ -1563,9 +1648,11 @@ function formatError(error: unknown) {
         :search-zh-open="searchZhOpen"
         :search-en-query="searchEnQuery"
         :search-file-name-query="searchFileNameQuery"
+        :search-natural-language-query="searchNaturalLanguageQuery"
         :search-confidence-min="searchConfidenceMin"
         :search-confidence-max="searchConfidenceMax"
         :search-running="searchRunning"
+        :search-needs-apply="searchNeedsApply"
         :search-error="searchError"
         :is-loading="isLoading"
         :layout-items="renderedLayoutItems"

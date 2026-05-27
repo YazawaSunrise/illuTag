@@ -1191,6 +1191,27 @@ button {
   line-height: 1.2;
 }
 
+.gallery-search__submit {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #4a5c70;
+  border-radius: 6px;
+  color: #dce6f1;
+  font-size: 11px;
+  background: #253243;
+  cursor: pointer;
+}
+
+.gallery-search__submit:hover:not(:disabled) {
+  border-color: #6e86a0;
+  background: #2e4055;
+}
+
+.gallery-search__submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .gallery-page.is-preview-delete-target .empty-panel,
 .gallery-page.is-preview-delete-target .masonry {
   filter: blur(2.4px);
@@ -1482,6 +1503,70 @@ button {
   display: flex;
   gap: 10px;
   max-width: 920px;
+}
+
+.settings__clip-test {
+  display: grid;
+  gap: 10px;
+  max-width: 920px;
+  padding: 12px;
+  border: 1px solid #2a3037;
+  border-radius: 8px;
+  background: #171c21;
+}
+
+.settings__clip-test h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.settings__clip-test p {
+  margin: 0;
+  color: #aeb9c5;
+  font-size: 12px;
+}
+
+.settings__clip-test-row {
+  display: flex;
+  gap: 8px;
+}
+
+.settings__clip-test-textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 10px 12px;
+  border: 1px solid #343c45;
+  border-radius: 6px;
+  color: #edf2f7;
+  font-size: 12px;
+  line-height: 1.4;
+  background: #101317;
+  outline: none;
+  resize: vertical;
+}
+
+.settings__clip-test-textarea:focus {
+  border-color: #82d5b8;
+}
+
+.settings__clip-test-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.settings__clip-test-result {
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid #2a3037;
+  border-radius: 6px;
+  color: #d6dde5;
+  font-size: 11px;
+  line-height: 1.4;
+  background: #101317;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .folder-input {
@@ -2342,10 +2427,22 @@ button {
 .app-shell.theme-light .empty-panel,
 .app-shell.theme-light .folder-drop-panel,
 .app-shell.theme-light .context-menu,
-.app-shell.theme-light .folder-name-popover {
+.app-shell.theme-light .folder-name-popover,
+.app-shell.theme-light .settings__clip-test {
   border-color: #d8e0ea;
   background: #ffffff;
   box-shadow: 0 16px 34px rgb(19 33 51 / 0.14);
+}
+
+.app-shell.theme-light .settings__clip-test p {
+  color: #64748b;
+}
+
+.app-shell.theme-light .settings__clip-test-textarea,
+.app-shell.theme-light .settings__clip-test-result {
+  border-color: #d3dce7;
+  color: #1f2937;
+  background: #ffffff;
 }
 
 .app-shell.theme-light .gallery-search {
@@ -2414,6 +2511,17 @@ button {
 .app-shell.theme-light .gallery-search__footer,
 .app-shell.theme-light .gallery-search__cell--placeholder {
   color: #64748b;
+}
+
+.app-shell.theme-light .gallery-search__submit {
+  border-color: #c5d2e0;
+  color: #1f2937;
+  background: #eef3f8;
+}
+
+.app-shell.theme-light .gallery-search__submit:hover:not(:disabled) {
+  border-color: #a8b9cb;
+  background: #e5ecf4;
 }
 
 .app-shell.theme-light .image-detail-layer {

@@ -19,6 +19,7 @@ use std::{
 use walkdir::WalkDir;
 
 const WD_TAGGER_MODEL_NAME: &str = "wd-swinv2-tagger-v3";
+const CHINESE_CLIP_MODEL_NAME: &str = "chinese-clip-vit-base-patch16";
 const THUMBNAIL_LONG_EDGE: u32 = 960;
 const THUMBNAIL_WEBP_QUALITY: f32 = 85.0;
 
@@ -35,6 +36,9 @@ pub struct AppState {
     pub thumbnail_generation_pause_requested: Arc<Mutex<bool>>,
     pub thumbnail_generation_stop_requested: Arc<Mutex<bool>>,
     pub thumbnail_generation_progress: Arc<Mutex<ThumbnailGenerationProgress>>,
+    pub natural_language_scan_running: Arc<Mutex<bool>>,
+    pub natural_language_scan_pending: Arc<Mutex<bool>>,
+    pub natural_language_scan_progress: Arc<Mutex<NaturalLanguageScanProgress>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -239,6 +243,26 @@ pub struct ThumbnailGenerationProgress {
     pub recent_errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NaturalLanguageScanStatus {
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NaturalLanguageScanProgress {
+    pub running: bool,
+    pub phase: String,
+    pub total_images: i64,
+    pub processed_images: i64,
+    pub generated_images: i64,
+    pub skipped_images: i64,
+    pub failed_images: i64,
+    pub last_error: Option<String>,
+    pub recent_errors: Vec<String>,
+}
+
 impl Default for BackgroundScanProgress {
     fn default() -> Self {
         Self {
@@ -266,6 +290,22 @@ impl Default for ThumbnailGenerationProgress {
             paused: false,
             phase: "idle".to_string(),
             total_candidates: 0,
+            processed_images: 0,
+            generated_images: 0,
+            skipped_images: 0,
+            failed_images: 0,
+            last_error: None,
+            recent_errors: Vec::new(),
+        }
+    }
+}
+
+impl Default for NaturalLanguageScanProgress {
+    fn default() -> Self {
+        Self {
+            running: false,
+            phase: "idle".to_string(),
+            total_images: 0,
             processed_images: 0,
             generated_images: 0,
             skipped_images: 0,
@@ -305,6 +345,15 @@ struct ThumbnailCandidate {
     modified_at: i64,
     file_size: i64,
     current_thumb_path: Option<String>,
+    current_source_modified_at: Option<i64>,
+    current_source_file_size: Option<i64>,
+}
+
+struct NaturalLanguageEmbeddingCandidate {
+    image_id: String,
+    image_path: String,
+    modified_at: i64,
+    file_size: i64,
     current_source_modified_at: Option<i64>,
     current_source_file_size: Option<i64>,
 }
@@ -558,6 +607,81 @@ pub fn test_wd_swinv2_tagger(
     result.general_threshold = general_threshold;
     result.character_threshold = character_threshold;
     Ok(result)
+}
+
+pub fn test_chinese_clip_onnx_search(
+    image_path: String,
+    texts: Vec<String>,
+    top_k: Option<usize>,
+    model_dir: Option<String>,
+    provider: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if image_path.trim().is_empty() {
+        return Err("Image path is empty".to_string());
+    }
+    if !Path::new(&image_path).is_file() {
+        return Err(format!("Image not found: {image_path}"));
+    }
+
+    let mut candidates = Vec::<String>::new();
+    for item in texts {
+        let trimmed = item.trim();
+        if !trimmed.is_empty() {
+            candidates.push(trimmed.to_string());
+        }
+    }
+    if candidates.is_empty() {
+        return Err("Please provide at least one candidate text".to_string());
+    }
+
+    let model_root = resolve_chinese_clip_model_dir(model_dir.as_deref())?;
+    let script_path = resolve_chinese_clip_smoke_script_path()?;
+    let top_k = top_k.unwrap_or(5).max(1).min(200);
+    let provider = provider.unwrap_or_else(|| "cpu".to_string());
+
+    let mut command = Command::new("python");
+    command
+        .arg("-X")
+        .arg("utf8")
+        .arg(&script_path)
+        .arg("--model-dir")
+        .arg(&model_root)
+        .arg("--image")
+        .arg(&image_path)
+        .arg("--top-k")
+        .arg(top_k.to_string())
+        .arg("--provider")
+        .arg(provider);
+    command.env("PYTHONUTF8", "1");
+    command.env("PYTHONIOENCODING", "utf-8");
+    for text in &candidates {
+        command.arg("--text").arg(text);
+    }
+
+    let output = command.output().map_err(|error| {
+        format!(
+            "Failed to start Chinese-CLIP smoke test script: {error}. Ensure Python and dependencies are installed."
+        )
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            "unknown error".to_string()
+        } else {
+            stderr
+        };
+        return Err(format!(
+            "Chinese-CLIP smoke test failed: {detail}. If dependency missing, run: pip install onnxruntime numpy pillow"
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err("Chinese-CLIP smoke test returned empty output".to_string());
+    }
+
+    serde_json::from_str(&stdout).map_err(|error| format!("Failed to parse Chinese-CLIP output: {error}"))
 }
 
 pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, String> {
@@ -940,6 +1064,166 @@ pub fn clear_thumbnail_cache(state: &AppState) -> Result<(), String> {
 pub fn rebuild_thumbnail_cache(state: &AppState) -> Result<bool, String> {
     clear_thumbnail_cache(state)?;
     start_thumbnail_generation(state)
+}
+
+pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
+    let mut running = state
+        .natural_language_scan_running
+        .lock()
+        .map_err(|_| "Natural language scan state is locked".to_string())?;
+    if *running {
+        if let Ok(mut pending) = state.natural_language_scan_pending.lock() {
+            *pending = true;
+        }
+        return Ok(false);
+    }
+    *running = true;
+    drop(running);
+    if let Ok(mut pending) = state.natural_language_scan_pending.lock() {
+        *pending = false;
+    }
+
+    let database_path = state.database_path.clone();
+    let library_cache = Arc::clone(&state.library);
+    let scan_running = Arc::clone(&state.natural_language_scan_running);
+    let scan_pending = Arc::clone(&state.natural_language_scan_pending);
+    let scan_progress = Arc::clone(&state.natural_language_scan_progress);
+
+    thread::spawn(move || {
+        loop {
+            set_natural_language_scan_progress(
+                &scan_progress,
+                NaturalLanguageScanProgress {
+                    running: true,
+                    phase: "collecting".to_string(),
+                    ..NaturalLanguageScanProgress::default()
+                },
+            );
+
+            if let Err(error) = generate_natural_language_embeddings_once(&database_path, &scan_progress) {
+                set_natural_language_scan_progress_error(&scan_progress, &error);
+                push_natural_language_scan_recent_error(&scan_progress, &error);
+                eprintln!("[clip-scan] {error}");
+            }
+
+            if let Ok(mut cache) = library_cache.lock() {
+                *cache = None;
+            }
+
+            let rerun = if let Ok(mut pending) = scan_pending.lock() {
+                if *pending {
+                    *pending = false;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if rerun {
+                eprintln!("[clip-scan] pending rerun");
+                continue;
+            }
+            break;
+        }
+
+        set_natural_language_scan_progress_done(&scan_progress);
+        if let Ok(mut running) = scan_running.lock() {
+            *running = false;
+        }
+        if let Ok(mut pending) = scan_pending.lock() {
+            *pending = false;
+        }
+        eprintln!("[clip-scan] worker finished");
+    });
+
+    Ok(true)
+}
+
+pub fn natural_language_scan_status(state: &AppState) -> Result<NaturalLanguageScanStatus, String> {
+    let running = state
+        .natural_language_scan_running
+        .lock()
+        .map_err(|_| "Natural language scan state is locked".to_string())?;
+    Ok(NaturalLanguageScanStatus { running: *running })
+}
+
+pub fn natural_language_scan_progress(state: &AppState) -> Result<NaturalLanguageScanProgress, String> {
+    state
+        .natural_language_scan_progress
+        .lock()
+        .map_err(|_| "Natural language scan progress state is locked".to_string())
+        .map(|value| value.clone())
+}
+
+pub fn search_gallery_image_ids_by_natural_language(
+    query: String,
+    candidate_image_ids: Option<Vec<String>>,
+    state: &AppState,
+) -> Result<Vec<String>, String> {
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_database(&state.database_path)?;
+    let model_root = resolve_chinese_clip_model_dir(None)?;
+    let script_path = resolve_chinese_clip_embed_script_path()?;
+    let text_embedding = run_chinese_clip_text_embedding(trimmed_query, &model_root, &script_path)?;
+    if text_embedding.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let candidate_filter = candidate_image_ids.map(|list| {
+        list.into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<HashSet<_>>()
+    });
+    if matches!(candidate_filter, Some(ref set) if set.is_empty()) {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT e.image_id, e.vector_json
+            FROM image_clip_embeddings e
+            JOIN images i ON i.id = e.image_id
+            WHERE e.model_name = ?1
+              AND i.source = 'library'
+              AND COALESCE(i.trashed, 0) = 0
+            ",
+        )
+        .map_err(|error| format!("Failed to prepare natural language search query: {error}"))?;
+    let rows = stmt
+        .query_map(params![CHINESE_CLIP_MODEL_NAME], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Failed to run natural language search query: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to run natural language search query: {error}"))?;
+    drop(stmt);
+
+    let mut scored = Vec::<(String, f32)>::new();
+    for (image_id, vector_json) in rows {
+        if let Some(filter) = &candidate_filter {
+            if !filter.contains(&image_id) {
+                continue;
+            }
+        }
+        let vector: Vec<f32> = serde_json::from_str(&vector_json)
+            .map_err(|error| format!("Failed to parse image embedding for {image_id}: {error}"))?;
+        if vector.len() != text_embedding.len() {
+            continue;
+        }
+        if let Some(score) = cosine_similarity(&text_embedding, &vector) {
+            scored.push((image_id, score));
+        }
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(scored.into_iter().map(|(image_id, _)| image_id).collect())
 }
 
 pub fn list_image_auto_tags(
@@ -2313,6 +2597,21 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_image_thumbnails_updated_at
           ON image_thumbnails(updated_at DESC);
 
+        CREATE TABLE IF NOT EXISTS image_clip_embeddings (
+          image_id TEXT NOT NULL,
+          model_name TEXT NOT NULL,
+          dim INTEGER NOT NULL,
+          vector_json TEXT NOT NULL,
+          source_modified_at INTEGER NOT NULL,
+          source_file_size INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(image_id, model_name),
+          FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_clip_embeddings_model_updated
+          ON image_clip_embeddings(model_name, updated_at DESC);
+
         CREATE TRIGGER IF NOT EXISTS trg_image_auto_tags_insert_known
         AFTER INSERT ON image_auto_tags
         WHEN NOT EXISTS (
@@ -3585,6 +3884,296 @@ fn generate_thumbnails_once(
     Ok(generated)
 }
 
+fn generate_natural_language_embeddings_once(
+    database_path: &Path,
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+) -> Result<i64, String> {
+    set_natural_language_scan_progress_phase(progress, "collecting");
+    let conn = open_database(database_path)?;
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT
+              i.id,
+              i.path,
+              i.modified_at,
+              i.file_size,
+              e.source_modified_at,
+              e.source_file_size
+            FROM images i
+            LEFT JOIN image_clip_embeddings e
+              ON e.image_id = i.id
+             AND e.model_name = ?1
+            WHERE i.source = 'library'
+              AND COALESCE(i.trashed, 0) = 0
+            ORDER BY i.modified_at DESC, i.id ASC
+            ",
+        )
+        .map_err(|error| format!("Failed to load natural language scan candidates: {error}"))?;
+    let candidates = stmt
+        .query_map(params![CHINESE_CLIP_MODEL_NAME], |row| {
+            Ok(NaturalLanguageEmbeddingCandidate {
+                image_id: row.get(0)?,
+                image_path: row.get(1)?,
+                modified_at: row.get(2)?,
+                file_size: row.get(3)?,
+                current_source_modified_at: row.get(4)?,
+                current_source_file_size: row.get(5)?,
+            })
+        })
+        .map_err(|error| format!("Failed to load natural language scan candidates: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load natural language scan candidates: {error}"))?;
+    drop(stmt);
+
+    set_natural_language_scan_progress_total(progress, candidates.len() as i64);
+    set_natural_language_scan_progress_phase(progress, "generating");
+
+    if candidates.is_empty() {
+        set_natural_language_scan_progress_phase(progress, "idle");
+        return Ok(0);
+    }
+
+    let model_root = resolve_chinese_clip_model_dir(None)?;
+    let script_path = resolve_chinese_clip_embed_script_path()?;
+
+    let mut generated = 0i64;
+    let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut processed = 0i64;
+
+    for candidate in candidates {
+        if !Path::new(&candidate.image_path).is_file() {
+            clear_image_clip_embedding(&conn, &candidate.image_id)?;
+            skipped += 1;
+            processed += 1;
+            set_natural_language_scan_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        }
+
+        if natural_language_embedding_up_to_date(&candidate) {
+            skipped += 1;
+            processed += 1;
+            set_natural_language_scan_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        }
+
+        match run_chinese_clip_image_embedding(&candidate.image_path, &model_root, &script_path) {
+            Ok(vector) => {
+                if let Err(error) = upsert_image_clip_embedding(
+                    &conn,
+                    &candidate.image_id,
+                    &vector,
+                    candidate.modified_at,
+                    candidate.file_size,
+                ) {
+                    failed += 1;
+                    set_natural_language_scan_progress_error(progress, &error);
+                    push_natural_language_scan_recent_error(progress, &error);
+                } else {
+                    generated += 1;
+                }
+            }
+            Err(error) => {
+                failed += 1;
+                set_natural_language_scan_progress_error(progress, &error);
+                push_natural_language_scan_recent_error(progress, &error);
+                eprintln!("[clip-scan] {}", error);
+            }
+        }
+        processed += 1;
+        set_natural_language_scan_progress_counts(progress, processed, generated, skipped, failed);
+    }
+
+    set_natural_language_scan_progress_phase(progress, "idle");
+    Ok(generated)
+}
+
+fn natural_language_embedding_up_to_date(candidate: &NaturalLanguageEmbeddingCandidate) -> bool {
+    matches!(
+        (
+            candidate.current_source_modified_at,
+            candidate.current_source_file_size,
+        ),
+        (Some(source_modified_at), Some(source_file_size))
+            if source_modified_at == candidate.modified_at && source_file_size == candidate.file_size
+    )
+}
+
+fn clear_image_clip_embedding(conn: &Connection, image_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM image_clip_embeddings WHERE image_id = ?1 AND model_name = ?2",
+        params![image_id, CHINESE_CLIP_MODEL_NAME],
+    )
+    .map_err(|error| format!("Failed to clear stale clip embedding: {error}"))?;
+    Ok(())
+}
+
+fn upsert_image_clip_embedding(
+    conn: &Connection,
+    image_id: &str,
+    vector: &[f32],
+    source_modified_at: i64,
+    source_file_size: i64,
+) -> Result<(), String> {
+    if vector.is_empty() {
+        return Err("CLIP embedding is empty".to_string());
+    }
+    let dim = i64::try_from(vector.len()).map_err(|_| "CLIP embedding dimension overflow".to_string())?;
+    let vector_json =
+        serde_json::to_string(vector).map_err(|error| format!("Failed to encode CLIP embedding: {error}"))?;
+    let now = now_ms();
+    conn.execute(
+        "
+        INSERT INTO image_clip_embeddings (
+          image_id, model_name, dim, vector_json, source_modified_at, source_file_size, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(image_id, model_name) DO UPDATE SET
+          dim = excluded.dim,
+          vector_json = excluded.vector_json,
+          source_modified_at = excluded.source_modified_at,
+          source_file_size = excluded.source_file_size,
+          updated_at = excluded.updated_at
+        ",
+        params![
+            image_id,
+            CHINESE_CLIP_MODEL_NAME,
+            dim,
+            vector_json,
+            source_modified_at,
+            source_file_size,
+            now
+        ],
+    )
+    .map_err(|error| format!("Failed to save CLIP embedding: {error}"))?;
+    Ok(())
+}
+
+fn run_chinese_clip_image_embedding(
+    image_path: &str,
+    model_root: &Path,
+    script_path: &Path,
+) -> Result<Vec<f32>, String> {
+    let output = Command::new("python")
+        .arg("-X")
+        .arg("utf8")
+        .arg(script_path)
+        .arg("--model-dir")
+        .arg(model_root)
+        .arg("--mode")
+        .arg("image")
+        .arg("--image")
+        .arg(image_path)
+        .arg("--provider")
+        .arg("cpu")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .output()
+        .map_err(|error| format!("Failed to run Chinese-CLIP image embedding script: {error}"))?;
+    parse_clip_embedding_script_output(output, "image")
+}
+
+fn run_chinese_clip_text_embedding(
+    text: &str,
+    model_root: &Path,
+    script_path: &Path,
+) -> Result<Vec<f32>, String> {
+    let output = Command::new("python")
+        .arg("-X")
+        .arg("utf8")
+        .arg(script_path)
+        .arg("--model-dir")
+        .arg(model_root)
+        .arg("--mode")
+        .arg("text")
+        .arg("--text")
+        .arg(text)
+        .arg("--provider")
+        .arg("cpu")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .output()
+        .map_err(|error| format!("Failed to run Chinese-CLIP text embedding script: {error}"))?;
+    parse_clip_embedding_script_output(output, "text")
+}
+
+fn parse_clip_embedding_script_output(
+    output: std::process::Output,
+    mode: &str,
+) -> Result<Vec<f32>, String> {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            "unknown error".to_string()
+        } else {
+            stderr
+        };
+        return Err(format!(
+            "Chinese-CLIP {mode} embedding failed: {detail}. If dependency missing, run: pip install onnxruntime numpy pillow"
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err(format!("Chinese-CLIP {mode} embedding returned empty output"));
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).map_err(|error| format!("Failed to parse CLIP embedding output: {error}"))?;
+    let array = value
+        .get("embedding")
+        .and_then(|item| item.as_array())
+        .ok_or_else(|| "CLIP embedding output missing embedding array".to_string())?;
+    let mut vector = Vec::<f32>::with_capacity(array.len());
+    for item in array {
+        let number = item
+            .as_f64()
+            .ok_or_else(|| "CLIP embedding output contains non-numeric value".to_string())?;
+        if !number.is_finite() {
+            return Err("CLIP embedding output contains invalid number".to_string());
+        }
+        vector.push(number as f32);
+    }
+    if vector.is_empty() {
+        return Err("CLIP embedding output is empty".to_string());
+    }
+    Ok(normalize_vector(&vector))
+}
+
+fn normalize_vector(input: &[f32]) -> Vec<f32> {
+    let mut sum = 0f64;
+    for value in input {
+        let v = *value as f64;
+        sum += v * v;
+    }
+    if sum <= 1e-18 {
+        return input.to_vec();
+    }
+    let inv = 1.0f64 / sum.sqrt();
+    input.iter().map(|value| (*value as f64 * inv) as f32).collect()
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
+    if left.len() != right.len() || left.is_empty() {
+        return None;
+    }
+    let mut dot = 0f64;
+    let mut left_norm = 0f64;
+    let mut right_norm = 0f64;
+    for (lv, rv) in left.iter().zip(right.iter()) {
+        let l = *lv as f64;
+        let r = *rv as f64;
+        dot += l * r;
+        left_norm += l * l;
+        right_norm += r * r;
+    }
+    if left_norm <= 1e-18 || right_norm <= 1e-18 {
+        return None;
+    }
+    Some((dot / (left_norm.sqrt() * right_norm.sqrt())) as f32)
+}
+
 fn ensure_thumbnail_root_dir(database_path: &Path) -> Result<PathBuf, String> {
     let root = database_path
         .parent()
@@ -4047,6 +4636,93 @@ fn set_thumbnail_progress_done(progress: &Arc<Mutex<ThumbnailGenerationProgress>
     });
 }
 
+fn set_natural_language_scan_progress(
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    next: NaturalLanguageScanProgress,
+) {
+    if let Ok(mut state) = progress.lock() {
+        *state = next;
+    }
+}
+
+fn update_natural_language_scan_progress<F>(
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    update: F,
+) where
+    F: FnOnce(&mut NaturalLanguageScanProgress),
+{
+    if let Ok(mut state) = progress.lock() {
+        update(&mut state);
+    }
+}
+
+fn set_natural_language_scan_progress_phase(
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    phase: &str,
+) {
+    update_natural_language_scan_progress(progress, |state| {
+        state.phase = phase.to_string();
+        state.running = phase != "idle";
+    });
+}
+
+fn set_natural_language_scan_progress_total(
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    total: i64,
+) {
+    update_natural_language_scan_progress(progress, |state| {
+        state.total_images = total.max(0);
+    });
+}
+
+fn set_natural_language_scan_progress_counts(
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    processed: i64,
+    generated: i64,
+    skipped: i64,
+    failed: i64,
+) {
+    update_natural_language_scan_progress(progress, |state| {
+        state.processed_images = processed.max(0);
+        state.generated_images = generated.max(0);
+        state.skipped_images = skipped.max(0);
+        state.failed_images = failed.max(0);
+    });
+}
+
+fn set_natural_language_scan_progress_error(
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    error: &str,
+) {
+    update_natural_language_scan_progress(progress, |state| {
+        state.last_error = Some(error.to_string());
+    });
+}
+
+fn push_natural_language_scan_recent_error(
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    error: &str,
+) {
+    update_natural_language_scan_progress(progress, |state| {
+        let text = error.trim();
+        if text.is_empty() {
+            return;
+        }
+        state.recent_errors.push(text.to_string());
+        if state.recent_errors.len() > 12 {
+            let overflow = state.recent_errors.len() - 12;
+            state.recent_errors.drain(0..overflow);
+        }
+    });
+}
+
+fn set_natural_language_scan_progress_done(progress: &Arc<Mutex<NaturalLanguageScanProgress>>) {
+    update_natural_language_scan_progress(progress, |state| {
+        state.running = false;
+        state.phase = "idle".to_string();
+    });
+}
+
 fn set_scan_progress(progress: &Arc<Mutex<BackgroundScanProgress>>, next: BackgroundScanProgress) {
     if let Ok(mut state) = progress.lock() {
         *state = next;
@@ -4211,6 +4887,116 @@ fn resolve_wd_tagger_script_path() -> Result<PathBuf, String> {
     }
 
     Err("Cannot find wd_tagger_test.py under src-tauri/scripts".to_string())
+}
+
+fn resolve_chinese_clip_model_dir(explicit_dir: Option<&str>) -> Result<PathBuf, String> {
+    if let Some(path) = explicit_dir {
+        let dir = PathBuf::from(path);
+        if dir.is_dir() {
+            let text_onnx = dir.join("onnx").join("chinese_clip_text_encoder.onnx");
+            let image_onnx = dir.join("onnx").join("chinese_clip_image_encoder.onnx");
+            if text_onnx.is_file() && image_onnx.is_file() {
+                return Ok(dir);
+            }
+            return Err(format!(
+                "Configured model directory is missing ONNX files: {} and {}",
+                text_onnx.display(),
+                image_onnx.display()
+            ));
+        }
+        return Err(format!("Configured model directory does not exist: {}", dir.display()));
+    }
+
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("model").join("chinese-clip-vit-base-patch16"));
+        candidates.push(cwd.join("..").join("model").join("chinese-clip-vit-base-patch16"));
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("model").join("chinese-clip-vit-base-patch16"));
+            candidates.push(exe_dir.join("..").join("model").join("chinese-clip-vit-base-patch16"));
+            candidates.push(exe_dir.join("..").join("..").join("model").join("chinese-clip-vit-base-patch16"));
+        }
+    }
+
+    for candidate in candidates {
+        let text_onnx = candidate.join("onnx").join("chinese_clip_text_encoder.onnx");
+        let image_onnx = candidate.join("onnx").join("chinese_clip_image_encoder.onnx");
+        if text_onnx.is_file() && image_onnx.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Cannot find Chinese-CLIP ONNX model directory (expected model/chinese-clip-vit-base-patch16/onnx)".to_string())
+}
+
+fn resolve_chinese_clip_smoke_script_path() -> Result<PathBuf, String> {
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(
+            cwd.join("src-tauri")
+                .join("scripts")
+                .join("chinese_clip_onnx_smoke_test.py"),
+        );
+        candidates.push(cwd.join("scripts").join("chinese_clip_onnx_smoke_test.py"));
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("scripts").join("chinese_clip_onnx_smoke_test.py"));
+            candidates.push(exe_dir.join("..").join("scripts").join("chinese_clip_onnx_smoke_test.py"));
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("..")
+                    .join("src-tauri")
+                    .join("scripts")
+                    .join("chinese_clip_onnx_smoke_test.py"),
+            );
+        }
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Cannot find chinese_clip_onnx_smoke_test.py under src-tauri/scripts".to_string())
+}
+
+fn resolve_chinese_clip_embed_script_path() -> Result<PathBuf, String> {
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(
+            cwd.join("src-tauri")
+                .join("scripts")
+                .join("chinese_clip_onnx_embed.py"),
+        );
+        candidates.push(cwd.join("scripts").join("chinese_clip_onnx_embed.py"));
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("scripts").join("chinese_clip_onnx_embed.py"));
+            candidates.push(exe_dir.join("..").join("scripts").join("chinese_clip_onnx_embed.py"));
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("..")
+                    .join("src-tauri")
+                    .join("scripts")
+                    .join("chinese_clip_onnx_embed.py"),
+            );
+        }
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Cannot find chinese_clip_onnx_embed.py under src-tauri/scripts".to_string())
 }
 
 fn upsert_folder(conn: &Connection, folder_path: &str, scanned_at: i64) -> Result<i64, String> {

@@ -25,9 +25,11 @@ const props = defineProps<{
   searchZhOpen: boolean
   searchEnQuery: string
   searchFileNameQuery: string
+  searchNaturalLanguageQuery: string
   searchConfidenceMin: number
   searchConfidenceMax: number
   searchRunning: boolean
+  searchNeedsApply: boolean
   searchError: string
   isLoading: boolean
   layoutItems: GalleryLayoutItem[]
@@ -412,6 +414,7 @@ function onSearchWheel(event: WheelEvent) {
             placeholder="如 black hair smile"
             autocomplete="off"
             @input="handlers.setSearchEnQuery(($event.target as HTMLInputElement).value)"
+            @keydown.enter.prevent="handlers.executeGallerySearch()"
           />
         </div>
 
@@ -424,6 +427,7 @@ function onSearchWheel(event: WheelEvent) {
             placeholder="文件名关键词"
             autocomplete="off"
             @input="handlers.setSearchFileNameQuery(($event.target as HTMLInputElement).value)"
+            @keydown.enter.prevent="handlers.executeGallerySearch()"
           />
         </div>
 
@@ -465,8 +469,27 @@ function onSearchWheel(event: WheelEvent) {
           </div>
         </div>
 
-        <div class="gallery-search__cell gallery-search__cell--placeholder">
+        <div class="gallery-search__cell">
+          <div class="gallery-search__label">自然语言搜索</div>
+          <input
+            class="gallery-search__input"
+            type="text"
+            :value="searchNaturalLanguageQuery"
+            placeholder="例如：白发女孩在夜景中"
+            autocomplete="off"
+            @input="handlers.setSearchNaturalLanguageQuery(($event.target as HTMLInputElement).value)"
+            @keydown.enter.prevent="handlers.executeGallerySearch()"
+          />
           <div class="gallery-search__footer">
+            <button
+              type="button"
+              class="gallery-search__submit"
+              :disabled="searchRunning"
+              @click="handlers.executeGallerySearch()"
+            >
+              开始搜索
+            </button>
+            <div v-if="searchNeedsApply">有未应用的筛选条件</div>
             <div>{{ searchRunning ? '搜索中…' : '搜索就绪' }}</div>
             <div v-if="searchError">{{ searchError }}</div>
           </div>

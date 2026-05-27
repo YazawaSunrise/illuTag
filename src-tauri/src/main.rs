@@ -2,6 +2,10 @@ use illutag_core::library::{
     add_gallery_folder, add_image_to_reference_board, assign_image_to_user_folder,
     background_scan_progress,
     background_scan_status,
+    natural_language_scan_progress,
+    natural_language_scan_status,
+    search_gallery_image_ids_by_natural_language,
+    start_natural_language_scan,
     copy_image_to_system_clipboard,
     start_thumbnail_generation,
     pause_thumbnail_generation,
@@ -23,7 +27,8 @@ use illutag_core::library::{
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
-    AppState, BackgroundScanProgress, BackgroundScanStatus, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, StartupCleanupStatus, ThumbnailGenerationProgress,
+    test_chinese_clip_onnx_search,
+    AppState, BackgroundScanProgress, BackgroundScanStatus, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
 use std::sync::{Arc, Mutex};
@@ -100,6 +105,17 @@ fn test_wd_swinv2_tagger_command(
 }
 
 #[tauri::command]
+fn test_chinese_clip_onnx_search_command(
+    image_path: String,
+    texts: Vec<String>,
+    top_k: Option<usize>,
+    model_dir: Option<String>,
+    provider: Option<String>,
+) -> Result<serde_json::Value, String> {
+    test_chinese_clip_onnx_search(image_path, texts, top_k, model_dir, provider)
+}
+
+#[tauri::command]
 fn start_scan_all_folders_with_tagging_command(state: State<AppState>) -> Result<bool, String> {
     start_scan_all_folders_with_tagging(&state)
 }
@@ -112,6 +128,21 @@ fn background_scan_status_command(state: State<AppState>) -> Result<BackgroundSc
 #[tauri::command]
 fn background_scan_progress_command(state: State<AppState>) -> Result<BackgroundScanProgress, String> {
     background_scan_progress(&state)
+}
+
+#[tauri::command]
+fn start_natural_language_scan_command(state: State<AppState>) -> Result<bool, String> {
+    start_natural_language_scan(&state)
+}
+
+#[tauri::command]
+fn natural_language_scan_status_command(state: State<AppState>) -> Result<NaturalLanguageScanStatus, String> {
+    natural_language_scan_status(&state)
+}
+
+#[tauri::command]
+fn natural_language_scan_progress_command(state: State<AppState>) -> Result<NaturalLanguageScanProgress, String> {
+    natural_language_scan_progress(&state)
 }
 
 #[tauri::command]
@@ -182,6 +213,15 @@ fn search_gallery_image_ids_command(
     state: State<AppState>,
 ) -> Result<Vec<String>, String> {
     search_gallery_image_ids(filters, &state)
+}
+
+#[tauri::command]
+fn search_gallery_image_ids_by_natural_language_command(
+    query: String,
+    candidate_image_ids: Option<Vec<String>>,
+    state: State<AppState>,
+) -> Result<Vec<String>, String> {
+    search_gallery_image_ids_by_natural_language(query, candidate_image_ids, &state)
 }
 
 #[tauri::command]
@@ -496,6 +536,9 @@ fn main() {
                 thumbnail_generation_pause_requested: Arc::new(Mutex::new(false)),
                 thumbnail_generation_stop_requested: Arc::new(Mutex::new(false)),
                 thumbnail_generation_progress: Arc::new(Mutex::new(ThumbnailGenerationProgress::default())),
+                natural_language_scan_running: Arc::new(Mutex::new(false)),
+                natural_language_scan_pending: Arc::new(Mutex::new(false)),
+                natural_language_scan_progress: Arc::new(Mutex::new(NaturalLanguageScanProgress::default())),
             });
 
             Ok(())
@@ -509,9 +552,13 @@ fn main() {
             read_image_bytes_command,
             copy_image_to_system_clipboard_command,
             test_wd_swinv2_tagger_command,
+            test_chinese_clip_onnx_search_command,
             start_scan_all_folders_with_tagging_command,
             background_scan_status_command,
             background_scan_progress_command,
+            start_natural_language_scan_command,
+            natural_language_scan_status_command,
+            natural_language_scan_progress_command,
             start_startup_cleanup_command,
             startup_cleanup_status_command,
             start_thumbnail_generation_command,
@@ -524,6 +571,7 @@ fn main() {
             list_image_auto_tags_command,
             suggest_known_auto_tags_command,
             search_gallery_image_ids_command,
+            search_gallery_image_ids_by_natural_language_command,
             create_user_folder_command,
             rename_user_folder_command,
             delete_user_folder_command,

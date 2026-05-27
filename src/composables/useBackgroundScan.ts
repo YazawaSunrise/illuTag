@@ -25,6 +25,22 @@ type BackgroundScanProgress = {
   recentErrors?: string[] | null
 }
 
+type NaturalLanguageScanStatus = {
+  running: boolean
+}
+
+type NaturalLanguageScanProgress = {
+  running: boolean
+  phase: string
+  totalImages: number
+  processedImages: number
+  generatedImages: number
+  skippedImages: number
+  failedImages: number
+  lastError?: string | null
+  recentErrors?: string[] | null
+}
+
 type UseBackgroundScanOptions = {
   loadLibrary: () => Promise<void>
   formatError: (error: unknown) => string
@@ -44,9 +60,13 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
   const isBackgroundScanRunning = ref(false)
   const scanProgressText = ref('')
   const scanRecentErrors = ref<string[]>([])
+  const isNaturalLanguageScanRunning = ref(false)
+  const naturalLanguageScanProgressText = ref('')
+  const naturalLanguageScanRecentErrors = ref<string[]>([])
 
   const scanProgressPollTimer = ref<number | null>(null)
   const scanProgressSignature = ref('')
+  const naturalLanguageLastRefreshSignature = ref('')
   const scanLibraryRefreshInFlight = ref(false)
   const scanLibraryRefreshAt = ref(0)
   const startupCleanupObservedGeneration = ref(0)
@@ -71,6 +91,22 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
         scanProgressText.value = '扫描任务已在后台运行，已排队下一轮扫描'
       }
       await refreshBackgroundScanStatus()
+    } catch (error) {
+      options.setErrorText(options.formatError(error))
+    }
+  }
+
+  async function startNaturalLanguageScan() {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const started = await invoke<boolean>('start_natural_language_scan_command')
+      if (started) {
+        isNaturalLanguageScanRunning.value = true
+        naturalLanguageScanProgressText.value = '自然语言向量扫描任务已启动'
+      } else {
+        naturalLanguageScanProgressText.value = '自然语言向量扫描任务已在后台运行，已排队下一轮'
+      }
+      await refreshNaturalLanguageScanStatus()
     } catch (error) {
       options.setErrorText(options.formatError(error))
     }
@@ -134,8 +170,54 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
         }
       }
       await refreshStartupCleanupStatus()
+      await refreshNaturalLanguageScanStatus()
     } catch (error) {
       if (isBackgroundScanRunning.value) {
+        options.setErrorText(options.formatError(error))
+      }
+    }
+  }
+
+  async function refreshNaturalLanguageScanStatus() {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const status = await invoke<NaturalLanguageScanStatus>('natural_language_scan_status_command')
+      isNaturalLanguageScanRunning.value = Boolean(status.running)
+
+      const progress = await invoke<NaturalLanguageScanProgress>('natural_language_scan_progress_command')
+      isNaturalLanguageScanRunning.value = Boolean(progress.running)
+      naturalLanguageScanProgressText.value = buildNaturalLanguageScanProgressText(progress)
+      naturalLanguageScanRecentErrors.value = Array.isArray(progress.recentErrors)
+        ? progress.recentErrors.filter(
+            (item): item is string => typeof item === 'string' && item.trim().length > 0,
+          )
+        : []
+
+      const signature = [
+        progress.running ? '1' : '0',
+        progress.phase,
+        progress.totalImages,
+        progress.processedImages,
+        progress.generatedImages,
+        progress.skippedImages,
+        progress.failedImages,
+      ].join('|')
+      const shouldRefreshLibrary =
+        !progress.running &&
+        progress.processedImages > 0 &&
+        signature !== naturalLanguageLastRefreshSignature.value
+      if (shouldRefreshLibrary && !scanLibraryRefreshInFlight.value) {
+        scanLibraryRefreshInFlight.value = true
+        scanLibraryRefreshAt.value = Date.now()
+        try {
+          await options.loadLibrary()
+          naturalLanguageLastRefreshSignature.value = signature
+        } finally {
+          scanLibraryRefreshInFlight.value = false
+        }
+      }
+    } catch (error) {
+      if (isNaturalLanguageScanRunning.value) {
         options.setErrorText(options.formatError(error))
       }
     }
@@ -181,6 +263,31 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
     }
   }
 
+  function buildNaturalLanguageScanProgressText(progress: NaturalLanguageScanProgress) {
+    const phaseLabel = naturalLanguageScanPhaseLabel(progress.phase)
+    const base = `${phaseLabel}｜处理 ${progress.processedImages}/${progress.totalImages}｜生成 ${progress.generatedImages}｜跳过 ${progress.skippedImages}｜失败 ${progress.failedImages}`
+    if (progress.lastError) {
+      return `${base}｜错误：${progress.lastError}`
+    }
+    if (!progress.running && progress.phase === 'idle' && progress.totalImages > 0) {
+      return `上次自然语言扫描完成｜${base}`
+    }
+    return base
+  }
+
+  function naturalLanguageScanPhaseLabel(phase: string) {
+    switch ((phase || '').toLowerCase()) {
+      case 'collecting':
+        return '收集候选中'
+      case 'generating':
+        return '向量生成中'
+      case 'idle':
+        return '空闲'
+      default:
+        return phase || '未知状态'
+    }
+  }
+
   function buildScanProgressText(progress: BackgroundScanProgress) {
     const phaseLabel = scanPhaseLabel(progress.phase)
     const folders = `${progress.scannedFolders}/${progress.totalFolders}`
@@ -213,9 +320,13 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
     isBackgroundScanRunning,
     scanProgressText,
     scanRecentErrors,
+    isNaturalLanguageScanRunning,
+    naturalLanguageScanProgressText,
+    naturalLanguageScanRecentErrors,
     initAutoScanOnStartupFromStorage,
     setAutoScanOnStartup,
     startScanAllFolders,
+    startNaturalLanguageScan,
     startStartupCleanup,
     refreshBackgroundScanStatus,
     startBackgroundScanPolling,

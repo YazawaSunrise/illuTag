@@ -46,9 +46,11 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   const searchZhOpen = ref(false)
   const searchEnQuery = ref('')
   const searchFileNameQuery = ref('')
+  const searchNaturalLanguageQuery = ref('')
   const searchConfidenceMin = ref(0)
   const searchConfidenceMax = ref(1)
   const searchRunning = ref(false)
+  const searchNeedsApply = ref(false)
   const searchError = ref('')
   const isSearchFocused = ref(false)
   const isSearchPointerInside = ref(false)
@@ -64,9 +66,9 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   const activeImageDetailId = ref<string | null>(null)
   const activeImageTagRows = ref<ImageTagRecord[]>([])
   const searchResultImageIds = ref<Set<string> | null>(null)
+  const naturalLanguageRankedImageIds = ref<string[] | null>(null)
   const searchRequestToken = ref(0)
   const searchSuggestRequestToken = ref(0)
-  const searchTimer = ref<number | null>(null)
   const searchSuggestTimer = ref<number | null>(null)
   const searchHideCommitTimer = ref<number | null>(null)
 
@@ -75,14 +77,23 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       searchZhSelected.value.length > 0 ||
       searchEnQuery.value.trim().length > 0 ||
       searchFileNameQuery.value.trim().length > 0 ||
+      searchNaturalLanguageQuery.value.trim().length > 0 ||
       searchConfidenceMin.value > 0.0001 ||
       searchConfidenceMax.value < 0.9999,
   )
 
   const visibleImages = computed(() => {
     if (options.activeUserFolderId.value === 'trash') return options.folderScopedImages.value
-    if (!hasSearchFilters.value || !searchResultImageIds.value) return options.folderScopedImages.value
-    return options.folderScopedImages.value.filter((image) => searchResultImageIds.value?.has(image.id))
+    const scoped = options.folderScopedImages.value
+    const filtered =
+      !hasSearchFilters.value || !searchResultImageIds.value
+        ? scoped
+        : scoped.filter((image) => searchResultImageIds.value?.has(image.id))
+    if (!naturalLanguageRankedImageIds.value) return filtered
+    const rank = new Map(naturalLanguageRankedImageIds.value.map((imageId, index) => [imageId, index]))
+    return filtered
+      .filter((image) => rank.has(image.id))
+      .sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER))
   })
 
   const activeImageDetail = computed(() => {
@@ -127,27 +138,14 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   )
 
   watch(
-    () => [
-      searchZhSelected.value.map((item) => item.tagEn).sort().join('\u0000'),
-      searchEnQuery.value,
-      searchFileNameQuery.value,
-      searchConfidenceMin.value,
-      searchConfidenceMax.value,
-    ],
+    () => searchZhSelected.value.map((item) => item.tagEn).sort().join('\u0000'),
     () => {
-      if (searchTimer.value !== null) window.clearTimeout(searchTimer.value)
-      searchTimer.value = window.setTimeout(() => {
-        void runGallerySearch()
-      }, 150)
+      void executeGallerySearch()
     },
     { immediate: true },
   )
 
   onUnmounted(() => {
-    if (searchTimer.value !== null) {
-      window.clearTimeout(searchTimer.value)
-      searchTimer.value = null
-    }
     if (searchSuggestTimer.value !== null) {
       window.clearTimeout(searchSuggestTimer.value)
       searchSuggestTimer.value = null
@@ -276,18 +274,27 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
 
   function setSearchEnQuery(value: string) {
     searchEnQuery.value = value
+    searchNeedsApply.value = true
   }
 
   function setSearchFileNameQuery(value: string) {
     searchFileNameQuery.value = value
+    searchNeedsApply.value = true
+  }
+
+  function setSearchNaturalLanguageQuery(value: string) {
+    searchNaturalLanguageQuery.value = value
+    searchNeedsApply.value = true
   }
 
   function setSearchConfidenceMin(value: number) {
     searchConfidenceMin.value = options.clamp(value, 0, searchConfidenceMax.value)
+    searchNeedsApply.value = true
   }
 
   function setSearchConfidenceMax(value: number) {
     searchConfidenceMax.value = options.clamp(value, searchConfidenceMin.value, 1)
+    searchNeedsApply.value = true
   }
 
   function searchBySingleTag(tagEn: string, tagZh?: string | null) {
@@ -298,8 +305,10 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchZhSuggestions.value = []
     searchEnQuery.value = ''
     searchFileNameQuery.value = ''
+    searchNaturalLanguageQuery.value = ''
     searchConfidenceMin.value = 0
     searchConfidenceMax.value = 1
+    searchNeedsApply.value = false
     const exists = searchZhSelected.value.some((tag) => tag.tagEn === normalized)
     if (exists) return
     searchZhSelected.value = [
@@ -346,8 +355,18 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   }
 
   async function runGallerySearch() {
-    if (!hasSearchFilters.value) {
+    const hasStructuredFilters =
+      searchZhSelected.value.length > 0 ||
+      searchEnQuery.value.trim().length > 0 ||
+      searchFileNameQuery.value.trim().length > 0 ||
+      searchConfidenceMin.value > 0.0001 ||
+      searchConfidenceMax.value < 0.9999
+    const naturalLanguageQuery = searchNaturalLanguageQuery.value.trim()
+    const hasNaturalLanguageQuery = naturalLanguageQuery.length > 0
+
+    if (!hasStructuredFilters && !hasNaturalLanguageQuery) {
       searchResultImageIds.value = null
+      naturalLanguageRankedImageIds.value = null
       searchRunning.value = false
       searchError.value = ''
       return
@@ -367,11 +386,25 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchError.value = ''
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      const ids = await invoke<string[]>('search_gallery_image_ids_command', {
-        filters,
-      })
+      let structuredIds: string[] | null = null
+      if (hasStructuredFilters) {
+        structuredIds = await invoke<string[]>('search_gallery_image_ids_command', {
+          filters,
+        })
+      }
       if (token !== searchRequestToken.value) return
-      searchResultImageIds.value = new Set(ids)
+      searchResultImageIds.value = structuredIds ? new Set(structuredIds) : null
+
+      if (hasNaturalLanguageQuery) {
+        const rankedIds = await invoke<string[]>('search_gallery_image_ids_by_natural_language_command', {
+          query: naturalLanguageQuery,
+          candidateImageIds: structuredIds,
+        })
+        if (token !== searchRequestToken.value) return
+        naturalLanguageRankedImageIds.value = rankedIds
+      } else {
+        naturalLanguageRankedImageIds.value = null
+      }
     } catch (error) {
       if (token !== searchRequestToken.value) return
       searchError.value = options.formatError(error)
@@ -380,6 +413,11 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
         searchRunning.value = false
       }
     }
+  }
+
+  async function executeGallerySearch() {
+    searchNeedsApply.value = false
+    await runGallerySearch()
   }
 
   async function loadImageAutoTags(imageId: string) {
@@ -425,9 +463,11 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchZhOpen,
     searchEnQuery,
     searchFileNameQuery,
+    searchNaturalLanguageQuery,
     searchConfidenceMin,
     searchConfidenceMax,
     searchRunning,
+    searchNeedsApply,
     searchError,
     isSearchFocused,
     isSearchPointerInside,
@@ -450,8 +490,10 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     removeSearchZhSuggestion,
     setSearchEnQuery,
     setSearchFileNameQuery,
+    setSearchNaturalLanguageQuery,
     setSearchConfidenceMin,
     setSearchConfidenceMax,
+    executeGallerySearch,
     searchBySingleTag,
     closeImageDetail,
     openGalleryImageDetail,

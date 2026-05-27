@@ -5,6 +5,7 @@ node_modules/
 # Build outputs
 dist/
 src-tauri/target/
+src-tauri/target-codex-check/
 __pycache__/
 *.py[cod]
 
@@ -27,4 +28,5 @@ Thumbs.db
 .vscode/
 
 # Large local model assets
+model/
 wd-swinv2-tagger-v3/model.onnx
