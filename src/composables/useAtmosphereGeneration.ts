@@ -76,6 +76,17 @@ export function useAtmosphereGeneration(options: UseAtmosphereGenerationOptions)
     }
   }
 
+  async function rebuildAtmosphereSignatureCache() {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const started = await invoke<boolean>('rebuild_atmosphere_signature_cache_command')
+      atmosphereProgressText.value = started ? '氛围特征重建任务已启动' : '氛围特征任务已在后台运行，已排队下一轮'
+      await refreshAtmosphereGenerationStatus()
+    } catch (error) {
+      options.setErrorText(options.formatError(error))
+    }
+  }
+
   async function refreshAtmosphereGenerationStatus() {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
@@ -191,6 +202,7 @@ export function useAtmosphereGeneration(options: UseAtmosphereGenerationOptions)
     pauseAtmosphereGeneration,
     resumeAtmosphereGeneration,
     stopAtmosphereGeneration,
+    rebuildAtmosphereSignatureCache,
     refreshAtmosphereGenerationStatus,
     startAtmosphereGenerationPolling,
     stopAtmosphereGenerationPolling,

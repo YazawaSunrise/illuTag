@@ -2,11 +2,17 @@ use illutag_core::library::{
     add_gallery_folder, add_image_to_reference_board, assign_image_to_user_folder,
     background_scan_progress,
     background_scan_status,
+    pause_background_scan,
+    resume_background_scan,
+    stop_background_scan,
     natural_language_scan_progress,
     natural_language_scan_status,
+    pause_natural_language_scan,
+    resume_natural_language_scan,
     search_gallery_image_ids_by_external_image,
     search_gallery_image_ids_by_natural_language,
     start_natural_language_scan,
+    stop_natural_language_scan,
     warmup_clip_vector_cache,
     copy_image_to_system_clipboard,
     start_thumbnail_generation,
@@ -14,6 +20,7 @@ use illutag_core::library::{
     pause_atmosphere_generation,
     resume_atmosphere_generation,
     stop_atmosphere_generation,
+    rebuild_atmosphere_signature_cache,
     atmosphere_generation_status,
     start_color_signature_generation,
     pause_color_signature_generation,
@@ -132,6 +139,21 @@ fn background_scan_progress_command(state: State<AppState>) -> Result<Background
 }
 
 #[tauri::command]
+fn pause_background_scan_command(state: State<AppState>) -> Result<bool, String> {
+    pause_background_scan(&state)
+}
+
+#[tauri::command]
+fn resume_background_scan_command(state: State<AppState>) -> Result<bool, String> {
+    resume_background_scan(&state)
+}
+
+#[tauri::command]
+fn stop_background_scan_command(state: State<AppState>) -> Result<bool, String> {
+    stop_background_scan(&state)
+}
+
+#[tauri::command]
 fn start_natural_language_scan_command(state: State<AppState>) -> Result<bool, String> {
     start_natural_language_scan(&state)
 }
@@ -144,6 +166,21 @@ fn natural_language_scan_status_command(state: State<AppState>) -> Result<Natura
 #[tauri::command]
 fn natural_language_scan_progress_command(state: State<AppState>) -> Result<NaturalLanguageScanProgress, String> {
     natural_language_scan_progress(&state)
+}
+
+#[tauri::command]
+fn pause_natural_language_scan_command(state: State<AppState>) -> Result<bool, String> {
+    pause_natural_language_scan(&state)
+}
+
+#[tauri::command]
+fn resume_natural_language_scan_command(state: State<AppState>) -> Result<bool, String> {
+    resume_natural_language_scan(&state)
+}
+
+#[tauri::command]
+fn stop_natural_language_scan_command(state: State<AppState>) -> Result<bool, String> {
+    stop_natural_language_scan(&state)
 }
 
 #[tauri::command]
@@ -214,6 +251,11 @@ fn resume_atmosphere_generation_command(state: State<AppState>) -> Result<bool, 
 #[tauri::command]
 fn stop_atmosphere_generation_command(state: State<AppState>) -> Result<bool, String> {
     stop_atmosphere_generation(&state)
+}
+
+#[tauri::command]
+fn rebuild_atmosphere_signature_cache_command(state: State<AppState>) -> Result<bool, String> {
+    rebuild_atmosphere_signature_cache(&state)
 }
 
 #[tauri::command]
@@ -609,6 +651,8 @@ fn main() {
                 library: Arc::new(Mutex::new(None)),
                 background_scan_running: Arc::new(Mutex::new(false)),
                 background_scan_pending: Arc::new(Mutex::new(false)),
+                background_scan_pause_requested: Arc::new(Mutex::new(false)),
+                background_scan_stop_requested: Arc::new(Mutex::new(false)),
                 background_scan_progress: Arc::new(Mutex::new(BackgroundScanProgress::default())),
                 startup_cleanup_running: Arc::new(Mutex::new(false)),
                 startup_cleanup_generation: Arc::new(Mutex::new(0)),
@@ -629,12 +673,16 @@ fn main() {
                 color_signature_generation_progress: Arc::new(Mutex::new(ColorSignatureGenerationProgress::default())),
                 natural_language_scan_running: Arc::new(Mutex::new(false)),
                 natural_language_scan_pending: Arc::new(Mutex::new(false)),
+                natural_language_scan_pause_requested: Arc::new(Mutex::new(false)),
+                natural_language_scan_stop_requested: Arc::new(Mutex::new(false)),
                 natural_language_scan_progress: Arc::new(Mutex::new(NaturalLanguageScanProgress::default())),
                 clip_vector_cache: Arc::new(Mutex::new(None)),
                 atmosphere_signature_cache: Arc::new(Mutex::new(None)),
                 color_signature_cache: Arc::new(Mutex::new(None)),
                 clip_text_encoder_service: Arc::new(Mutex::new(None)),
                 clip_image_encoder_service: Arc::new(Mutex::new(None)),
+                clip_image_encoder_last_used_at: Arc::new(Mutex::new(0)),
+                clip_image_encoder_release_worker_running: Arc::new(Mutex::new(false)),
                 wd_tagger_service: Arc::new(Mutex::new(None)),
             };
             let _ = warmup_clip_vector_cache(&app_state);
@@ -654,9 +702,15 @@ fn main() {
             start_scan_all_folders_with_tagging_command,
             background_scan_status_command,
             background_scan_progress_command,
+            pause_background_scan_command,
+            resume_background_scan_command,
+            stop_background_scan_command,
             start_natural_language_scan_command,
             natural_language_scan_status_command,
             natural_language_scan_progress_command,
+            pause_natural_language_scan_command,
+            resume_natural_language_scan_command,
+            stop_natural_language_scan_command,
             start_startup_cleanup_command,
             startup_cleanup_status_command,
             start_thumbnail_generation_command,
@@ -671,6 +725,7 @@ fn main() {
             pause_atmosphere_generation_command,
             resume_atmosphere_generation_command,
             stop_atmosphere_generation_command,
+            rebuild_atmosphere_signature_cache_command,
             start_color_signature_generation_command,
             color_signature_generation_status_command,
             pause_color_signature_generation_command,

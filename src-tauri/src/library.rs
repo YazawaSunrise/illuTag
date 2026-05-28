@@ -36,12 +36,16 @@ const ATMOSPHERE_SIGNATURE_HUE_BINS: usize = 12;
 const ATMOSPHERE_SIGNATURE_DIM: usize = 51;
 const COLOR_SIGNATURE_HUE_BINS: usize = 24;
 const COLOR_SIGNATURE_DIM: usize = COLOR_SIGNATURE_HUE_BINS + 8;
+const CLIP_IMAGE_SERVICE_IDLE_RELEASE_MS: i64 = 20 * 60 * 1000;
+const CLIP_IMAGE_SERVICE_IDLE_CHECK_INTERVAL_MS: u64 = 30_000;
 
 pub struct AppState {
     pub database_path: PathBuf,
     pub library: Arc<Mutex<Option<LibraryStore>>>,
     pub background_scan_running: Arc<Mutex<bool>>,
     pub background_scan_pending: Arc<Mutex<bool>>,
+    pub background_scan_pause_requested: Arc<Mutex<bool>>,
+    pub background_scan_stop_requested: Arc<Mutex<bool>>,
     pub background_scan_progress: Arc<Mutex<BackgroundScanProgress>>,
     pub startup_cleanup_running: Arc<Mutex<bool>>,
     pub startup_cleanup_generation: Arc<Mutex<i64>>,
@@ -62,12 +66,16 @@ pub struct AppState {
     pub color_signature_generation_progress: Arc<Mutex<ColorSignatureGenerationProgress>>,
     pub natural_language_scan_running: Arc<Mutex<bool>>,
     pub natural_language_scan_pending: Arc<Mutex<bool>>,
+    pub natural_language_scan_pause_requested: Arc<Mutex<bool>>,
+    pub natural_language_scan_stop_requested: Arc<Mutex<bool>>,
     pub natural_language_scan_progress: Arc<Mutex<NaturalLanguageScanProgress>>,
     pub clip_vector_cache: Arc<Mutex<Option<ClipImageVectorCache>>>,
     pub atmosphere_signature_cache: Arc<Mutex<Option<SignatureCache>>>,
     pub color_signature_cache: Arc<Mutex<Option<SignatureCache>>>,
     pub clip_text_encoder_service: Arc<Mutex<Option<ClipTextEncoderService>>>,
     pub clip_image_encoder_service: Arc<Mutex<Option<ClipImageEncoderService>>>,
+    pub clip_image_encoder_last_used_at: Arc<Mutex<i64>>,
+    pub clip_image_encoder_release_worker_running: Arc<Mutex<bool>>,
     pub wd_tagger_service: Arc<Mutex<Option<WdTaggerService>>>,
 }
 
@@ -278,6 +286,7 @@ pub struct StartupCleanupStatus {
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundScanProgress {
     pub running: bool,
+    pub paused: bool,
     pub phase: String,
     pub scanned_folders: i64,
     pub total_folders: i64,
@@ -347,6 +356,7 @@ pub struct NaturalLanguageScanStatus {
 #[serde(rename_all = "camelCase")]
 pub struct NaturalLanguageScanProgress {
     pub running: bool,
+    pub paused: bool,
     pub phase: String,
     pub total_images: i64,
     pub processed_images: i64,
@@ -361,6 +371,7 @@ impl Default for BackgroundScanProgress {
     fn default() -> Self {
         Self {
             running: false,
+            paused: false,
             phase: "idle".to_string(),
             scanned_folders: 0,
             total_folders: 0,
@@ -415,6 +426,7 @@ impl Default for NaturalLanguageScanProgress {
     fn default() -> Self {
         Self {
             running: false,
+            paused: false,
             phase: "idle".to_string(),
             total_images: 0,
             processed_images: 0,
@@ -820,11 +832,19 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
     if let Ok(mut pending) = state.background_scan_pending.lock() {
         *pending = false;
     }
+    if let Ok(mut pause_requested) = state.background_scan_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    if let Ok(mut stop_requested) = state.background_scan_stop_requested.lock() {
+        *stop_requested = false;
+    }
 
     let database_path = state.database_path.clone();
     let library_cache = Arc::clone(&state.library);
     let background_scan_running = Arc::clone(&state.background_scan_running);
     let background_scan_pending = Arc::clone(&state.background_scan_pending);
+    let background_scan_pause_requested_flag = Arc::clone(&state.background_scan_pause_requested);
+    let background_scan_stop_requested_flag = Arc::clone(&state.background_scan_stop_requested);
     let background_scan_progress = Arc::clone(&state.background_scan_progress);
     let startup_cleanup_running = Arc::clone(&state.startup_cleanup_running);
     let wd_tagger_service = Arc::clone(&state.wd_tagger_service);
@@ -844,7 +864,12 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
                 },
             );
 
-            match scan_all_folders_and_collect_new_images(&database_path, &background_scan_progress) {
+            match scan_all_folders_and_collect_new_images(
+                &database_path,
+                &background_scan_progress,
+                &background_scan_pause_requested_flag,
+                &background_scan_stop_requested_flag,
+            ) {
                 Ok(scan_result) => {
                     if let Ok(mut cache) = library_cache.lock() {
                         *cache = None;
@@ -856,6 +881,8 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
                         &database_path,
                         &scan_result.tag_queue_image_ids,
                         &background_scan_progress,
+                        &background_scan_pause_requested_flag,
+                        &background_scan_stop_requested_flag,
                         &wd_tagger_service,
                     ) {
                         set_scan_progress_error(&background_scan_progress, &error);
@@ -876,6 +903,13 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
             clear_optional_cache(&clip_vector_cache);
             clear_optional_cache(&atmosphere_signature_cache);
             clear_optional_cache(&color_signature_cache);
+
+            if background_scan_stop_requested(&background_scan_stop_requested_flag) {
+                if let Ok(mut pending) = background_scan_pending.lock() {
+                    *pending = false;
+                }
+                break;
+            }
 
             let rerun = if let Ok(mut pending) = background_scan_pending.lock() {
                 if *pending {
@@ -901,11 +935,18 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
         clear_optional_cache(&clip_vector_cache);
         clear_optional_cache(&atmosphere_signature_cache);
         clear_optional_cache(&color_signature_cache);
+        release_wd_tagger_service(&wd_tagger_service);
         if let Ok(mut running) = background_scan_running.lock() {
             *running = false;
         }
         if let Ok(mut pending) = background_scan_pending.lock() {
             *pending = false;
+        }
+        if let Ok(mut pause_requested) = background_scan_pause_requested_flag.lock() {
+            *pause_requested = false;
+        }
+        if let Ok(mut stop_requested) = background_scan_stop_requested_flag.lock() {
+            *stop_requested = false;
         }
         eprintln!("[wd-scan] worker finished");
     });
@@ -927,6 +968,72 @@ pub fn background_scan_progress(state: &AppState) -> Result<BackgroundScanProgre
         .lock()
         .map_err(|_| "Background scan progress state is locked".to_string())
         .map(|value| value.clone())
+}
+
+pub fn pause_background_scan(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .background_scan_running
+        .lock()
+        .map_err(|_| "Background scan state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.background_scan_pause_requested.lock() {
+        *pause_requested = true;
+    }
+    update_scan_progress(&state.background_scan_progress, |progress| {
+        progress.paused = true;
+        progress.phase = "paused".to_string();
+    });
+    Ok(true)
+}
+
+pub fn resume_background_scan(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .background_scan_running
+        .lock()
+        .map_err(|_| "Background scan state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.background_scan_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_scan_progress(&state.background_scan_progress, |progress| {
+        progress.paused = false;
+        if progress.phase == "paused" {
+            progress.phase = if progress.queued_images > 0 {
+                "tagging".to_string()
+            } else {
+                "collecting".to_string()
+            };
+        }
+    });
+    Ok(true)
+}
+
+pub fn stop_background_scan(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .background_scan_running
+        .lock()
+        .map_err(|_| "Background scan state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut stop_requested) = state.background_scan_stop_requested.lock() {
+        *stop_requested = true;
+    }
+    if let Ok(mut pause_requested) = state.background_scan_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_scan_progress(&state.background_scan_progress, |progress| {
+        progress.paused = false;
+        progress.phase = "stopping".to_string();
+    });
+    Ok(true)
 }
 
 pub fn start_startup_cleanup(state: &AppState) -> Result<bool, String> {
@@ -1377,6 +1484,29 @@ pub fn stop_atmosphere_generation(state: &AppState) -> Result<bool, String> {
     Ok(true)
 }
 
+pub fn rebuild_atmosphere_signature_cache(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .atmosphere_generation_running
+        .lock()
+        .map_err(|_| "Atmosphere generation state is locked".to_string())
+        .map(|value| *value)?;
+    if running {
+        return Err("氛围特征任务正在运行，请先停止后再重建".to_string());
+    }
+
+    let conn = open_database(&state.database_path)?;
+    clear_atmosphere_signature_cache_storage(&conn)?;
+    clear_optional_cache(&state.atmosphere_signature_cache);
+    if let Ok(mut cache) = state.library.lock() {
+        *cache = None;
+    }
+    set_atmosphere_progress(
+        &state.atmosphere_generation_progress,
+        AtmosphereGenerationProgress::default(),
+    );
+    start_atmosphere_generation(state)
+}
+
 pub fn start_color_signature_generation(state: &AppState) -> Result<bool, String> {
     let mut running = state
         .color_signature_generation_running
@@ -1588,14 +1718,25 @@ pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
     if let Ok(mut pending) = state.natural_language_scan_pending.lock() {
         *pending = false;
     }
+    if let Ok(mut pause_requested) = state.natural_language_scan_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    if let Ok(mut stop_requested) = state.natural_language_scan_stop_requested.lock() {
+        *stop_requested = false;
+    }
 
     let database_path = state.database_path.clone();
     let library_cache = Arc::clone(&state.library);
     let scan_running = Arc::clone(&state.natural_language_scan_running);
     let scan_pending = Arc::clone(&state.natural_language_scan_pending);
+    let scan_pause_requested = Arc::clone(&state.natural_language_scan_pause_requested);
+    let scan_stop_requested = Arc::clone(&state.natural_language_scan_stop_requested);
     let scan_progress = Arc::clone(&state.natural_language_scan_progress);
     let clip_vector_cache = Arc::clone(&state.clip_vector_cache);
     let clip_image_encoder_service = Arc::clone(&state.clip_image_encoder_service);
+    let clip_image_encoder_last_used_at = Arc::clone(&state.clip_image_encoder_last_used_at);
+    let clip_image_encoder_release_worker_running =
+        Arc::clone(&state.clip_image_encoder_release_worker_running);
 
     thread::spawn(move || {
         loop {
@@ -1613,6 +1754,10 @@ pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
                 &scan_progress,
                 &clip_vector_cache,
                 &clip_image_encoder_service,
+                &clip_image_encoder_last_used_at,
+                &clip_image_encoder_release_worker_running,
+                &scan_pause_requested,
+                &scan_stop_requested,
             ) {
                 set_natural_language_scan_progress_error(&scan_progress, &error);
                 push_natural_language_scan_recent_error(&scan_progress, &error);
@@ -1621,6 +1766,13 @@ pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
 
             if let Ok(mut cache) = library_cache.lock() {
                 *cache = None;
+            }
+
+            if natural_language_scan_stop_requested(&scan_stop_requested) {
+                if let Ok(mut pending) = scan_pending.lock() {
+                    *pending = false;
+                }
+                break;
             }
 
             let rerun = if let Ok(mut pending) = scan_pending.lock() {
@@ -1647,6 +1799,12 @@ pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
         if let Ok(mut pending) = scan_pending.lock() {
             *pending = false;
         }
+        if let Ok(mut pause_requested) = scan_pause_requested.lock() {
+            *pause_requested = false;
+        }
+        if let Ok(mut stop_requested) = scan_stop_requested.lock() {
+            *stop_requested = false;
+        }
         eprintln!("[clip-scan] worker finished");
     });
 
@@ -1667,6 +1825,68 @@ pub fn natural_language_scan_progress(state: &AppState) -> Result<NaturalLanguag
         .lock()
         .map_err(|_| "Natural language scan progress state is locked".to_string())
         .map(|value| value.clone())
+}
+
+pub fn pause_natural_language_scan(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .natural_language_scan_running
+        .lock()
+        .map_err(|_| "Natural language scan state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.natural_language_scan_pause_requested.lock() {
+        *pause_requested = true;
+    }
+    update_natural_language_scan_progress(&state.natural_language_scan_progress, |progress| {
+        progress.paused = true;
+        progress.phase = "paused".to_string();
+    });
+    Ok(true)
+}
+
+pub fn resume_natural_language_scan(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .natural_language_scan_running
+        .lock()
+        .map_err(|_| "Natural language scan state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.natural_language_scan_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_natural_language_scan_progress(&state.natural_language_scan_progress, |progress| {
+        progress.paused = false;
+        if progress.phase == "paused" {
+            progress.phase = "generating".to_string();
+        }
+    });
+    Ok(true)
+}
+
+pub fn stop_natural_language_scan(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .natural_language_scan_running
+        .lock()
+        .map_err(|_| "Natural language scan state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut stop_requested) = state.natural_language_scan_stop_requested.lock() {
+        *stop_requested = true;
+    }
+    if let Ok(mut pause_requested) = state.natural_language_scan_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_natural_language_scan_progress(&state.natural_language_scan_progress, |progress| {
+        progress.paused = false;
+        progress.phase = "stopping".to_string();
+    });
+    Ok(true)
 }
 
 pub fn search_gallery_image_ids_by_natural_language(
@@ -1821,16 +2041,25 @@ pub fn search_gallery_image_ids_by_external_image(
 
         let model_root = resolve_chinese_clip_model_dir(None)?;
         let script_path = resolve_chinese_clip_image_service_script_path()?;
-        let mut service_guard = state
-            .clip_image_encoder_service
-            .lock()
-            .map_err(|_| "Clip image encoder service is locked".to_string())?;
-        let query_embedding = run_chinese_clip_image_embedding_via_service_with_recovery(
-            &mut service_guard,
-            &model_root,
-            &script_path,
-            &query_image_path,
-        )?;
+        touch_clip_image_service_last_used(&state.clip_image_encoder_last_used_at);
+        let query_embedding = {
+            let mut service_guard = state
+                .clip_image_encoder_service
+                .lock()
+                .map_err(|_| "Clip image encoder service is locked".to_string())?;
+            run_chinese_clip_image_embedding_via_service_with_recovery(
+                &mut service_guard,
+                &model_root,
+                &script_path,
+                &query_image_path,
+            )?
+        };
+        touch_clip_image_service_last_used(&state.clip_image_encoder_last_used_at);
+        ensure_clip_image_service_idle_reaper_started(
+            &state.clip_image_encoder_service,
+            &state.clip_image_encoder_last_used_at,
+            &state.clip_image_encoder_release_worker_running,
+        );
         if query_embedding.is_empty() {
             return Err("External image embedding is empty".to_string());
         }
@@ -4966,6 +5195,8 @@ fn cleanup_missing_library_images_batched(database_path: &Path, batch_size: usiz
 fn scan_all_folders_and_collect_new_images(
     database_path: &Path,
     progress: &Arc<Mutex<BackgroundScanProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
 ) -> Result<ScanCollectResult, String> {
     let conn = open_database(database_path)?;
     let scanned_at = now_ms();
@@ -4997,6 +5228,13 @@ fn scan_all_folders_and_collect_new_images(
     let mut scanned_folders = 0i64;
 
     for (_, folder_path) in folders {
+        if background_scan_stop_requested(stop_requested) {
+            break;
+        }
+        wait_for_background_scan_resume(progress, pause_requested, stop_requested, "collecting");
+        if background_scan_stop_requested(stop_requested) {
+            break;
+        }
         let folder_path = normalize_existing_or_stored_folder_path(&folder_path);
         if !Path::new(&folder_path).is_dir() {
             scanned_folders += 1;
@@ -5046,6 +5284,12 @@ fn scan_all_folders_and_collect_new_images(
         }
     }
 
+    if background_scan_stop_requested(stop_requested) {
+        return Ok(ScanCollectResult {
+            tag_queue_image_ids: Vec::new(),
+        });
+    }
+
     let mut tag_queue_image_ids = collect_pending_tag_image_ids(&conn)?;
     tag_queue_image_ids.sort();
     tag_queue_image_ids.dedup();
@@ -5059,6 +5303,8 @@ fn tag_images_with_wd_model(
     database_path: &Path,
     image_ids: &[String],
     progress: &Arc<Mutex<BackgroundScanProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
     wd_tagger_service: &Arc<Mutex<Option<WdTaggerService>>>,
 ) -> Result<(), String> {
     if image_ids.is_empty() {
@@ -5092,6 +5338,13 @@ fn tag_images_with_wd_model(
 
     eprintln!("[wd-tag] queue size: {}", image_ids.len());
     for image_id in image_ids {
+        if background_scan_stop_requested(stop_requested) {
+            break;
+        }
+        wait_for_background_scan_resume(progress, pause_requested, stop_requested, "tagging");
+        if background_scan_stop_requested(stop_requested) {
+            break;
+        }
         if !Path::new(image_id).is_file() {
             increment_scan_progress_failed(progress);
             continue;
@@ -5142,9 +5395,7 @@ fn run_wd_tagger_via_service_with_recovery(
     match primary {
         Ok(result) => Ok(result),
         Err(first_error) => {
-            if let Some(mut stale) = service.take() {
-                let _ = stale.child.kill();
-            }
+            stop_python_child_service(service, |running| &mut running.child);
             ensure_wd_tagger_service_started(service, model_path, tags_path, script_path)?;
             let running = service
                 .as_mut()
@@ -5178,9 +5429,7 @@ fn ensure_wd_tagger_service_started(
     if !need_restart {
         return Ok(());
     }
-    if let Some(mut existing) = service.take() {
-        let _ = existing.child.kill();
-    }
+    stop_python_child_service(service, |running| &mut running.child);
     *service = Some(spawn_wd_tagger_service(model_path, tags_path, script_path)?);
     Ok(())
 }
@@ -5965,6 +6214,10 @@ fn generate_natural_language_embeddings_once(
     progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
     clip_vector_cache: &Arc<Mutex<Option<ClipImageVectorCache>>>,
     clip_image_encoder_service: &Arc<Mutex<Option<ClipImageEncoderService>>>,
+    clip_image_encoder_last_used_at: &Arc<Mutex<i64>>,
+    clip_image_encoder_release_worker_running: &Arc<Mutex<bool>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
 ) -> Result<i64, String> {
     set_natural_language_scan_progress_phase(progress, "collecting");
     let conn = open_database(database_path)?;
@@ -6011,17 +6264,20 @@ fn generate_natural_language_embeddings_once(
 
     let model_root = resolve_chinese_clip_model_dir(None)?;
     let script_path = resolve_chinese_clip_image_service_script_path()?;
-    let mut image_service_guard = clip_image_encoder_service
-        .lock()
-        .map_err(|_| "Clip image encoder service is locked".to_string())?;
-    ensure_clip_image_service_started(&mut image_service_guard, &model_root, &script_path)?;
-
     let mut generated = 0i64;
     let mut skipped = 0i64;
     let mut failed = 0i64;
     let mut processed = 0i64;
 
     for candidate in candidates {
+        if natural_language_scan_stop_requested(stop_requested) {
+            break;
+        }
+        wait_for_natural_language_scan_resume(progress, pause_requested, stop_requested);
+        if natural_language_scan_stop_requested(stop_requested) {
+            break;
+        }
+
         if !Path::new(&candidate.image_path).is_file() {
             clear_image_clip_embedding(&conn, &candidate.image_id)?;
             remove_clip_vector_cache_entry(clip_vector_cache, &candidate.image_id)?;
@@ -6038,12 +6294,26 @@ fn generate_natural_language_embeddings_once(
             continue;
         }
 
-        match run_chinese_clip_image_embedding_via_service_with_recovery(
-            &mut image_service_guard,
-            &model_root,
-            &script_path,
-            &candidate.image_path,
-        ) {
+        touch_clip_image_service_last_used(clip_image_encoder_last_used_at);
+        let embedding_result = {
+            let mut image_service_guard = clip_image_encoder_service
+                .lock()
+                .map_err(|_| "Clip image encoder service is locked".to_string())?;
+            run_chinese_clip_image_embedding_via_service_with_recovery(
+                &mut image_service_guard,
+                &model_root,
+                &script_path,
+                &candidate.image_path,
+            )
+        };
+        touch_clip_image_service_last_used(clip_image_encoder_last_used_at);
+        ensure_clip_image_service_idle_reaper_started(
+            clip_image_encoder_service,
+            clip_image_encoder_last_used_at,
+            clip_image_encoder_release_worker_running,
+        );
+
+        match embedding_result {
             Ok(vector) => {
                 if let Err(error) = upsert_image_clip_embedding(
                     &conn,
@@ -6340,6 +6610,90 @@ fn upsert_signature_cache_entry(
     }
 }
 
+fn stop_python_child_service<T, F>(service: &mut Option<T>, mut child_accessor: F)
+where
+    F: FnMut(&mut T) -> &mut Child,
+{
+    if let Some(mut running) = service.take() {
+        let _ = child_accessor(&mut running).kill();
+    }
+}
+
+fn release_wd_tagger_service(service: &Arc<Mutex<Option<WdTaggerService>>>) {
+    if let Ok(mut guard) = service.lock() {
+        stop_python_child_service(&mut *guard, |running| &mut running.child);
+    }
+}
+
+fn release_clip_image_service(service: &Arc<Mutex<Option<ClipImageEncoderService>>>) {
+    if let Ok(mut guard) = service.lock() {
+        stop_python_child_service(&mut *guard, |running| &mut running.child);
+    }
+}
+
+fn touch_clip_image_service_last_used(last_used_at: &Arc<Mutex<i64>>) {
+    if let Ok(mut last_used) = last_used_at.lock() {
+        *last_used = now_ms();
+    }
+}
+
+fn ensure_clip_image_service_idle_reaper_started(
+    service: &Arc<Mutex<Option<ClipImageEncoderService>>>,
+    last_used_at: &Arc<Mutex<i64>>,
+    worker_running: &Arc<Mutex<bool>>,
+) {
+    let should_spawn = if let Ok(mut running) = worker_running.lock() {
+        if *running {
+            false
+        } else {
+            *running = true;
+            true
+        }
+    } else {
+        false
+    };
+    if !should_spawn {
+        return;
+    }
+
+    let service = Arc::clone(service);
+    let last_used_at = Arc::clone(last_used_at);
+    let worker_running = Arc::clone(worker_running);
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_millis(CLIP_IMAGE_SERVICE_IDLE_CHECK_INTERVAL_MS));
+
+            let last_used = match last_used_at.lock() {
+                Ok(value) => *value,
+                Err(_) => 0,
+            };
+            let now = now_ms();
+            if now.saturating_sub(last_used) < CLIP_IMAGE_SERVICE_IDLE_RELEASE_MS {
+                let has_service = match service.lock() {
+                    Ok(guard) => guard.is_some(),
+                    Err(_) => false,
+                };
+                if has_service {
+                    continue;
+                }
+                break;
+            }
+            let latest_last_used = match last_used_at.lock() {
+                Ok(value) => *value,
+                Err(_) => 0,
+            };
+            if now_ms().saturating_sub(latest_last_used) >= CLIP_IMAGE_SERVICE_IDLE_RELEASE_MS {
+                release_clip_image_service(&service);
+                break;
+            }
+        }
+
+        if let Ok(mut running) = worker_running.lock() {
+            *running = false;
+        }
+    });
+}
+
 fn run_chinese_clip_text_embedding_via_service(
     text: &str,
     state: &AppState,
@@ -6361,9 +6715,7 @@ fn run_chinese_clip_text_embedding_via_service(
     let vector = match primary {
         Ok(vector) => vector,
         Err(first_error) => {
-            if let Some(mut stale) = service_guard.take() {
-                let _ = stale.child.kill();
-            }
+            stop_python_child_service(&mut service_guard, |running| &mut running.child);
             ensure_clip_text_service_started(&mut service_guard, &model_root, &script_path)?;
             let service = service_guard
                 .as_mut()
@@ -6395,9 +6747,7 @@ fn ensure_clip_text_service_started(
         return Ok(());
     }
 
-    if let Some(mut existing) = service.take() {
-        let _ = existing.child.kill();
-    }
+    stop_python_child_service(service, |running| &mut running.child);
     *service = Some(spawn_clip_text_service(model_root, script_path)?);
     Ok(())
 }
@@ -6468,9 +6818,7 @@ fn run_chinese_clip_image_embedding_via_service_with_recovery(
     match primary {
         Ok(vector) => Ok(vector),
         Err(first_error) => {
-            if let Some(mut stale) = service.take() {
-                let _ = stale.child.kill();
-            }
+            stop_python_child_service(service, |running| &mut running.child);
             ensure_clip_image_service_started(service, model_root, script_path)?;
             let running = service
                 .as_mut()
@@ -6497,9 +6845,7 @@ fn ensure_clip_image_service_started(
         return Ok(());
     }
 
-    if let Some(mut existing) = service.take() {
-        let _ = existing.child.kill();
-    }
+    stop_python_child_service(service, |running| &mut running.child);
     *service = Some(spawn_clip_image_service(model_root, script_path)?);
     Ok(())
 }
@@ -6718,6 +7064,12 @@ fn cleanup_orphan_thumbnail_files(conn: &Connection, thumb_root: &Path) -> Resul
 fn clear_color_signature_cache_storage(conn: &Connection) -> Result<(), String> {
     conn.execute("DELETE FROM image_color_signatures", [])
         .map_err(|error| format!("Failed to clear color signature cache: {error}"))?;
+    Ok(())
+}
+
+fn clear_atmosphere_signature_cache_storage(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM image_atmosphere_signatures", [])
+        .map_err(|error| format!("Failed to clear atmosphere signature cache: {error}"))?;
     Ok(())
 }
 
@@ -7346,6 +7698,7 @@ fn set_natural_language_scan_progress_phase(
     update_natural_language_scan_progress(progress, |state| {
         state.phase = phase.to_string();
         state.running = phase != "idle";
+        state.paused = phase == "paused";
     });
 }
 
@@ -7402,8 +7755,36 @@ fn push_natural_language_scan_recent_error(
 fn set_natural_language_scan_progress_done(progress: &Arc<Mutex<NaturalLanguageScanProgress>>) {
     update_natural_language_scan_progress(progress, |state| {
         state.running = false;
+        state.paused = false;
         state.phase = "idle".to_string();
     });
+}
+
+fn natural_language_scan_stop_requested(stop_requested: &Arc<Mutex<bool>>) -> bool {
+    stop_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn natural_language_scan_pause_requested(pause_requested: &Arc<Mutex<bool>>) -> bool {
+    pause_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn wait_for_natural_language_scan_resume(
+    progress: &Arc<Mutex<NaturalLanguageScanProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
+) {
+    loop {
+        if natural_language_scan_stop_requested(stop_requested) {
+            return;
+        }
+        if natural_language_scan_pause_requested(pause_requested) {
+            set_natural_language_scan_progress_phase(progress, "paused");
+            thread::sleep(Duration::from_millis(120));
+            continue;
+        }
+        set_natural_language_scan_progress_phase(progress, "generating");
+        return;
+    }
 }
 
 fn set_scan_progress(progress: &Arc<Mutex<BackgroundScanProgress>>, next: BackgroundScanProgress) {
@@ -7424,6 +7805,8 @@ where
 fn set_scan_progress_phase(progress: &Arc<Mutex<BackgroundScanProgress>>, phase: &str) {
     update_scan_progress(progress, |state| {
         state.phase = phase.to_string();
+        state.running = phase != "idle";
+        state.paused = phase == "paused";
     });
 }
 
@@ -7507,8 +7890,37 @@ fn push_scan_progress_recent_error(progress: &Arc<Mutex<BackgroundScanProgress>>
 fn set_scan_progress_done(progress: &Arc<Mutex<BackgroundScanProgress>>) {
     update_scan_progress(progress, |state| {
         state.running = false;
+        state.paused = false;
         state.phase = "idle".to_string();
     });
+}
+
+fn background_scan_stop_requested(stop_requested: &Arc<Mutex<bool>>) -> bool {
+    stop_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn background_scan_pause_requested(pause_requested: &Arc<Mutex<bool>>) -> bool {
+    pause_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn wait_for_background_scan_resume(
+    progress: &Arc<Mutex<BackgroundScanProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
+    resume_phase: &str,
+) {
+    loop {
+        if background_scan_stop_requested(stop_requested) {
+            return;
+        }
+        if background_scan_pause_requested(pause_requested) {
+            set_scan_progress_phase(progress, "paused");
+            thread::sleep(Duration::from_millis(120));
+            continue;
+        }
+        set_scan_progress_phase(progress, resume_phase);
+        return;
+    }
 }
 
 fn resolve_wd_tagger_model_dir(explicit_dir: Option<&str>) -> Result<PathBuf, String> {

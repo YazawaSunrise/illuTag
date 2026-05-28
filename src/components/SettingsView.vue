@@ -26,9 +26,11 @@ defineProps<{
   colorSignatureRecentErrors: string[]
   autoScanOnStartup: boolean
   isBackgroundScanRunning: boolean
+  isBackgroundScanPaused: boolean
   scanProgressText: string
   scanRecentErrors: string[]
   isNaturalLanguageScanRunning: boolean
+  isNaturalLanguageScanPaused: boolean
   naturalLanguageScanProgressText: string
   naturalLanguageScanRecentErrors: string[]
   themeMode: ThemeMode
@@ -83,6 +85,14 @@ defineProps<{
         @click="handlers.stopAtmosphereGeneration()"
       >
         停止
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isAtmosphereGenerationRunning"
+        @click="handlers.rebuildAtmosphereSignatureCache()"
+      >
+        重建氛围特征
       </button>
     </div>
 
@@ -282,14 +292,40 @@ defineProps<{
       <span>启动时自动扫描</span>
     </label>
 
-    <button
-      class="secondary-button"
-      type="button"
-      :disabled="isBackgroundScanRunning"
-      @click="handlers.startScanAllFolders()"
-    >
-      {{ isBackgroundScanRunning ? '后台扫描中...' : '开始扫描所有文件夹' }}
-    </button>
+    <div class="settings__thumbnail-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isBackgroundScanRunning"
+        @click="handlers.startScanAllFolders()"
+      >
+        {{ isBackgroundScanRunning ? '标注中...' : '开始标注标签' }}
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isBackgroundScanRunning || isBackgroundScanPaused"
+        @click="handlers.pauseScanAllFolders()"
+      >
+        暂停
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isBackgroundScanRunning || !isBackgroundScanPaused"
+        @click="handlers.resumeScanAllFolders()"
+      >
+        继续
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!isBackgroundScanRunning"
+        @click="handlers.stopScanAllFolders()"
+      >
+        停止
+      </button>
+    </div>
     <p v-if="scanProgressText" class="settings__progress">{{ scanProgressText }}</p>
     <div v-if="scanRecentErrors.length > 0" class="settings__scan-errors">
       <p class="settings__scan-errors-title">最近扫描错误</p>
@@ -298,14 +334,40 @@ defineProps<{
       </ul>
     </div>
 
-    <button
-      class="secondary-button"
-      type="button"
-      :disabled="isNaturalLanguageScanRunning"
-      @click="handlers.startNaturalLanguageScan()"
-    >
-      {{ isNaturalLanguageScanRunning ? '自然语言扫描中…' : '开始自然语言扫描（生成图片向量）' }}
-    </button>
+    <div class="settings__thumbnail-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isNaturalLanguageScanRunning"
+        @click="handlers.startNaturalLanguageScan()"
+      >
+        {{ isNaturalLanguageScanRunning ? '自然语言扫描中…' : '开始自然语言扫描' }}
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isNaturalLanguageScanRunning || isNaturalLanguageScanPaused"
+        @click="handlers.pauseNaturalLanguageScan()"
+      >
+        暂停
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isNaturalLanguageScanRunning || !isNaturalLanguageScanPaused"
+        @click="handlers.resumeNaturalLanguageScan()"
+      >
+        继续
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!isNaturalLanguageScanRunning"
+        @click="handlers.stopNaturalLanguageScan()"
+      >
+        停止
+      </button>
+    </div>
     <p v-if="naturalLanguageScanProgressText" class="settings__progress">{{ naturalLanguageScanProgressText }}</p>
     <div v-if="naturalLanguageScanRecentErrors.length > 0" class="settings__scan-errors">
       <p class="settings__scan-errors-title">最近自然语言扫描错误</p>

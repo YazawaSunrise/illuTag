@@ -440,15 +440,23 @@ const {
 const {
   autoScanOnStartup,
   isBackgroundScanRunning,
+  isBackgroundScanPaused,
   scanProgressText,
   scanRecentErrors,
   isNaturalLanguageScanRunning,
+  isNaturalLanguageScanPaused,
   naturalLanguageScanProgressText,
   naturalLanguageScanRecentErrors,
   initAutoScanOnStartupFromStorage,
   setAutoScanOnStartup,
   startScanAllFolders,
+  pauseScanAllFolders,
+  resumeScanAllFolders,
+  stopScanAllFolders,
   startNaturalLanguageScan,
+  pauseNaturalLanguageScan,
+  resumeNaturalLanguageScan,
+  stopNaturalLanguageScan,
   startStartupCleanup,
   refreshBackgroundScanStatus,
   startBackgroundScanPolling,
@@ -495,6 +503,7 @@ const {
   pauseAtmosphereGeneration,
   resumeAtmosphereGeneration,
   stopAtmosphereGeneration,
+  rebuildAtmosphereSignatureCache,
   startAtmosphereGenerationPolling,
   stopAtmosphereGenerationPolling,
 } = useAtmosphereGeneration({
@@ -1366,6 +1375,7 @@ const settingsViewHandlers = {
   pauseAtmosphereGeneration,
   resumeAtmosphereGeneration,
   stopAtmosphereGeneration,
+  rebuildAtmosphereSignatureCache,
   startColorSignatureGeneration,
   pauseColorSignatureGeneration,
   resumeColorSignatureGeneration,
@@ -1373,7 +1383,13 @@ const settingsViewHandlers = {
   rebuildColorSignatureCache,
   setAutoScanOnStartup,
   startScanAllFolders,
+  pauseScanAllFolders,
+  resumeScanAllFolders,
+  stopScanAllFolders,
   startNaturalLanguageScan,
+  pauseNaturalLanguageScan,
+  resumeNaturalLanguageScan,
+  stopNaturalLanguageScan,
   addFolder,
   pickFolder,
   setFolderPathInput(value: string) {
@@ -1680,9 +1696,11 @@ function formatError(error: unknown) {
         :color-signature-recent-errors="colorSignatureRecentErrors"
         :auto-scan-on-startup="autoScanOnStartup"
         :is-background-scan-running="isBackgroundScanRunning"
+        :is-background-scan-paused="isBackgroundScanPaused"
         :scan-progress-text="scanProgressText"
         :scan-recent-errors="scanRecentErrors"
         :is-natural-language-scan-running="isNaturalLanguageScanRunning"
+        :is-natural-language-scan-paused="isNaturalLanguageScanPaused"
         :natural-language-scan-progress-text="naturalLanguageScanProgressText"
         :natural-language-scan-recent-errors="naturalLanguageScanRecentErrors"
         :theme-mode="themeMode"
