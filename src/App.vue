@@ -359,6 +359,10 @@ const {
   searchEnQuery,
   searchFileNameQuery,
   searchNaturalLanguageQuery,
+  searchMode,
+  externalImageQueryUrl,
+  externalImageQueryPreviewUrl,
+  externalImageQueryLabel,
   searchConfidenceMin,
   searchConfidenceMax,
   searchRunning,
@@ -384,9 +388,16 @@ const {
   setSearchEnQuery,
   setSearchFileNameQuery,
   setSearchNaturalLanguageQuery,
+  setSearchMode,
   setSearchConfidenceMin,
   setSearchConfidenceMax,
   executeGallerySearch,
+  clearExternalImageSearch,
+  setExternalImageQueryUrl,
+  pasteExternalImageSearchFromPasteEvent,
+  setExternalImageSearchFromFile,
+  selectExternalImageSearchFile,
+  pasteExternalImageSearchFromClipboard,
   searchBySingleTag,
   closeImageDetail,
   openGalleryImageDetail,
@@ -397,6 +408,8 @@ const {
   lastImageDragEndedAt,
   formatError,
   clamp,
+  toFileSrc: convertFileSrc,
+  pickExternalImagePath: pickExternalImageSearchFilePath,
   onOpenImageDetail() {
     imageDetailContextMenu.value = null
   },
@@ -750,6 +763,21 @@ async function pickClipTestImage() {
   }
 }
 
+async function pickExternalImageSearchFilePath() {
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    title: '选择用于以图搜图的图片',
+    filters: [
+      {
+        name: 'Images',
+        extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'ico'],
+      },
+    ],
+  })
+  return typeof selected === 'string' ? selected : null
+}
+
 async function runClipSearchSmokeTest() {
   errorText.value = ''
   clipTestResultText.value = ''
@@ -864,6 +892,14 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   }
 
   if (event.isComposing || isEditableKeyboardTarget(event)) return
+
+  if (viewMode.value === 'gallery' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+    event.preventDefault()
+    void pasteExternalImageSearchFromClipboard().then((ok) => {
+      if (ok) void executeGallerySearch()
+    })
+    return
+  }
 
   if (viewMode.value !== 'board' || !activeReferenceBoard.value) return
 
@@ -1462,9 +1498,16 @@ const galleryViewHandlers = {
   setSearchEnQuery,
   setSearchFileNameQuery,
   setSearchNaturalLanguageQuery,
+  setSearchMode,
   setSearchConfidenceMin,
   setSearchConfidenceMax,
   executeGallerySearch,
+  clearExternalImageSearch,
+  setExternalImageQueryUrl,
+  pasteExternalImageSearchFromPasteEvent,
+  setExternalImageSearchFromFile,
+  selectExternalImageSearchFile,
+  pasteExternalImageSearchFromClipboard,
   openSettings,
   startImagePress,
   clearImagePress,
@@ -1666,6 +1709,10 @@ function formatError(error: unknown) {
         :search-en-query="searchEnQuery"
         :search-file-name-query="searchFileNameQuery"
         :search-natural-language-query="searchNaturalLanguageQuery"
+        :search-mode="searchMode"
+        :external-image-query-url="externalImageQueryUrl"
+        :external-image-query-preview-url="externalImageQueryPreviewUrl"
+        :external-image-query-label="externalImageQueryLabel"
         :search-confidence-min="searchConfidenceMin"
         :search-confidence-max="searchConfidenceMax"
         :search-running="searchRunning"

@@ -4,6 +4,7 @@ use illutag_core::library::{
     background_scan_status,
     natural_language_scan_progress,
     natural_language_scan_status,
+    search_gallery_image_ids_by_external_image,
     search_gallery_image_ids_by_natural_language,
     start_natural_language_scan,
     warmup_clip_vector_cache,
@@ -223,6 +224,27 @@ fn search_gallery_image_ids_by_natural_language_command(
     state: State<AppState>,
 ) -> Result<Vec<String>, String> {
     search_gallery_image_ids_by_natural_language(query, candidate_image_ids, &state)
+}
+
+#[tauri::command]
+fn search_gallery_image_ids_by_external_image_command(
+    image_path: Option<String>,
+    image_url: Option<String>,
+    image_bytes: Option<Vec<u8>>,
+    image_base64: Option<String>,
+    candidate_image_ids: Option<Vec<String>>,
+    limit: Option<usize>,
+    state: State<AppState>,
+) -> Result<Vec<String>, String> {
+    search_gallery_image_ids_by_external_image(
+        image_path,
+        image_url,
+        image_bytes,
+        image_base64,
+        candidate_image_ids,
+        limit,
+        &state,
+    )
 }
 
 #[tauri::command]
@@ -579,6 +601,7 @@ fn main() {
             suggest_known_auto_tags_command,
             search_gallery_image_ids_command,
             search_gallery_image_ids_by_natural_language_command,
+            search_gallery_image_ids_by_external_image_command,
             create_user_folder_command,
             rename_user_folder_command,
             delete_user_folder_command,

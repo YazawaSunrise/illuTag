@@ -9,8 +9,10 @@ path = "src/lib.rs"
 
 [dependencies]
 arboard = "3.4"
+base64 = "0.22"
 calamine = "0.26"
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

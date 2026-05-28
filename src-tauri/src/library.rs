@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use calamine::{Data as ExcelCell, Reader, open_workbook_auto};
 use image::ImageReader;
 use image::imageops::FilterType;
@@ -18,7 +19,7 @@ use std::{
         mpsc::{self, TrySendError},
     },
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
 
@@ -1330,6 +1331,205 @@ pub fn search_gallery_image_ids_by_natural_language(
             .then_with(|| a.image_id.cmp(&b.image_id))
     });
     Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
+}
+
+pub fn search_gallery_image_ids_by_external_image(
+    image_path: Option<String>,
+    image_url: Option<String>,
+    image_bytes: Option<Vec<u8>>,
+    image_base64: Option<String>,
+    candidate_image_ids: Option<Vec<String>>,
+    limit: Option<usize>,
+    state: &AppState,
+) -> Result<Vec<String>, String> {
+    let query_path = image_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let mut temp_query_path: Option<PathBuf> = None;
+    let query_image_path = if let Some(path) = query_path {
+        if !Path::new(&path).is_file() {
+            return Err(format!("External image not found: {path}"));
+        }
+        path
+    } else {
+        let payload = decode_external_image_payload(image_bytes, image_base64)?;
+        let bytes = if let Some(bytes) = payload {
+            bytes
+        } else {
+            let url = image_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "Missing external image payload: provide imagePath, imageUrl or imageBytes/imageBase64"
+                        .to_string()
+                })?;
+            download_external_image_bytes_from_url(url)?
+        };
+        let temp_path = create_external_image_temp_path(state, &bytes)?;
+        fs::write(&temp_path, &bytes).map_err(|error| {
+            format!(
+                "Failed to write external image temp file {}: {error}",
+                temp_path.display()
+            )
+        })?;
+        temp_query_path = Some(temp_path.clone());
+        temp_path.to_string_lossy().to_string()
+    };
+
+    let result = (|| -> Result<Vec<String>, String> {
+        ensure_clip_vector_cache_loaded(state)?;
+
+        let model_root = resolve_chinese_clip_model_dir(None)?;
+        let script_path = resolve_chinese_clip_image_service_script_path()?;
+        let mut service_guard = state
+            .clip_image_encoder_service
+            .lock()
+            .map_err(|_| "Clip image encoder service is locked".to_string())?;
+        let query_embedding = run_chinese_clip_image_embedding_via_service_with_recovery(
+            &mut service_guard,
+            &model_root,
+            &script_path,
+            &query_image_path,
+        )?;
+        if query_embedding.is_empty() {
+            return Err("External image embedding is empty".to_string());
+        }
+
+        let candidate_filter = candidate_image_ids.map(|list| {
+            list.into_iter()
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .collect::<HashSet<_>>()
+        });
+        if matches!(candidate_filter, Some(ref set) if set.is_empty()) {
+            return Ok(Vec::new());
+        }
+
+        let cache_guard = state
+            .clip_vector_cache
+            .lock()
+            .map_err(|_| "Clip vector cache state is locked".to_string())?;
+        let cache = cache_guard
+            .as_ref()
+            .ok_or_else(|| "Clip vector cache not loaded".to_string())?;
+        if cache.vectors.is_empty() {
+            return Err("请先运行自然语言扫描生成图片向量。".to_string());
+        }
+        if cache.model_id != CHINESE_CLIP_MODEL_ID || cache.model_version != CHINESE_CLIP_MODEL_VERSION {
+            return Ok(Vec::new());
+        }
+        if cache.dimension != query_embedding.len() {
+            return Ok(Vec::new());
+        }
+
+        let top_k = limit.unwrap_or(NATURAL_LANGUAGE_SEARCH_DEFAULT_TOP_K).max(1);
+        let mut heap = BinaryHeap::<NaturalLanguageSearchHeapEntry>::new();
+        for (image_id, vector) in &cache.vectors {
+            if let Some(filter) = &candidate_filter {
+                if !filter.contains(image_id) {
+                    continue;
+                }
+            }
+            if vector.len() != query_embedding.len() {
+                continue;
+            }
+            let score = dot_product(&query_embedding, vector);
+            if !score.is_finite() {
+                continue;
+            }
+            heap.push(NaturalLanguageSearchHeapEntry {
+                image_id: image_id.clone(),
+                score,
+            });
+            if heap.len() > top_k {
+                let _ = heap.pop();
+            }
+        }
+
+        let mut ranked = Vec::<NaturalLanguageSearchHeapEntry>::with_capacity(heap.len());
+        while let Some(entry) = heap.pop() {
+            ranked.push(entry);
+        }
+        ranked.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.image_id.cmp(&b.image_id))
+        });
+        Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
+    })();
+
+    if let Some(path) = temp_query_path {
+        let _ = fs::remove_file(path);
+    }
+    result
+}
+
+fn decode_external_image_payload(
+    image_bytes: Option<Vec<u8>>,
+    image_base64: Option<String>,
+) -> Result<Option<Vec<u8>>, String> {
+    if let Some(bytes) = image_bytes {
+        if !bytes.is_empty() {
+            return Ok(Some(bytes));
+        }
+    }
+    let Some(raw_base64) = image_base64 else {
+        return Ok(None);
+    };
+    let trimmed = raw_base64.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let payload = trimmed
+        .split_once(',')
+        .map(|(_, value)| value)
+        .unwrap_or(trimmed);
+    BASE64_STANDARD
+        .decode(payload)
+        .map(Some)
+        .map_err(|error| format!("Failed to decode imageBase64: {error}"))
+}
+
+fn create_external_image_temp_path(state: &AppState, bytes: &[u8]) -> Result<PathBuf, String> {
+    let parent = state
+        .database_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = parent.join("tmp").join("external-image-search");
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create external image temp directory: {error}"))?;
+    let seed = format!("{}-{}", now_ms(), bytes.len());
+    Ok(dir.join(format!("query-{}.img", stable_hash_hex(&seed))))
+}
+
+fn download_external_image_bytes_from_url(url: &str) -> Result<Vec<u8>, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("Only http/https image URLs are supported".to_string());
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Failed to create HTTP client: {error}"))?;
+    let response = client
+        .get(url)
+        .header("User-Agent", "illuTag/0.1")
+        .send()
+        .map_err(|error| format!("Failed to download image URL: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Image URL request failed with status {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|error| format!("Failed to read image URL response: {error}"))?;
+    if bytes.is_empty() {
+        return Err("Downloaded image URL is empty".to_string());
+    }
+    Ok(bytes.to_vec())
 }
 
 pub fn list_image_auto_tags(

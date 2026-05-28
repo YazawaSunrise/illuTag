@@ -27,6 +27,10 @@ const props = defineProps<{
   searchEnQuery: string
   searchFileNameQuery: string
   searchNaturalLanguageQuery: string
+  searchMode: 'text' | 'image'
+  externalImageQueryUrl: string
+  externalImageQueryPreviewUrl: string
+  externalImageQueryLabel: string
   searchConfidenceMin: number
   searchConfidenceMax: number
   searchRunning: boolean
@@ -53,6 +57,8 @@ const searchChipsDragState = ref<{
   startX: number
   startScrollLeft: number
 } | null>(null)
+const imageSearchDragDepth = ref(0)
+const imageSearchDragActive = ref(false)
 
 function clearSearchHideTimer() {
   if (searchHideTimer.value !== null) {
@@ -197,6 +203,14 @@ function onSearchHotspotEnter() {
   props.handlers.triggerSearchRevealByHotspot()
 }
 
+function onSearchHotspotDragHover(event: DragEvent) {
+  const dataTransfer = event.dataTransfer
+  if (!dataTransfer || !hasImagePayload(dataTransfer)) return
+  clearSearchHideTimer()
+  props.handlers.triggerSearchRevealByHotspot()
+  event.preventDefault()
+}
+
 function isTargetInsideSearch(target: EventTarget | null) {
   return target instanceof HTMLElement && Boolean(target.closest('.gallery-search'))
 }
@@ -295,6 +309,69 @@ function onSearchChipsLostPointerCapture() {
   finishSearchChipsDrag()
 }
 
+async function pasteExternalImageAndSearch() {
+  await props.handlers.pasteExternalImageSearchFromClipboard()
+}
+
+async function onImageSearchUrlPaste(event: ClipboardEvent) {
+  if (typeof props.handlers.pasteExternalImageSearchFromPasteEvent !== 'function') return
+  event.preventDefault()
+  await props.handlers.pasteExternalImageSearchFromPasteEvent(event)
+}
+
+function hasImagePayload(dataTransfer: DataTransfer) {
+  const fileList = Array.from(dataTransfer.files ?? [])
+  if (fileList.some((file) => file.type.startsWith('image/'))) return true
+  const items = Array.from(dataTransfer.items ?? [])
+  if (items.some((item) => item.kind === 'file' && item.type.startsWith('image/'))) return true
+  return items.some((item) => item.kind === 'file') || Array.from(dataTransfer.types ?? []).includes('Files')
+}
+
+function clearImageSearchDragState() {
+  imageSearchDragDepth.value = 0
+  imageSearchDragActive.value = false
+}
+
+function onImageSearchDragEnter(event: DragEvent) {
+  const dataTransfer = event.dataTransfer
+  if (!dataTransfer || !hasImagePayload(dataTransfer)) return
+  imageSearchDragDepth.value += 1
+  imageSearchDragActive.value = true
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function onImageSearchDragOver(event: DragEvent) {
+  const dataTransfer = event.dataTransfer
+  if (!dataTransfer || !hasImagePayload(dataTransfer)) return
+  imageSearchDragActive.value = true
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function onImageSearchDragLeave(event: DragEvent) {
+  if (!imageSearchDragActive.value) return
+  imageSearchDragDepth.value = Math.max(0, imageSearchDragDepth.value - 1)
+  if (imageSearchDragDepth.value === 0) {
+    imageSearchDragActive.value = false
+  }
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+async function onImageSearchDrop(event: DragEvent) {
+  const dataTransfer = event.dataTransfer
+  clearImageSearchDragState()
+  if (!dataTransfer) return
+  event.preventDefault()
+  event.stopPropagation()
+  const files = Array.from(dataTransfer.files ?? [])
+  const imageFile = files.find((file) => file.type.startsWith('image/')) ?? files[0]
+  if (!imageFile) return
+  if (typeof props.handlers.setExternalImageSearchFromFile !== 'function') return
+  await props.handlers.setExternalImageSearchFromFile(imageFile)
+}
+
 function canScrollContainer(container: HTMLElement, deltaY: number) {
   if (container.scrollHeight <= container.clientHeight + 1) return false
   if (deltaY < 0) return container.scrollTop > 0
@@ -341,6 +418,9 @@ function onSearchWheel(event: WheelEvent) {
       class="gallery-search-hotspot"
       :class="{ 'is-active': searchRevealMode === 'hidden' }"
       @mouseenter="onSearchHotspotEnter()"
+      @dragenter.prevent="onSearchHotspotDragHover"
+      @dragover.prevent="onSearchHotspotDragHover"
+      @drop.prevent
     />
 
     <div
@@ -431,8 +511,8 @@ function onSearchWheel(event: WheelEvent) {
           />
         </div>
 
-        <div class="gallery-search__cell">
-          <div class="gallery-search__label">置信度最小值</div>
+        <div v-if="false" class="gallery-search__cell gallery-search__cell--confidence">
+          <div class="gallery-search__label">置信度范围</div>
           <div class="gallery-search__range-row">
             <input
               class="gallery-search__range"
@@ -444,14 +524,10 @@ function onSearchWheel(event: WheelEvent) {
               @input="handlers.setSearchConfidenceMin(Number(($event.target as HTMLInputElement).value))"
             />
             <div class="gallery-search__range-values">
-              <span>0</span>
+              <span>Min</span>
               <span>{{ searchConfidenceMin.toFixed(2) }}</span>
             </div>
           </div>
-        </div>
-
-        <div class="gallery-search__cell">
-          <div class="gallery-search__label">置信度最大值</div>
           <div class="gallery-search__range-row">
             <input
               class="gallery-search__range"
@@ -463,8 +539,153 @@ function onSearchWheel(event: WheelEvent) {
               @input="handlers.setSearchConfidenceMax(Number(($event.target as HTMLInputElement).value))"
             />
             <div class="gallery-search__range-values">
+              <span>Max</span>
               <span>{{ searchConfidenceMax.toFixed(2) }}</span>
-              <span>1</span>
+            </div>
+          </div>
+          </div>
+        </div>
+
+        <div class="gallery-search__cell gallery-search__cell--image-search">
+          <div class="gallery-search__label">以图搜图</div>
+          <div class="gallery-search__lens" @contextmenu.prevent="pasteExternalImageAndSearch">
+            <div
+              class="gallery-search__lens-drop"
+              :class="{
+                'is-filled': Boolean(externalImageQueryPreviewUrl),
+                'is-drag-active': imageSearchDragActive,
+              }"
+              @dragenter.prevent="onImageSearchDragEnter"
+              @dragover.prevent="onImageSearchDragOver"
+              @dragleave.prevent="onImageSearchDragLeave"
+              @drop.prevent="onImageSearchDrop"
+            >
+              <div v-if="externalImageQueryPreviewUrl" class="gallery-search__lens-preview">
+                <img :src="externalImageQueryPreviewUrl" alt="" />
+              </div>
+              <div v-else class="gallery-search__lens-icon">
+                <Search
+                  class="gallery-search__lens-icon-search"
+                  theme="outline"
+                  :size="16"
+                  :stroke-width="3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  :fill="['currentColor']"
+                />
+              </div>
+              <div class="gallery-search__lens-main">
+                <div class="gallery-search__lens-title">
+                  {{ externalImageQueryPreviewUrl ? '已选择查询图片' : '将图片放到此处' }}
+                </div>
+                <div class="gallery-search__lens-actions">
+                  <button type="button" class="gallery-search__lens-link" @click="pasteExternalImageAndSearch">
+                    粘贴图片
+                  </button>
+                  <span class="gallery-search__lens-sep">或</span>
+                  <button type="button" class="gallery-search__lens-link" @click="handlers.selectExternalImageSearchFile()">
+                    上传文件
+                  </button>
+                </div>
+                <div v-if="externalImageQueryPreviewUrl && externalImageQueryLabel" class="gallery-search__lens-label">
+                  {{ externalImageQueryLabel }}
+                </div>
+              </div>
+            </div>
+            <div class="gallery-search__lens-divider"><span>或</span></div>
+            <div class="gallery-search__lens-bottom">
+              <input
+                class="gallery-search__lens-url"
+                type="text"
+                :value="externalImageQueryUrl"
+                placeholder="粘贴图片链接"
+                @input="handlers.setExternalImageQueryUrl(($event.target as HTMLInputElement).value)"
+                @paste="onImageSearchUrlPaste"
+                @keydown.enter.prevent="
+                  handlers.setSearchMode('image');
+                  handlers.executeGallerySearch()
+                "
+              />
+              <button
+                type="button"
+                class="gallery-search__lens-search"
+                :disabled="!(externalImageQueryPreviewUrl || externalImageQueryUrl)"
+                @click="
+                  handlers.setSearchMode('image');
+                  handlers.executeGallerySearch()
+                "
+              >
+                搜索
+              </button>
+              <button
+                v-if="externalImageQueryPreviewUrl || externalImageQueryUrl"
+                type="button"
+                class="gallery-search__lens-clear"
+                @click="handlers.clearExternalImageSearch()"
+              >
+                清除
+              </button>
+            </div>
+          </div>
+          <div v-if="false" class="gallery-search__image-query-shell" @contextmenu.prevent="pasteExternalImageAndSearch">
+            <div v-if="!externalImageQueryPreviewUrl" class="gallery-search__image-query gallery-search__image-query--empty">
+              <div class="gallery-search__image-query-empty-icon">
+                <Search
+                  class="gallery-search__image-query-empty-search-icon"
+                  theme="outline"
+                  :size="16"
+                  :stroke-width="3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  :fill="['currentColor']"
+                />
+              </div>
+              <div class="gallery-search__image-query-empty-title">粘贴、选择或拖入图片</div>
+              <div class="gallery-search__image-query-empty-actions">
+                <button type="button" class="gallery-search__mini-button" @click="pasteExternalImageAndSearch">
+                  粘贴图片
+                </button>
+                <button type="button" class="gallery-search__mini-button" @click="handlers.selectExternalImageSearchFile()">
+                  选择图片
+                </button>
+              </div>
+            </div>
+            <div v-else class="gallery-search__image-query gallery-search__image-query--filled">
+              <div class="gallery-search__image-query-preview">
+              <img :src="externalImageQueryPreviewUrl" alt="" />
+            </div>
+            <div class="gallery-search__image-query-meta">
+              <div class="gallery-search__image-query-title">查询图片</div>
+              <div v-if="externalImageQueryLabel" class="gallery-search__image-query-label">
+                {{ externalImageQueryLabel }}
+              </div>
+            </div>
+            <div class="gallery-search__image-query-actions">
+              <button type="button" class="gallery-search__mini-button" @click="pasteExternalImageAndSearch">
+                粘贴图片
+              </button>
+              <button type="button" class="gallery-search__mini-button" @click="handlers.selectExternalImageSearchFile()">
+                选择图片
+              </button>
+              <button
+                type="button"
+                class="gallery-search__mini-button"
+                :disabled="!externalImageQueryPreviewUrl"
+                @click="
+                  handlers.setSearchMode('image');
+                  handlers.executeGallerySearch()
+                "
+              >
+                搜索
+              </button>
+              <button
+                type="button"
+                class="gallery-search__mini-button"
+                :disabled="!externalImageQueryPreviewUrl"
+                @click="handlers.clearExternalImageSearch()"
+              >
+                清除
+              </button>
             </div>
           </div>
         </div>
