@@ -14,6 +14,16 @@ defineProps<{
   thumbnailProgressText: string
   thumbnailProgressPercent: number
   thumbnailRecentErrors: string[]
+  isAtmosphereGenerationRunning: boolean
+  isAtmosphereGenerationPaused: boolean
+  atmosphereProgressText: string
+  atmosphereProgressPercent: number
+  atmosphereRecentErrors: string[]
+  isColorSignatureGenerationRunning: boolean
+  isColorSignatureGenerationPaused: boolean
+  colorSignatureProgressText: string
+  colorSignatureProgressPercent: number
+  colorSignatureRecentErrors: string[]
   autoScanOnStartup: boolean
   isBackgroundScanRunning: boolean
   scanProgressText: string
@@ -43,6 +53,122 @@ defineProps<{
         <h2>图库文件夹</h2>
         <p>添加本地图片文件夹后，主页会按修改时间展示瀑布流。</p>
       </div>
+    </div>
+
+    <div class="settings__thumbnail-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isAtmosphereGenerationRunning"
+        @click="handlers.startAtmosphereGeneration()"
+      >
+        开始生成氛围特征
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isAtmosphereGenerationRunning || isAtmosphereGenerationPaused"
+        @click="handlers.pauseAtmosphereGeneration()"
+      >
+        暂停
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isAtmosphereGenerationRunning || !isAtmosphereGenerationPaused"
+        @click="handlers.resumeAtmosphereGeneration()"
+      >
+        继续
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!isAtmosphereGenerationRunning"
+        @click="handlers.stopAtmosphereGeneration()"
+      >
+        停止
+      </button>
+    </div>
+
+    <div v-if="atmosphereProgressText" class="settings__progress-group">
+      <p class="settings__progress">{{ atmosphereProgressText }}</p>
+      <div
+        class="settings__progressbar"
+        role="progressbar"
+        :aria-valuenow="atmosphereProgressPercent"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div class="settings__progressbar-fill" :style="{ width: `${atmosphereProgressPercent}%` }" />
+      </div>
+    </div>
+    <div v-if="atmosphereRecentErrors.length > 0" class="settings__scan-errors">
+      <p class="settings__scan-errors-title">氛围特征最近错误</p>
+      <ul>
+        <li v-for="(entry, index) in atmosphereRecentErrors" :key="`atm-${index}-${entry}`">{{ entry }}</li>
+      </ul>
+    </div>
+
+    <div class="settings__thumbnail-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isColorSignatureGenerationRunning"
+        @click="handlers.startColorSignatureGeneration()"
+      >
+        开始生成配色特征
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isColorSignatureGenerationRunning || isColorSignatureGenerationPaused"
+        @click="handlers.pauseColorSignatureGeneration()"
+      >
+        暂停
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isColorSignatureGenerationRunning || !isColorSignatureGenerationPaused"
+        @click="handlers.resumeColorSignatureGeneration()"
+      >
+        继续
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!isColorSignatureGenerationRunning"
+        @click="handlers.stopColorSignatureGeneration()"
+      >
+        停止
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isColorSignatureGenerationRunning"
+        @click="handlers.rebuildColorSignatureCache()"
+      >
+        重建配色特征
+      </button>
+    </div>
+
+    <div v-if="colorSignatureProgressText" class="settings__progress-group">
+      <p class="settings__progress">{{ colorSignatureProgressText }}</p>
+      <div
+        class="settings__progressbar"
+        role="progressbar"
+        :aria-valuenow="colorSignatureProgressPercent"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div class="settings__progressbar-fill" :style="{ width: `${colorSignatureProgressPercent}%` }" />
+      </div>
+    </div>
+    <div v-if="colorSignatureRecentErrors.length > 0" class="settings__scan-errors">
+      <p class="settings__scan-errors-title">配色特征最近错误</p>
+      <ul>
+        <li v-for="(entry, index) in colorSignatureRecentErrors" :key="`color-${index}-${entry}`">{{ entry }}</li>
+      </ul>
     </div>
 
     <label class="setting-toggle">

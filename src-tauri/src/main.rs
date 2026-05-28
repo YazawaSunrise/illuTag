@@ -10,6 +10,17 @@ use illutag_core::library::{
     warmup_clip_vector_cache,
     copy_image_to_system_clipboard,
     start_thumbnail_generation,
+    start_atmosphere_generation,
+    pause_atmosphere_generation,
+    resume_atmosphere_generation,
+    stop_atmosphere_generation,
+    atmosphere_generation_status,
+    start_color_signature_generation,
+    pause_color_signature_generation,
+    resume_color_signature_generation,
+    stop_color_signature_generation,
+    rebuild_color_signature_cache,
+    color_signature_generation_status,
     pause_thumbnail_generation,
     resume_thumbnail_generation,
     stop_thumbnail_generation,
@@ -30,7 +41,7 @@ use illutag_core::library::{
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
     test_chinese_clip_onnx_search,
-    AppState, BackgroundScanProgress, BackgroundScanStatus, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, ThumbnailGenerationProgress,
+    AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
 use std::sync::{Arc, Mutex};
@@ -193,6 +204,63 @@ fn rebuild_thumbnail_cache_command(state: State<AppState>) -> Result<bool, Strin
 }
 
 #[tauri::command]
+fn start_atmosphere_generation_command(state: State<AppState>) -> Result<bool, String> {
+    start_atmosphere_generation(&state)
+}
+
+#[tauri::command]
+fn atmosphere_generation_status_command(state: State<AppState>) -> Result<AtmosphereGenerationProgress, String> {
+    atmosphere_generation_status(&state)
+}
+
+#[tauri::command]
+fn pause_atmosphere_generation_command(state: State<AppState>) -> Result<bool, String> {
+    pause_atmosphere_generation(&state)
+}
+
+#[tauri::command]
+fn resume_atmosphere_generation_command(state: State<AppState>) -> Result<bool, String> {
+    resume_atmosphere_generation(&state)
+}
+
+#[tauri::command]
+fn stop_atmosphere_generation_command(state: State<AppState>) -> Result<bool, String> {
+    stop_atmosphere_generation(&state)
+}
+
+#[tauri::command]
+fn start_color_signature_generation_command(state: State<AppState>) -> Result<bool, String> {
+    start_color_signature_generation(&state)
+}
+
+#[tauri::command]
+fn color_signature_generation_status_command(
+    state: State<AppState>,
+) -> Result<ColorSignatureGenerationProgress, String> {
+    color_signature_generation_status(&state)
+}
+
+#[tauri::command]
+fn pause_color_signature_generation_command(state: State<AppState>) -> Result<bool, String> {
+    pause_color_signature_generation(&state)
+}
+
+#[tauri::command]
+fn resume_color_signature_generation_command(state: State<AppState>) -> Result<bool, String> {
+    resume_color_signature_generation(&state)
+}
+
+#[tauri::command]
+fn stop_color_signature_generation_command(state: State<AppState>) -> Result<bool, String> {
+    stop_color_signature_generation(&state)
+}
+
+#[tauri::command]
+fn rebuild_color_signature_cache_command(state: State<AppState>) -> Result<bool, String> {
+    rebuild_color_signature_cache(&state)
+}
+
+#[tauri::command]
 fn list_image_auto_tags_command(
     image_id: String,
     state: State<AppState>,
@@ -232,6 +300,7 @@ fn search_gallery_image_ids_by_external_image_command(
     image_url: Option<String>,
     image_bytes: Option<Vec<u8>>,
     image_base64: Option<String>,
+    search_type: Option<String>,
     candidate_image_ids: Option<Vec<String>>,
     limit: Option<usize>,
     state: State<AppState>,
@@ -241,6 +310,7 @@ fn search_gallery_image_ids_by_external_image_command(
         image_url,
         image_bytes,
         image_base64,
+        search_type,
         candidate_image_ids,
         limit,
         &state,
@@ -559,10 +629,22 @@ fn main() {
                 thumbnail_generation_pause_requested: Arc::new(Mutex::new(false)),
                 thumbnail_generation_stop_requested: Arc::new(Mutex::new(false)),
                 thumbnail_generation_progress: Arc::new(Mutex::new(ThumbnailGenerationProgress::default())),
+                atmosphere_generation_running: Arc::new(Mutex::new(false)),
+                atmosphere_generation_pending: Arc::new(Mutex::new(false)),
+                atmosphere_generation_pause_requested: Arc::new(Mutex::new(false)),
+                atmosphere_generation_stop_requested: Arc::new(Mutex::new(false)),
+                atmosphere_generation_progress: Arc::new(Mutex::new(AtmosphereGenerationProgress::default())),
+                color_signature_generation_running: Arc::new(Mutex::new(false)),
+                color_signature_generation_pending: Arc::new(Mutex::new(false)),
+                color_signature_generation_pause_requested: Arc::new(Mutex::new(false)),
+                color_signature_generation_stop_requested: Arc::new(Mutex::new(false)),
+                color_signature_generation_progress: Arc::new(Mutex::new(ColorSignatureGenerationProgress::default())),
                 natural_language_scan_running: Arc::new(Mutex::new(false)),
                 natural_language_scan_pending: Arc::new(Mutex::new(false)),
                 natural_language_scan_progress: Arc::new(Mutex::new(NaturalLanguageScanProgress::default())),
                 clip_vector_cache: Arc::new(Mutex::new(None)),
+                atmosphere_signature_cache: Arc::new(Mutex::new(None)),
+                color_signature_cache: Arc::new(Mutex::new(None)),
                 clip_text_encoder_service: Arc::new(Mutex::new(None)),
                 clip_image_encoder_service: Arc::new(Mutex::new(None)),
                 wd_tagger_service: Arc::new(Mutex::new(None)),
@@ -597,6 +679,17 @@ fn main() {
             stop_thumbnail_generation_command,
             clear_thumbnail_cache_command,
             rebuild_thumbnail_cache_command,
+            start_atmosphere_generation_command,
+            atmosphere_generation_status_command,
+            pause_atmosphere_generation_command,
+            resume_atmosphere_generation_command,
+            stop_atmosphere_generation_command,
+            start_color_signature_generation_command,
+            color_signature_generation_status_command,
+            pause_color_signature_generation_command,
+            resume_color_signature_generation_command,
+            stop_color_signature_generation_command,
+            rebuild_color_signature_cache_command,
             list_image_auto_tags_command,
             suggest_known_auto_tags_command,
             search_gallery_image_ids_command,

@@ -11,6 +11,8 @@ import SettingsView from './components/SettingsView.vue'
 import { useAppSettings } from './composables/useAppSettings'
 import { useBackgroundScan } from './composables/useBackgroundScan'
 import { useThumbnailGeneration } from './composables/useThumbnailGeneration'
+import { useAtmosphereGeneration } from './composables/useAtmosphereGeneration'
+import { useColorSignatureGeneration } from './composables/useColorSignatureGeneration'
 import { useFolderManagement } from './composables/useFolderManagement'
 import { useGalleryMasonry } from './composables/useGalleryMasonry'
 import { useGallerySearch } from './composables/useGallerySearch'
@@ -292,6 +294,8 @@ const {
   dragExpandedReferenceBoardFolderIds,
   addImageToReferenceBoard,
   expandReferenceBoardFolder,
+  isPointInsideExternalImageSearchDropZone,
+  setExternalImageSearchFromGalleryImage: setExternalImageSearchFromGalleryDrag,
   setErrorText(value) {
     errorText.value = value
   },
@@ -360,6 +364,7 @@ const {
   searchFileNameQuery,
   searchNaturalLanguageQuery,
   searchMode,
+  externalImageSearchType,
   externalImageQueryUrl,
   externalImageQueryPreviewUrl,
   externalImageQueryLabel,
@@ -389,6 +394,7 @@ const {
   setSearchFileNameQuery,
   setSearchNaturalLanguageQuery,
   setSearchMode,
+  setExternalImageSearchType,
   setSearchConfidenceMin,
   setSearchConfidenceMax,
   executeGallerySearch,
@@ -396,6 +402,7 @@ const {
   setExternalImageQueryUrl,
   pasteExternalImageSearchFromPasteEvent,
   setExternalImageSearchFromFile,
+  setExternalImageSearchFromGalleryImage,
   selectExternalImageSearchFile,
   pasteExternalImageSearchFromClipboard,
   searchBySingleTag,
@@ -475,6 +482,47 @@ const {
   startThumbnailGenerationPolling,
   stopThumbnailGenerationPolling,
 } = useThumbnailGeneration({
+  loadLibrary,
+  formatError,
+  setErrorText(value) {
+    errorText.value = value
+  },
+})
+
+const {
+  isAtmosphereGenerationRunning,
+  isAtmosphereGenerationPaused,
+  atmosphereProgressText,
+  atmosphereProgressPercent,
+  atmosphereRecentErrors,
+  startAtmosphereGeneration,
+  pauseAtmosphereGeneration,
+  resumeAtmosphereGeneration,
+  stopAtmosphereGeneration,
+  startAtmosphereGenerationPolling,
+  stopAtmosphereGenerationPolling,
+} = useAtmosphereGeneration({
+  loadLibrary,
+  formatError,
+  setErrorText(value) {
+    errorText.value = value
+  },
+})
+
+const {
+  isColorSignatureGenerationRunning,
+  isColorSignatureGenerationPaused,
+  colorSignatureProgressText,
+  colorSignatureProgressPercent,
+  colorSignatureRecentErrors,
+  startColorSignatureGeneration,
+  pauseColorSignatureGeneration,
+  resumeColorSignatureGeneration,
+  stopColorSignatureGeneration,
+  rebuildColorSignatureCache,
+  startColorSignatureGenerationPolling,
+  stopColorSignatureGenerationPolling,
+} = useColorSignatureGeneration({
   loadLibrary,
   formatError,
   setErrorText(value) {
@@ -584,6 +632,8 @@ onMounted(async () => {
   void refreshBackgroundScanStatus()
   startBackgroundScanPolling()
   startThumbnailGenerationPolling()
+  startAtmosphereGenerationPolling()
+  startColorSignatureGenerationPolling()
   void startStartupCleanup()
   startAutoScanIfEnabled()
   if (thumbnailCacheEnabled.value && !isBackgroundScanRunning.value) {
@@ -594,6 +644,8 @@ onMounted(async () => {
 onUnmounted(() => {
   stopBackgroundScanPolling()
   stopThumbnailGenerationPolling()
+  stopAtmosphereGenerationPolling()
+  stopColorSignatureGenerationPolling()
   clearDragReferenceBoardFolderCollapseTimer()
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('pointermove', moveImageDrag)
@@ -1369,6 +1421,15 @@ const settingsViewHandlers = {
   stopThumbnailGeneration,
   clearThumbnailCache,
   rebuildThumbnailCache,
+  startAtmosphereGeneration,
+  pauseAtmosphereGeneration,
+  resumeAtmosphereGeneration,
+  stopAtmosphereGeneration,
+  startColorSignatureGeneration,
+  pauseColorSignatureGeneration,
+  resumeColorSignatureGeneration,
+  stopColorSignatureGeneration,
+  rebuildColorSignatureCache,
   setAutoScanOnStartup,
   startScanAllFolders,
   startNaturalLanguageScan,
@@ -1499,6 +1560,7 @@ const galleryViewHandlers = {
   setSearchFileNameQuery,
   setSearchNaturalLanguageQuery,
   setSearchMode,
+  setExternalImageSearchType,
   setSearchConfidenceMin,
   setSearchConfidenceMax,
   executeGallerySearch,
@@ -1549,6 +1611,16 @@ function galleryScrollScopeKeyOf(folderId: number | 'all' | 'trash') {
   if (folderId === 'all') return 'all'
   if (folderId === 'trash') return 'trash'
   return `folder:${folderId}`
+}
+
+function isPointInsideExternalImageSearchDropZone(x: number, y: number) {
+  const node = document.elementFromPoint(x, y) as HTMLElement | null
+  if (!node) return false
+  return Boolean(node.closest('.gallery-search__lens-drop'))
+}
+
+async function setExternalImageSearchFromGalleryDrag(imageId: string) {
+  return setExternalImageSearchFromGalleryImage(imageId)
 }
 
 function formatError(error: unknown) {
@@ -1663,6 +1735,16 @@ function formatError(error: unknown) {
         :thumbnail-progress-text="thumbnailProgressText"
         :thumbnail-progress-percent="thumbnailProgressPercent"
         :thumbnail-recent-errors="thumbnailRecentErrors"
+        :is-atmosphere-generation-running="isAtmosphereGenerationRunning"
+        :is-atmosphere-generation-paused="isAtmosphereGenerationPaused"
+        :atmosphere-progress-text="atmosphereProgressText"
+        :atmosphere-progress-percent="atmosphereProgressPercent"
+        :atmosphere-recent-errors="atmosphereRecentErrors"
+        :is-color-signature-generation-running="isColorSignatureGenerationRunning"
+        :is-color-signature-generation-paused="isColorSignatureGenerationPaused"
+        :color-signature-progress-text="colorSignatureProgressText"
+        :color-signature-progress-percent="colorSignatureProgressPercent"
+        :color-signature-recent-errors="colorSignatureRecentErrors"
         :auto-scan-on-startup="autoScanOnStartup"
         :is-background-scan-running="isBackgroundScanRunning"
         :scan-progress-text="scanProgressText"
@@ -1710,6 +1792,7 @@ function formatError(error: unknown) {
         :search-file-name-query="searchFileNameQuery"
         :search-natural-language-query="searchNaturalLanguageQuery"
         :search-mode="searchMode"
+        :external-image-search-type="externalImageSearchType"
         :external-image-query-url="externalImageQueryUrl"
         :external-image-query-preview-url="externalImageQueryPreviewUrl"
         :external-image-query-label="externalImageQueryLabel"
@@ -1721,7 +1804,7 @@ function formatError(error: unknown) {
         :layout-items="renderedLayoutItems"
         :total-height="totalHeight"
         :content-width="masonryContentWidth"
-        :drag-state="dragState ? { imageId: dragState.imageId } : null"
+        :drag-state="dragState ? { imageId: dragState.imageId, x: dragState.x, y: dragState.y } : null"
         :handlers="galleryViewHandlers"
       />
     </main>

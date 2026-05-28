@@ -50,6 +50,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   const searchFileNameQuery = ref('')
   const searchNaturalLanguageQuery = ref('')
   const searchMode = ref<'text' | 'image'>('text')
+  const externalImageSearchType = ref<'default' | 'atmosphere' | 'color'>('default')
   const externalImageQueryPath = ref<string | null>(null)
   const externalImageQueryBytes = ref<number[] | null>(null)
   const externalImageQueryUrl = ref('')
@@ -454,6 +455,18 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     }
   }
 
+  async function setExternalImageSearchFromGalleryImage(imageId: string) {
+    const target = options.library.value.images.find((image) => image.id === imageId)
+    if (!target) return false
+    try {
+      setExternalImageQueryFromPath(target.path, true)
+      return true
+    } catch (error) {
+      searchError.value = options.formatError(error)
+      return false
+    }
+  }
+
   function setExternalImageQueryUrl(value: string, autoSearch = false) {
     const next = value.trim()
     externalImageQueryUrl.value = next
@@ -479,6 +492,13 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     clearImageSearchInputs()
     searchMode.value = 'text'
     searchError.value = ''
+  }
+
+  function setExternalImageSearchType(value: 'default' | 'atmosphere' | 'color') {
+    externalImageSearchType.value = value
+    if (searchMode.value === 'image') {
+      queueGallerySearchExecution(60)
+    }
   }
 
   async function selectExternalImageSearchFile() {
@@ -630,6 +650,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
           imageUrl: queryPath ? null : queryUrl || null,
           imageBytes: queryPath ? null : queryBytes,
           imageBase64: null,
+          searchType: externalImageSearchType.value,
           candidateImageIds,
           limit: 600,
         })
@@ -766,6 +787,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchFileNameQuery,
     searchNaturalLanguageQuery,
     searchMode,
+    externalImageSearchType,
     externalImageQueryUrl,
     externalImageQueryPreviewUrl,
     externalImageQueryLabel,
@@ -796,6 +818,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     setSearchFileNameQuery,
     setSearchNaturalLanguageQuery,
     setSearchMode,
+    setExternalImageSearchType,
     setSearchConfidenceMin,
     setSearchConfidenceMax,
     executeGallerySearch,
@@ -803,6 +826,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     setExternalImageQueryUrl,
     pasteExternalImageSearchFromPasteEvent,
     setExternalImageSearchFromFile,
+    setExternalImageSearchFromGalleryImage,
     selectExternalImageSearchFile,
     pasteExternalImageSearchFromClipboard,
     searchBySingleTag,

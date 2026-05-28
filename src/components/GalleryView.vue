@@ -1,11 +1,13 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { LoadingOne, Search } from '@icon-park/vue-next'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import SegmentedMasonry from './SegmentedMasonry.vue'
 import type { GalleryLayoutItem } from '../types/gallery'
 
 type DragState = {
   imageId: string
+  x: number
+  y: number
 }
 
 type KnownAutoTagSuggestion = {
@@ -28,6 +30,7 @@ const props = defineProps<{
   searchFileNameQuery: string
   searchNaturalLanguageQuery: string
   searchMode: 'text' | 'image'
+  externalImageSearchType: 'default' | 'atmosphere' | 'color'
   externalImageQueryUrl: string
   externalImageQueryPreviewUrl: string
   externalImageQueryLabel: string
@@ -59,6 +62,7 @@ const searchChipsDragState = ref<{
 } | null>(null)
 const imageSearchDragDepth = ref(0)
 const imageSearchDragActive = ref(false)
+const internalImageSearchDragActive = ref(false)
 
 function clearSearchHideTimer() {
   if (searchHideTimer.value !== null) {
@@ -332,6 +336,16 @@ function clearImageSearchDragState() {
   imageSearchDragActive.value = false
 }
 
+function syncInternalImageSearchDragState() {
+  const state = props.dragState
+  if (!state) {
+    internalImageSearchDragActive.value = false
+    return
+  }
+  const element = document.elementFromPoint(state.x, state.y) as HTMLElement | null
+  internalImageSearchDragActive.value = Boolean(element?.closest('.gallery-search__lens-drop'))
+}
+
 function onImageSearchDragEnter(event: DragEvent) {
   const dataTransfer = event.dataTransfer
   if (!dataTransfer || !hasImagePayload(dataTransfer)) return
@@ -371,6 +385,14 @@ async function onImageSearchDrop(event: DragEvent) {
   if (typeof props.handlers.setExternalImageSearchFromFile !== 'function') return
   await props.handlers.setExternalImageSearchFromFile(imageFile)
 }
+
+watch(
+  () => props.dragState,
+  () => {
+    syncInternalImageSearchDragState()
+  },
+  { immediate: true, deep: true },
+)
 
 function canScrollContainer(container: HTMLElement, deltaY: number) {
   if (container.scrollHeight <= container.clientHeight + 1) return false
@@ -547,13 +569,41 @@ function onSearchWheel(event: WheelEvent) {
         </div>
 
         <div class="gallery-search__cell gallery-search__cell--image-search">
+          <div class="gallery-search__image-head">
           <div class="gallery-search__label">以图搜图</div>
+            <div class="gallery-search__mode-tabs">
+              <button
+                type="button"
+                class="gallery-search__mode-tab"
+                :class="{ 'is-active': externalImageSearchType === 'default' }"
+                @click="handlers.setExternalImageSearchType('default')"
+              >
+                默认
+              </button>
+              <button
+                type="button"
+                class="gallery-search__mode-tab"
+                :class="{ 'is-active': externalImageSearchType === 'atmosphere' }"
+                @click="handlers.setExternalImageSearchType('atmosphere')"
+              >
+                氛围
+              </button>
+              <button
+                type="button"
+                class="gallery-search__mode-tab"
+                :class="{ 'is-active': externalImageSearchType === 'color' }"
+                @click="handlers.setExternalImageSearchType('color')"
+              >
+                色彩
+              </button>
+            </div>
+          </div>
           <div class="gallery-search__lens" @contextmenu.prevent="pasteExternalImageAndSearch">
             <div
               class="gallery-search__lens-drop"
               :class="{
                 'is-filled': Boolean(externalImageQueryPreviewUrl),
-                'is-drag-active': imageSearchDragActive,
+                'is-drag-active': imageSearchDragActive || internalImageSearchDragActive,
               }"
               @dragenter.prevent="onImageSearchDragEnter"
               @dragover.prevent="onImageSearchDragOver"
@@ -577,6 +627,15 @@ function onSearchWheel(event: WheelEvent) {
               <div class="gallery-search__lens-main">
                 <div class="gallery-search__lens-title">
                   {{ externalImageQueryPreviewUrl ? '已选择查询图片' : '将图片放到此处' }}
+                </div>
+                <div class="gallery-search__lens-mode-hint">
+                  {{
+                    externalImageSearchType === 'atmosphere'
+                      ? '氛围相似模式'
+                      : externalImageSearchType === 'color'
+                        ? '色彩相似模式'
+                        : '默认相似模式'
+                  }}
                 </div>
                 <div class="gallery-search__lens-actions">
                   <button type="button" class="gallery-search__lens-link" @click="pasteExternalImageAndSearch">

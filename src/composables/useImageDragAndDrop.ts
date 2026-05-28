@@ -40,6 +40,8 @@ type UseImageDragAndDropOptions<TLibraryStore extends LibraryStoreLike> = {
   dragExpandedReferenceBoardFolderIds: Ref<Set<number>>
   addImageToReferenceBoard: (imageId: string, boardId: number) => Promise<void>
   expandReferenceBoardFolder: (folderId: number) => void
+  isPointInsideExternalImageSearchDropZone: (x: number, y: number) => boolean
+  setExternalImageSearchFromGalleryImage: (imageId: string) => Promise<boolean>
   setErrorText: (value: string) => void
   formatError: (error: unknown) => string
 }
@@ -174,6 +176,11 @@ export function useImageDragAndDrop<TLibraryStore extends LibraryStoreLike>(
     }
 
     try {
+      if (options.isPointInsideExternalImageSearchDropZone(event.clientX, event.clientY)) {
+        await options.setExternalImageSearchFromGalleryImage(dragState.value.imageId)
+        return
+      }
+
       const boardId =
         dragState.value.overBoardId ?? options.referenceBoardIdFromPoint(event.clientX, event.clientY)
       if (boardId !== null) {

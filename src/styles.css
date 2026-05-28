@@ -1014,6 +1014,13 @@ button {
   grid-template-rows: 14px auto;
 }
 
+.gallery-search__image-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .gallery-search__cell--placeholder {
   place-content: center;
   color: #7f90a2;
@@ -1330,6 +1337,12 @@ button {
   min-width: 0;
   display: grid;
   gap: 4px;
+}
+
+.gallery-search__lens-mode-hint {
+  color: #8fa0b3;
+  font-size: 10px;
+  line-height: 1.2;
 }
 
 .gallery-search__lens-title {
@@ -2897,6 +2910,10 @@ button {
 
 .app-shell.theme-light .gallery-search__lens-title {
   color: #334155;
+}
+
+.app-shell.theme-light .gallery-search__lens-mode-hint {
+  color: #6b7c91;
 }
 
 .app-shell.theme-light .gallery-search__lens-link {

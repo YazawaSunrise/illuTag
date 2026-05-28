@@ -19,7 +19,7 @@ use std::{
         mpsc::{self, TrySendError},
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
 
@@ -31,6 +31,11 @@ const THUMBNAIL_WEBP_QUALITY: f32 = 85.0;
 const THUMBNAIL_WORKER_COUNT: usize = 3;
 const THUMBNAIL_WORKER_QUEUE_CAPACITY: usize = 2;
 const NATURAL_LANGUAGE_SEARCH_DEFAULT_TOP_K: usize = 600;
+const ATMOSPHERE_SIGNATURE_IMAGE_EDGE: u32 = 48;
+const ATMOSPHERE_SIGNATURE_HUE_BINS: usize = 12;
+const ATMOSPHERE_SIGNATURE_DIM: usize = 51;
+const COLOR_SIGNATURE_HUE_BINS: usize = 24;
+const COLOR_SIGNATURE_DIM: usize = COLOR_SIGNATURE_HUE_BINS + 8;
 
 pub struct AppState {
     pub database_path: PathBuf,
@@ -45,10 +50,22 @@ pub struct AppState {
     pub thumbnail_generation_pause_requested: Arc<Mutex<bool>>,
     pub thumbnail_generation_stop_requested: Arc<Mutex<bool>>,
     pub thumbnail_generation_progress: Arc<Mutex<ThumbnailGenerationProgress>>,
+    pub atmosphere_generation_running: Arc<Mutex<bool>>,
+    pub atmosphere_generation_pending: Arc<Mutex<bool>>,
+    pub atmosphere_generation_pause_requested: Arc<Mutex<bool>>,
+    pub atmosphere_generation_stop_requested: Arc<Mutex<bool>>,
+    pub atmosphere_generation_progress: Arc<Mutex<AtmosphereGenerationProgress>>,
+    pub color_signature_generation_running: Arc<Mutex<bool>>,
+    pub color_signature_generation_pending: Arc<Mutex<bool>>,
+    pub color_signature_generation_pause_requested: Arc<Mutex<bool>>,
+    pub color_signature_generation_stop_requested: Arc<Mutex<bool>>,
+    pub color_signature_generation_progress: Arc<Mutex<ColorSignatureGenerationProgress>>,
     pub natural_language_scan_running: Arc<Mutex<bool>>,
     pub natural_language_scan_pending: Arc<Mutex<bool>>,
     pub natural_language_scan_progress: Arc<Mutex<NaturalLanguageScanProgress>>,
     pub clip_vector_cache: Arc<Mutex<Option<ClipImageVectorCache>>>,
+    pub atmosphere_signature_cache: Arc<Mutex<Option<SignatureCache>>>,
+    pub color_signature_cache: Arc<Mutex<Option<SignatureCache>>>,
     pub clip_text_encoder_service: Arc<Mutex<Option<ClipTextEncoderService>>>,
     pub clip_image_encoder_service: Arc<Mutex<Option<ClipImageEncoderService>>>,
     pub wd_tagger_service: Arc<Mutex<Option<WdTaggerService>>>,
@@ -57,6 +74,11 @@ pub struct AppState {
 pub struct ClipImageVectorCache {
     model_id: String,
     model_version: String,
+    dimension: usize,
+    vectors: HashMap<String, Vec<f32>>,
+}
+
+pub struct SignatureCache {
     dimension: usize,
     vectors: HashMap<String, Vec<f32>>,
 }
@@ -287,6 +309,36 @@ pub struct ThumbnailGenerationProgress {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AtmosphereGenerationProgress {
+    pub running: bool,
+    pub paused: bool,
+    pub phase: String,
+    pub total_candidates: i64,
+    pub processed_images: i64,
+    pub generated_images: i64,
+    pub skipped_images: i64,
+    pub failed_images: i64,
+    pub last_error: Option<String>,
+    pub recent_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorSignatureGenerationProgress {
+    pub running: bool,
+    pub paused: bool,
+    pub phase: String,
+    pub total_candidates: i64,
+    pub processed_images: i64,
+    pub generated_images: i64,
+    pub skipped_images: i64,
+    pub failed_images: i64,
+    pub last_error: Option<String>,
+    pub recent_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NaturalLanguageScanStatus {
     pub running: bool,
 }
@@ -342,12 +394,46 @@ impl Default for ThumbnailGenerationProgress {
     }
 }
 
+impl Default for AtmosphereGenerationProgress {
+    fn default() -> Self {
+        Self {
+            running: false,
+            paused: false,
+            phase: "idle".to_string(),
+            total_candidates: 0,
+            processed_images: 0,
+            generated_images: 0,
+            skipped_images: 0,
+            failed_images: 0,
+            last_error: None,
+            recent_errors: Vec::new(),
+        }
+    }
+}
+
 impl Default for NaturalLanguageScanProgress {
     fn default() -> Self {
         Self {
             running: false,
             phase: "idle".to_string(),
             total_images: 0,
+            processed_images: 0,
+            generated_images: 0,
+            skipped_images: 0,
+            failed_images: 0,
+            last_error: None,
+            recent_errors: Vec::new(),
+        }
+    }
+}
+
+impl Default for ColorSignatureGenerationProgress {
+    fn default() -> Self {
+        Self {
+            running: false,
+            paused: false,
+            phase: "idle".to_string(),
+            total_candidates: 0,
             processed_images: 0,
             generated_images: 0,
             skipped_images: 0,
@@ -401,6 +487,31 @@ struct NaturalLanguageEmbeddingCandidate {
     image_path: String,
     modified_at: i64,
     current_source_modified_at: Option<i64>,
+}
+
+struct AtmosphereSignatureCandidate {
+    image_id: String,
+    image_path: String,
+    thumbnail_path: Option<String>,
+    thumbnail_source_modified_at: Option<i64>,
+    thumbnail_source_file_size: Option<i64>,
+    modified_at: i64,
+    file_size: i64,
+}
+
+struct AtmosphereGenerationCandidate {
+    image_id: String,
+    source_path: String,
+    modified_at: i64,
+    file_size: i64,
+    priority: i32,
+}
+
+struct ColorSignatureGenerationCandidate {
+    image_id: String,
+    thumbnail_path: Option<String>,
+    modified_at: i64,
+    file_size: i64,
 }
 
 #[derive(Debug)]
@@ -476,9 +587,7 @@ pub fn add_gallery_folder(folder_path: String, state: &AppState) -> Result<Libra
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
-    if let Ok(mut clip_cache) = state.clip_vector_cache.lock() {
-        *clip_cache = None;
-    }
+    invalidate_all_similarity_caches(state);
     Ok(store)
 }
 
@@ -520,9 +629,7 @@ pub fn remove_gallery_folder(
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
-    if let Ok(mut clip_cache) = state.clip_vector_cache.lock() {
-        *clip_cache = None;
-    }
+    invalidate_all_similarity_caches(state);
     Ok(store)
 }
 
@@ -539,9 +646,9 @@ pub fn remove_image_from_index(image_id: String, state: &AppState) -> Result<Lib
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
-    if let Ok(mut clip_cache) = state.clip_vector_cache.lock() {
-        *clip_cache = None;
-    }
+    remove_signature_cache_entry(&state.atmosphere_signature_cache, &image_id)?;
+    remove_signature_cache_entry(&state.color_signature_cache, &image_id)?;
+    remove_clip_vector_cache_entry(&state.clip_vector_cache, &image_id)?;
     Ok(store)
 }
 
@@ -561,9 +668,7 @@ pub fn restore_image_from_trash(image_id: String, state: &AppState) -> Result<Li
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());
-    if let Ok(mut clip_cache) = state.clip_vector_cache.lock() {
-        *clip_cache = None;
-    }
+    invalidate_all_similarity_caches(state);
     Ok(store)
 }
 
@@ -798,6 +903,9 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
     let background_scan_progress = Arc::clone(&state.background_scan_progress);
     let startup_cleanup_running = Arc::clone(&state.startup_cleanup_running);
     let wd_tagger_service = Arc::clone(&state.wd_tagger_service);
+    let clip_vector_cache = Arc::clone(&state.clip_vector_cache);
+    let atmosphere_signature_cache = Arc::clone(&state.atmosphere_signature_cache);
+    let color_signature_cache = Arc::clone(&state.color_signature_cache);
     thread::spawn(move || {
         wait_until_startup_cleanup_finished(&startup_cleanup_running);
         eprintln!("[wd-scan] worker started");
@@ -816,6 +924,9 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
                     if let Ok(mut cache) = library_cache.lock() {
                         *cache = None;
                     }
+                    clear_optional_cache(&clip_vector_cache);
+                    clear_optional_cache(&atmosphere_signature_cache);
+                    clear_optional_cache(&color_signature_cache);
                     if let Err(error) = tag_images_with_wd_model(
                         &database_path,
                         &scan_result.tag_queue_image_ids,
@@ -837,6 +948,9 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
             if let Ok(mut cache) = library_cache.lock() {
                 *cache = None;
             }
+            clear_optional_cache(&clip_vector_cache);
+            clear_optional_cache(&atmosphere_signature_cache);
+            clear_optional_cache(&color_signature_cache);
 
             let rerun = if let Ok(mut pending) = background_scan_pending.lock() {
                 if *pending {
@@ -859,6 +973,9 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
         if let Ok(mut cache) = library_cache.lock() {
             *cache = None;
         }
+        clear_optional_cache(&clip_vector_cache);
+        clear_optional_cache(&atmosphere_signature_cache);
+        clear_optional_cache(&color_signature_cache);
         if let Ok(mut running) = background_scan_running.lock() {
             *running = false;
         }
@@ -911,6 +1028,9 @@ pub fn start_startup_cleanup(state: &AppState) -> Result<bool, String> {
     let library_cache = Arc::clone(&state.library);
     let startup_cleanup_running = Arc::clone(&state.startup_cleanup_running);
     let startup_cleanup_generation = Arc::clone(&state.startup_cleanup_generation);
+    let clip_vector_cache = Arc::clone(&state.clip_vector_cache);
+    let atmosphere_signature_cache = Arc::clone(&state.atmosphere_signature_cache);
+    let color_signature_cache = Arc::clone(&state.color_signature_cache);
 
     thread::spawn(move || {
         let result = cleanup_missing_library_images_batched(&database_path, 256);
@@ -922,6 +1042,11 @@ pub fn start_startup_cleanup(state: &AppState) -> Result<bool, String> {
 
         if let Ok(mut cache) = library_cache.lock() {
             *cache = None;
+        }
+        if matches!(result, Ok(removed) if removed > 0) {
+            clear_optional_cache(&clip_vector_cache);
+            clear_optional_cache(&atmosphere_signature_cache);
+            clear_optional_cache(&color_signature_cache);
         }
         if let Ok(mut generation) = startup_cleanup_generation.lock() {
             *generation += 1;
@@ -1158,6 +1283,369 @@ pub fn rebuild_thumbnail_cache(state: &AppState) -> Result<bool, String> {
     start_thumbnail_generation(state)
 }
 
+pub fn start_atmosphere_generation(state: &AppState) -> Result<bool, String> {
+    let mut running = state
+        .atmosphere_generation_running
+        .lock()
+        .map_err(|_| "Atmosphere generation state is locked".to_string())?;
+    if *running {
+        if let Ok(mut pending) = state.atmosphere_generation_pending.lock() {
+            *pending = true;
+        }
+        return Ok(false);
+    }
+    *running = true;
+    drop(running);
+
+    if let Ok(mut pending) = state.atmosphere_generation_pending.lock() {
+        *pending = false;
+    }
+    if let Ok(mut pause_requested) = state.atmosphere_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    if let Ok(mut stop_requested) = state.atmosphere_generation_stop_requested.lock() {
+        *stop_requested = false;
+    }
+    set_atmosphere_progress(
+        &state.atmosphere_generation_progress,
+        AtmosphereGenerationProgress {
+            running: true,
+            paused: false,
+            phase: "queueing".to_string(),
+            ..AtmosphereGenerationProgress::default()
+        },
+    );
+
+    let database_path = state.database_path.clone();
+    let library_cache = Arc::clone(&state.library);
+    let task_running = Arc::clone(&state.atmosphere_generation_running);
+    let task_pending = Arc::clone(&state.atmosphere_generation_pending);
+    let task_pause_requested = Arc::clone(&state.atmosphere_generation_pause_requested);
+    let task_stop_requested = Arc::clone(&state.atmosphere_generation_stop_requested);
+    let task_progress = Arc::clone(&state.atmosphere_generation_progress);
+    let atmosphere_signature_cache = Arc::clone(&state.atmosphere_signature_cache);
+
+    thread::spawn(move || {
+        loop {
+            set_atmosphere_progress_phase(&task_progress, "queueing");
+            match generate_atmosphere_signatures_once(
+                &database_path,
+                &task_progress,
+                &task_pause_requested,
+                &task_stop_requested,
+                &atmosphere_signature_cache,
+            ) {
+                Ok(generated) => {
+                    if generated > 0 {
+                        if let Ok(mut cache) = library_cache.lock() {
+                            *cache = None;
+                        }
+                    }
+                }
+                Err(error) => {
+                    set_atmosphere_progress_error(&task_progress, &error);
+                    push_atmosphere_progress_recent_error(&task_progress, &error);
+                }
+            }
+
+            let rerun = if let Ok(mut pending) = task_pending.lock() {
+                if *pending {
+                    *pending = false;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if rerun {
+                continue;
+            }
+            break;
+        }
+
+        set_atmosphere_progress_done(&task_progress);
+        if let Ok(mut running) = task_running.lock() {
+            *running = false;
+        }
+        if let Ok(mut pending) = task_pending.lock() {
+            *pending = false;
+        }
+        if let Ok(mut pause_requested) = task_pause_requested.lock() {
+            *pause_requested = false;
+        }
+        if let Ok(mut stop_requested) = task_stop_requested.lock() {
+            *stop_requested = false;
+        }
+    });
+
+    Ok(true)
+}
+
+pub fn atmosphere_generation_status(state: &AppState) -> Result<AtmosphereGenerationProgress, String> {
+    state
+        .atmosphere_generation_progress
+        .lock()
+        .map_err(|_| "Atmosphere generation progress state is locked".to_string())
+        .map(|value| value.clone())
+}
+
+pub fn pause_atmosphere_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .atmosphere_generation_running
+        .lock()
+        .map_err(|_| "Atmosphere generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.atmosphere_generation_pause_requested.lock() {
+        *pause_requested = true;
+    }
+    update_atmosphere_progress(&state.atmosphere_generation_progress, |progress| {
+        progress.paused = true;
+        progress.phase = "paused".to_string();
+    });
+    Ok(true)
+}
+
+pub fn resume_atmosphere_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .atmosphere_generation_running
+        .lock()
+        .map_err(|_| "Atmosphere generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.atmosphere_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_atmosphere_progress(&state.atmosphere_generation_progress, |progress| {
+        progress.paused = false;
+        if progress.phase == "paused" {
+            progress.phase = "generating".to_string();
+        }
+    });
+    Ok(true)
+}
+
+pub fn stop_atmosphere_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .atmosphere_generation_running
+        .lock()
+        .map_err(|_| "Atmosphere generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut stop_requested) = state.atmosphere_generation_stop_requested.lock() {
+        *stop_requested = true;
+    }
+    if let Ok(mut pause_requested) = state.atmosphere_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_atmosphere_progress(&state.atmosphere_generation_progress, |progress| {
+        progress.paused = false;
+        progress.phase = "stopping".to_string();
+    });
+    Ok(true)
+}
+
+pub fn start_color_signature_generation(state: &AppState) -> Result<bool, String> {
+    let mut running = state
+        .color_signature_generation_running
+        .lock()
+        .map_err(|_| "Color signature generation state is locked".to_string())?;
+    if *running {
+        if let Ok(mut pending) = state.color_signature_generation_pending.lock() {
+            *pending = true;
+        }
+        return Ok(false);
+    }
+    *running = true;
+    drop(running);
+
+    if let Ok(mut pending) = state.color_signature_generation_pending.lock() {
+        *pending = false;
+    }
+    if let Ok(mut pause_requested) = state.color_signature_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    if let Ok(mut stop_requested) = state.color_signature_generation_stop_requested.lock() {
+        *stop_requested = false;
+    }
+    set_color_signature_progress(
+        &state.color_signature_generation_progress,
+        ColorSignatureGenerationProgress {
+            running: true,
+            paused: false,
+            phase: "queueing".to_string(),
+            ..ColorSignatureGenerationProgress::default()
+        },
+    );
+
+    let database_path = state.database_path.clone();
+    let library_cache = Arc::clone(&state.library);
+    let task_running = Arc::clone(&state.color_signature_generation_running);
+    let task_pending = Arc::clone(&state.color_signature_generation_pending);
+    let task_pause_requested = Arc::clone(&state.color_signature_generation_pause_requested);
+    let task_stop_requested = Arc::clone(&state.color_signature_generation_stop_requested);
+    let task_progress = Arc::clone(&state.color_signature_generation_progress);
+    let color_signature_cache = Arc::clone(&state.color_signature_cache);
+
+    thread::spawn(move || {
+        loop {
+            set_color_signature_progress_phase(&task_progress, "queueing");
+            match generate_color_signatures_once(
+                &database_path,
+                &task_progress,
+                &task_pause_requested,
+                &task_stop_requested,
+                &color_signature_cache,
+            ) {
+                Ok(generated) => {
+                    if generated > 0 {
+                        if let Ok(mut cache) = library_cache.lock() {
+                            *cache = None;
+                        }
+                    }
+                }
+                Err(error) => {
+                    set_color_signature_progress_error(&task_progress, &error);
+                    push_color_signature_progress_recent_error(&task_progress, &error);
+                }
+            }
+
+            let rerun = if let Ok(mut pending) = task_pending.lock() {
+                if *pending {
+                    *pending = false;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if rerun {
+                continue;
+            }
+            break;
+        }
+
+        set_color_signature_progress_done(&task_progress);
+        if let Ok(mut running) = task_running.lock() {
+            *running = false;
+        }
+        if let Ok(mut pending) = task_pending.lock() {
+            *pending = false;
+        }
+        if let Ok(mut pause_requested) = task_pause_requested.lock() {
+            *pause_requested = false;
+        }
+        if let Ok(mut stop_requested) = task_stop_requested.lock() {
+            *stop_requested = false;
+        }
+    });
+
+    Ok(true)
+}
+
+pub fn color_signature_generation_status(
+    state: &AppState,
+) -> Result<ColorSignatureGenerationProgress, String> {
+    state
+        .color_signature_generation_progress
+        .lock()
+        .map_err(|_| "Color signature generation progress state is locked".to_string())
+        .map(|value| value.clone())
+}
+
+pub fn pause_color_signature_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .color_signature_generation_running
+        .lock()
+        .map_err(|_| "Color signature generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.color_signature_generation_pause_requested.lock() {
+        *pause_requested = true;
+    }
+    update_color_signature_progress(&state.color_signature_generation_progress, |progress| {
+        progress.paused = true;
+        progress.phase = "paused".to_string();
+    });
+    Ok(true)
+}
+
+pub fn resume_color_signature_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .color_signature_generation_running
+        .lock()
+        .map_err(|_| "Color signature generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut pause_requested) = state.color_signature_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_color_signature_progress(&state.color_signature_generation_progress, |progress| {
+        progress.paused = false;
+        if progress.phase == "paused" {
+            progress.phase = "generating".to_string();
+        }
+    });
+    Ok(true)
+}
+
+pub fn stop_color_signature_generation(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .color_signature_generation_running
+        .lock()
+        .map_err(|_| "Color signature generation state is locked".to_string())
+        .map(|value| *value)?;
+    if !running {
+        return Ok(false);
+    }
+    if let Ok(mut stop_requested) = state.color_signature_generation_stop_requested.lock() {
+        *stop_requested = true;
+    }
+    if let Ok(mut pause_requested) = state.color_signature_generation_pause_requested.lock() {
+        *pause_requested = false;
+    }
+    update_color_signature_progress(&state.color_signature_generation_progress, |progress| {
+        progress.paused = false;
+        progress.phase = "stopping".to_string();
+    });
+    Ok(true)
+}
+
+pub fn rebuild_color_signature_cache(state: &AppState) -> Result<bool, String> {
+    let running = state
+        .color_signature_generation_running
+        .lock()
+        .map_err(|_| "Color signature generation state is locked".to_string())
+        .map(|value| *value)?;
+    if running {
+        return Err("配色特征任务正在运行，请先停止后再重建".to_string());
+    }
+
+    let conn = open_database(&state.database_path)?;
+    clear_color_signature_cache_storage(&conn)?;
+    clear_optional_cache(&state.color_signature_cache);
+    if let Ok(mut cache) = state.library.lock() {
+        *cache = None;
+    }
+    set_color_signature_progress(
+        &state.color_signature_generation_progress,
+        ColorSignatureGenerationProgress::default(),
+    );
+    start_color_signature_generation(state)
+}
+
 pub fn start_natural_language_scan(state: &AppState) -> Result<bool, String> {
     ensure_clip_vector_cache_loaded(state)?;
     let mut running = state
@@ -1333,15 +1821,31 @@ pub fn search_gallery_image_ids_by_natural_language(
     Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
 }
 
+fn count_non_empty_candidate_ids(candidate_image_ids: Option<&Vec<String>>) -> usize {
+    candidate_image_ids
+        .map(|ids| ids.iter().filter(|id| !id.trim().is_empty()).count())
+        .unwrap_or(0)
+}
+
 pub fn search_gallery_image_ids_by_external_image(
     image_path: Option<String>,
     image_url: Option<String>,
     image_bytes: Option<Vec<u8>>,
     image_base64: Option<String>,
+    search_type: Option<String>,
     candidate_image_ids: Option<Vec<String>>,
     limit: Option<usize>,
     state: &AppState,
 ) -> Result<Vec<String>, String> {
+    let total_started_at = Instant::now();
+    let payload_started_at = Instant::now();
+    let mode = search_type
+        .as_deref()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    let candidate_count = count_non_empty_candidate_ids(candidate_image_ids.as_ref());
+
     let query_path = image_path
         .as_deref()
         .map(str::trim)
@@ -1378,10 +1882,42 @@ pub fn search_gallery_image_ids_by_external_image(
         temp_query_path = Some(temp_path.clone());
         temp_path.to_string_lossy().to_string()
     };
+    eprintln!(
+        "[image-search-prof] mode={} candidates={} payload_prepare_ms={}",
+        mode,
+        candidate_count,
+        payload_started_at.elapsed().as_millis()
+    );
 
     let result = (|| -> Result<Vec<String>, String> {
-        ensure_clip_vector_cache_loaded(state)?;
+        if mode == "color" {
+            return search_gallery_image_ids_by_external_image_color(
+                &query_image_path,
+                candidate_image_ids.clone(),
+                limit,
+                state,
+            );
+        }
+        if mode == "atmosphere" {
+            return search_gallery_image_ids_by_external_image_atmosphere(
+                &query_image_path,
+                candidate_image_ids.clone(),
+                limit,
+                state,
+            );
+        }
 
+        let mode_started_at = Instant::now();
+        let cache_preloaded = state
+            .clip_vector_cache
+            .lock()
+            .map_err(|_| "Clip vector cache state is locked".to_string())?
+            .is_some();
+        let ensure_started_at = Instant::now();
+        ensure_clip_vector_cache_loaded(state)?;
+        let ensure_cache_ms = ensure_started_at.elapsed().as_millis();
+
+        let query_embedding_started_at = Instant::now();
         let model_root = resolve_chinese_clip_model_dir(None)?;
         let script_path = resolve_chinese_clip_image_service_script_path()?;
         let mut service_guard = state
@@ -1397,13 +1933,16 @@ pub fn search_gallery_image_ids_by_external_image(
         if query_embedding.is_empty() {
             return Err("External image embedding is empty".to_string());
         }
+        let query_embedding_ms = query_embedding_started_at.elapsed().as_millis();
 
+        let filter_started_at = Instant::now();
         let candidate_filter = candidate_image_ids.map(|list| {
             list.into_iter()
                 .map(|id| id.trim().to_string())
                 .filter(|id| !id.is_empty())
                 .collect::<HashSet<_>>()
         });
+        let filter_ms = filter_started_at.elapsed().as_millis();
         if matches!(candidate_filter, Some(ref set) if set.is_empty()) {
             return Ok(Vec::new());
         }
@@ -1424,9 +1963,26 @@ pub fn search_gallery_image_ids_by_external_image(
         if cache.dimension != query_embedding.len() {
             return Ok(Vec::new());
         }
+        let cache_vectors = cache.vectors.len();
+        eprintln!(
+            "[image-search-prof] mode=default candidates={} cache_vectors={} cache_preloaded={}",
+            candidate_count,
+            cache_vectors,
+            cache_preloaded
+        );
+        eprintln!(
+            "[image-search-prof] mode=default ensure_cache_ms={}",
+            ensure_cache_ms
+        );
+        eprintln!(
+            "[image-search-prof] mode=default query_signature_ms={}",
+            query_embedding_ms
+        );
+        eprintln!("[image-search-prof] mode=default filter_ms={}", filter_ms);
 
         let top_k = limit.unwrap_or(NATURAL_LANGUAGE_SEARCH_DEFAULT_TOP_K).max(1);
         let mut heap = BinaryHeap::<NaturalLanguageSearchHeapEntry>::new();
+        let score_started_at = Instant::now();
         for (image_id, vector) in &cache.vectors {
             if let Some(filter) = &candidate_filter {
                 if !filter.contains(image_id) {
@@ -1448,7 +2004,9 @@ pub fn search_gallery_image_ids_by_external_image(
                 let _ = heap.pop();
             }
         }
+        let score_ms = score_started_at.elapsed().as_millis();
 
+        let sort_started_at = Instant::now();
         let mut ranked = Vec::<NaturalLanguageSearchHeapEntry>::with_capacity(heap.len());
         while let Some(entry) = heap.pop() {
             ranked.push(entry);
@@ -1459,13 +2017,620 @@ pub fn search_gallery_image_ids_by_external_image(
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| a.image_id.cmp(&b.image_id))
         });
+        let sort_ms = sort_started_at.elapsed().as_millis();
+        let total_ms = mode_started_at.elapsed().as_millis();
+        eprintln!("[image-search-prof] mode=default score_ms={}", score_ms);
+        eprintln!("[image-search-prof] mode=default sort_ms={}", sort_ms);
+        eprintln!("[image-search-prof] mode=default total_ms={}", total_ms);
         Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
     })();
 
     if let Some(path) = temp_query_path {
         let _ = fs::remove_file(path);
     }
+    eprintln!(
+        "[image-search-prof] mode={} total_ms={}",
+        mode,
+        total_started_at.elapsed().as_millis()
+    );
     result
+}
+
+fn search_gallery_image_ids_by_external_image_atmosphere(
+    query_image_path: &str,
+    candidate_image_ids: Option<Vec<String>>,
+    limit: Option<usize>,
+    state: &AppState,
+) -> Result<Vec<String>, String> {
+    if let Some(ids) = candidate_image_ids.as_ref() {
+        let has_candidate = ids.iter().any(|id| !id.trim().is_empty());
+        if !has_candidate {
+            return Ok(Vec::new());
+        }
+    }
+    ensure_atmosphere_signature_cache_loaded(state)?;
+    let query_signature = compute_atmosphere_signature_from_path(query_image_path)?;
+    let candidate_filter = candidate_image_ids.map(|list| {
+        list.into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<HashSet<_>>()
+    });
+    if matches!(candidate_filter, Some(ref set) if set.is_empty()) {
+        return Ok(Vec::new());
+    }
+
+    let cache_guard = state
+        .atmosphere_signature_cache
+        .lock()
+        .map_err(|_| "Atmosphere signature cache state is locked".to_string())?;
+    let cache = cache_guard
+        .as_ref()
+        .ok_or_else(|| "Atmosphere signature cache not loaded".to_string())?;
+    if cache.dimension != ATMOSPHERE_SIGNATURE_DIM {
+        return Err("Atmosphere signature cache dimension mismatch".to_string());
+    }
+    if cache.vectors.is_empty() {
+        return Err("请先生成氛围特征。".to_string());
+    }
+
+    let top_k = limit.unwrap_or(NATURAL_LANGUAGE_SEARCH_DEFAULT_TOP_K).max(1);
+    let mut heap = BinaryHeap::<NaturalLanguageSearchHeapEntry>::new();
+    for (image_id, signature) in &cache.vectors {
+        if let Some(filter) = &candidate_filter {
+            if !filter.contains(image_id) {
+                continue;
+            }
+        }
+        let distance = atmosphere_signature_weighted_distance(&query_signature, signature);
+        if !distance.is_finite() {
+            continue;
+        }
+        heap.push(NaturalLanguageSearchHeapEntry {
+            image_id: image_id.clone(),
+            score: -distance,
+        });
+        if heap.len() > top_k {
+            let _ = heap.pop();
+        }
+    }
+
+    let mut ranked = Vec::<NaturalLanguageSearchHeapEntry>::with_capacity(heap.len());
+    while let Some(entry) = heap.pop() {
+        ranked.push(entry);
+    }
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.image_id.cmp(&b.image_id))
+    });
+    Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
+}
+
+fn search_gallery_image_ids_by_external_image_color(
+    query_image_path: &str,
+    candidate_image_ids: Option<Vec<String>>,
+    limit: Option<usize>,
+    state: &AppState,
+) -> Result<Vec<String>, String> {
+    if let Some(ids) = candidate_image_ids.as_ref() {
+        let has_candidate = ids.iter().any(|id| !id.trim().is_empty());
+        if !has_candidate {
+            return Ok(Vec::new());
+        }
+    }
+
+    ensure_color_signature_cache_loaded(state)?;
+    let query_signature = compute_color_signature_from_path(query_image_path)?;
+    let candidate_filter = candidate_image_ids.map(|list| {
+        list.into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<HashSet<_>>()
+    });
+    if matches!(candidate_filter, Some(ref set) if set.is_empty()) {
+        return Ok(Vec::new());
+    }
+
+    let cache_guard = state
+        .color_signature_cache
+        .lock()
+        .map_err(|_| "Color signature cache state is locked".to_string())?;
+    let cache = cache_guard
+        .as_ref()
+        .ok_or_else(|| "Color signature cache not loaded".to_string())?;
+    if cache.dimension != COLOR_SIGNATURE_DIM {
+        return Err("Color signature cache dimension mismatch".to_string());
+    }
+    if cache.vectors.is_empty() {
+        return Err("请先在设置中生成配色特征。".to_string());
+    }
+
+    let top_k = limit.unwrap_or(NATURAL_LANGUAGE_SEARCH_DEFAULT_TOP_K).max(1);
+    let mut heap = BinaryHeap::<NaturalLanguageSearchHeapEntry>::new();
+    for (image_id, signature) in &cache.vectors {
+        if let Some(filter) = &candidate_filter {
+            if !filter.contains(image_id) {
+                continue;
+            }
+        }
+        let distance = color_signature_weighted_distance(&query_signature, signature);
+        if !distance.is_finite() {
+            continue;
+        }
+        heap.push(NaturalLanguageSearchHeapEntry {
+            image_id: image_id.clone(),
+            score: -distance,
+        });
+        if heap.len() > top_k {
+            let _ = heap.pop();
+        }
+    }
+
+    let mut ranked = Vec::<NaturalLanguageSearchHeapEntry>::with_capacity(heap.len());
+    while let Some(entry) = heap.pop() {
+        ranked.push(entry);
+    }
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.image_id.cmp(&b.image_id))
+    });
+    Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
+}
+
+fn load_existing_atmosphere_signatures(
+    conn: &Connection,
+    candidate_image_ids: Option<Vec<String>>,
+) -> Result<HashMap<String, Vec<f32>>, String> {
+    let mut sql = String::from(
+        "
+        SELECT s.image_id, s.signature_blob
+        FROM image_atmosphere_signatures s
+        INNER JOIN images i ON i.id = s.image_id
+        WHERE i.source = 'library'
+          AND COALESCE(i.trashed, 0) = 0
+          AND COALESCE(i.missing, 0) = 0
+        ",
+    );
+    let mut params_list = Vec::<Value>::new();
+    if let Some(ids) = candidate_image_ids {
+        let normalized = ids
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        if normalized.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(normalized.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        sql.push_str(&format!(" AND s.image_id IN ({placeholders})"));
+        for id in normalized {
+            params_list.push(Value::from(id));
+        }
+    }
+    sql.push_str(" ORDER BY i.modified_at DESC, s.image_id ASC");
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|error| format!("Failed to load atmosphere signatures: {error}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(params_list.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(|error| format!("Failed to load atmosphere signatures: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load atmosphere signatures: {error}"))?;
+
+    let mut result = HashMap::<String, Vec<f32>>::with_capacity(rows.len());
+    for (image_id, blob) in rows {
+        if let Ok(vector) = decode_f32_blob(&blob) {
+            if vector.len() == ATMOSPHERE_SIGNATURE_DIM {
+                result.insert(image_id, vector);
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn load_existing_color_signatures(
+    conn: &Connection,
+    candidate_image_ids: Option<Vec<String>>,
+) -> Result<HashMap<String, Vec<f32>>, String> {
+    let mut sql = String::from(
+        "
+        SELECT s.image_id, s.signature_blob
+        FROM image_color_signatures s
+        INNER JOIN images i ON i.id = s.image_id
+        WHERE i.source = 'library'
+          AND COALESCE(i.trashed, 0) = 0
+          AND COALESCE(i.missing, 0) = 0
+        ",
+    );
+    let mut params_list = Vec::<Value>::new();
+    if let Some(ids) = candidate_image_ids {
+        let normalized = ids
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        if normalized.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(normalized.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        sql.push_str(&format!(" AND s.image_id IN ({placeholders})"));
+        for id in normalized {
+            params_list.push(Value::from(id));
+        }
+    }
+    sql.push_str(" ORDER BY i.modified_at DESC, s.image_id ASC");
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|error| format!("Failed to load color signatures: {error}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(params_list.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(|error| format!("Failed to load color signatures: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load color signatures: {error}"))?;
+
+    let mut result = HashMap::<String, Vec<f32>>::with_capacity(rows.len());
+    for (image_id, blob) in rows {
+        if let Ok(vector) = decode_f32_blob(&blob) {
+            if vector.len() == COLOR_SIGNATURE_DIM {
+                result.insert(image_id, vector);
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn load_atmosphere_signature_candidates(
+    conn: &Connection,
+    candidate_image_ids: Option<Vec<String>>,
+) -> Result<Vec<AtmosphereSignatureCandidate>, String> {
+    let mut sql = String::from(
+        "
+        SELECT
+          i.id,
+          i.path,
+          t.thumb_path,
+          t.source_modified_at,
+          t.source_file_size,
+          i.modified_at,
+          i.file_size
+        FROM images i
+        LEFT JOIN image_thumbnails t ON t.image_id = i.id
+        WHERE i.source = 'library'
+          AND COALESCE(i.trashed, 0) = 0
+          AND COALESCE(i.missing, 0) = 0
+        ",
+    );
+
+    let mut params_list = Vec::<Value>::new();
+    if let Some(ids) = candidate_image_ids {
+        let normalized = ids
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(normalized.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        sql.push_str(&format!(" AND i.id IN ({placeholders})"));
+        for id in normalized {
+            params_list.push(Value::from(id));
+        }
+    }
+    sql.push_str(" ORDER BY i.modified_at DESC, i.id ASC");
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|error| format!("Failed to load atmosphere candidates: {error}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(params_list.iter()), |row| {
+            Ok(AtmosphereSignatureCandidate {
+                image_id: row.get(0)?,
+                image_path: row.get(1)?,
+                thumbnail_path: row.get(2)?,
+                thumbnail_source_modified_at: row.get(3)?,
+                thumbnail_source_file_size: row.get(4)?,
+                modified_at: row.get(5)?,
+                file_size: row.get(6)?,
+            })
+        })
+        .map_err(|error| format!("Failed to load atmosphere candidates: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load atmosphere candidates: {error}"))?;
+    Ok(rows)
+}
+
+fn compute_atmosphere_signature_from_path(path: &str) -> Result<Vec<f32>, String> {
+    let image = ImageReader::open(path)
+        .map_err(|error| format!("Failed to open image for atmosphere signature: {error}"))?
+        .with_guessed_format()
+        .map_err(|error| format!("Failed to detect image format for atmosphere signature: {error}"))?
+        .decode()
+        .map_err(|error| format!("Failed to decode image for atmosphere signature: {error}"))?;
+    let resized = image
+        .resize_exact(
+            ATMOSPHERE_SIGNATURE_IMAGE_EDGE,
+            ATMOSPHERE_SIGNATURE_IMAGE_EDGE,
+            FilterType::Triangle,
+        )
+        .blur(0.7)
+        .to_rgb8();
+
+    let edge = ATMOSPHERE_SIGNATURE_IMAGE_EDGE as usize;
+    let total = (edge * edge) as f32;
+    let mut hue_hist = vec![0f32; ATMOSPHERE_SIGNATURE_HUE_BINS];
+    let mut sat_sum = 0f32;
+    let mut sat_sq_sum = 0f32;
+    let mut val_sum = 0f32;
+    let mut val_sq_sum = 0f32;
+    let mut dark_count = 0f32;
+    let mut highlight_count = 0f32;
+    let mut warm_count = 0f32;
+    let mut cool_count = 0f32;
+    let mut brightness_grid = vec![0f32; 16];
+    let mut saturation_grid = vec![0f32; 16];
+    let mut cell_counts = vec![0f32; 16];
+
+    for (x, y, pixel) in resized.enumerate_pixels() {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+
+        let max = r.max(g.max(b));
+        let min = r.min(g.min(b));
+        let delta = max - min;
+        let value = max;
+        let saturation = if max <= 1e-6 { 0.0 } else { delta / max };
+        let hue = if delta <= 1e-6 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / delta).rem_euclid(6.0))
+        } else if max == g {
+            60.0 * (((b - r) / delta) + 2.0)
+        } else {
+            60.0 * (((r - g) / delta) + 4.0)
+        };
+
+        let mut hue_bin = ((hue / 360.0) * ATMOSPHERE_SIGNATURE_HUE_BINS as f32).floor() as usize;
+        if hue_bin >= ATMOSPHERE_SIGNATURE_HUE_BINS {
+            hue_bin = ATMOSPHERE_SIGNATURE_HUE_BINS - 1;
+        }
+        hue_hist[hue_bin] += 1.0;
+
+        sat_sum += saturation;
+        sat_sq_sum += saturation * saturation;
+        val_sum += value;
+        val_sq_sum += value * value;
+
+        if value < 0.22 {
+            dark_count += 1.0;
+        }
+        if value > 0.85 {
+            highlight_count += 1.0;
+        }
+        if (hue <= 70.0 || hue >= 290.0) && saturation > 0.15 {
+            warm_count += 1.0;
+        } else if hue >= 140.0 && hue <= 260.0 && saturation > 0.15 {
+            cool_count += 1.0;
+        }
+
+        let cell_x = ((x as usize) * 4) / edge;
+        let cell_y = ((y as usize) * 4) / edge;
+        let cell_index = cell_y.min(3) * 4 + cell_x.min(3);
+        brightness_grid[cell_index] += value;
+        saturation_grid[cell_index] += saturation;
+        cell_counts[cell_index] += 1.0;
+    }
+
+    for count in &mut hue_hist {
+        *count /= total.max(1.0);
+    }
+    for idx in 0..16 {
+        let denom = cell_counts[idx].max(1.0);
+        brightness_grid[idx] /= denom;
+        saturation_grid[idx] /= denom;
+    }
+
+    let sat_mean = sat_sum / total.max(1.0);
+    let sat_var = (sat_sq_sum / total.max(1.0) - sat_mean * sat_mean).max(0.0);
+    let sat_std = sat_var.sqrt();
+    let val_mean = val_sum / total.max(1.0);
+    let val_var = (val_sq_sum / total.max(1.0) - val_mean * val_mean).max(0.0);
+    let val_std = val_var.sqrt();
+    let warm_cool_ratio = warm_count / (warm_count + cool_count + 1e-6);
+
+    let mut signature = Vec::<f32>::with_capacity(ATMOSPHERE_SIGNATURE_DIM);
+    signature.extend_from_slice(&hue_hist);
+    signature.push(sat_mean);
+    signature.push(sat_std);
+    signature.push(val_mean);
+    signature.push(val_std);
+    signature.push(dark_count / total.max(1.0));
+    signature.push(highlight_count / total.max(1.0));
+    signature.push(warm_cool_ratio);
+    signature.extend_from_slice(&brightness_grid);
+    signature.extend_from_slice(&saturation_grid);
+    Ok(signature)
+}
+
+fn atmosphere_signature_weighted_distance(query: &[f32], candidate: &[f32]) -> f32 {
+    if query.len() != ATMOSPHERE_SIGNATURE_DIM || candidate.len() != ATMOSPHERE_SIGNATURE_DIM {
+        return f32::INFINITY;
+    }
+    let mut sum = 0f32;
+    for i in 0..ATMOSPHERE_SIGNATURE_DIM {
+        let weight = if i < ATMOSPHERE_SIGNATURE_HUE_BINS {
+            2.0
+        } else if i < ATMOSPHERE_SIGNATURE_HUE_BINS + 7 {
+            1.4
+        } else if i < ATMOSPHERE_SIGNATURE_HUE_BINS + 7 + 16 {
+            1.1
+        } else {
+            1.0
+        };
+        let diff = query[i] - candidate[i];
+        sum += weight * diff * diff;
+    }
+    sum.sqrt()
+}
+
+fn compute_color_signature_from_path(path: &str) -> Result<Vec<f32>, String> {
+    let image = ImageReader::open(path)
+        .map_err(|error| format!("Failed to open image for color signature: {error}"))?
+        .with_guessed_format()
+        .map_err(|error| format!("Failed to detect image format for color signature: {error}"))?
+        .decode()
+        .map_err(|error| format!("Failed to decode image for color signature: {error}"))?;
+    let resized = image
+        .resize_exact(
+            ATMOSPHERE_SIGNATURE_IMAGE_EDGE,
+            ATMOSPHERE_SIGNATURE_IMAGE_EDGE,
+            FilterType::Triangle,
+        )
+        .blur(0.35)
+        .to_rgb8();
+
+    let edge = ATMOSPHERE_SIGNATURE_IMAGE_EDGE as usize;
+    let total = (edge * edge) as f32;
+    let mut hue_hist = vec![0f32; COLOR_SIGNATURE_HUE_BINS];
+    let mut sat_sum = 0f32;
+    let mut sat_sq_sum = 0f32;
+    let mut val_sum = 0f32;
+    let mut val_sq_sum = 0f32;
+    let mut dark_count = 0f32;
+    let mut highlight_count = 0f32;
+    let mut gray_count = 0f32;
+    let mut warm_count = 0f32;
+
+    for (_, _, pixel) in resized.enumerate_pixels() {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+
+        let max = r.max(g.max(b));
+        let min = r.min(g.min(b));
+        let delta = max - min;
+        let value = max;
+        let saturation = if max <= 1e-6 { 0.0 } else { delta / max };
+        let hue = if delta <= 1e-6 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / delta).rem_euclid(6.0))
+        } else if max == g {
+            60.0 * (((b - r) / delta) + 2.0)
+        } else {
+            60.0 * (((r - g) / delta) + 4.0)
+        };
+
+        let mut hue_bin = ((hue / 360.0) * COLOR_SIGNATURE_HUE_BINS as f32).floor() as usize;
+        if hue_bin >= COLOR_SIGNATURE_HUE_BINS {
+            hue_bin = COLOR_SIGNATURE_HUE_BINS - 1;
+        }
+        let hue_weight = 0.35 + saturation * 0.65;
+        hue_hist[hue_bin] += hue_weight;
+
+        sat_sum += saturation;
+        sat_sq_sum += saturation * saturation;
+        val_sum += value;
+        val_sq_sum += value * value;
+
+        if value < 0.22 {
+            dark_count += 1.0;
+        }
+        if value > 0.85 {
+            highlight_count += 1.0;
+        }
+        if saturation < 0.15 {
+            gray_count += 1.0;
+        }
+        if (hue <= 70.0 || hue >= 290.0) && saturation > 0.15 {
+            warm_count += 1.0;
+        }
+    }
+
+    let hue_norm: f32 = hue_hist.iter().sum::<f32>().max(1e-6);
+    for value in &mut hue_hist {
+        *value /= hue_norm;
+    }
+
+    let sat_mean = sat_sum / total.max(1.0);
+    let sat_var = (sat_sq_sum / total.max(1.0) - sat_mean * sat_mean).max(0.0);
+    let sat_std = sat_var.sqrt();
+    let val_mean = val_sum / total.max(1.0);
+    let val_var = (val_sq_sum / total.max(1.0) - val_mean * val_mean).max(0.0);
+    let val_std = val_var.sqrt();
+
+    let mut signature = Vec::<f32>::with_capacity(COLOR_SIGNATURE_DIM);
+    signature.extend_from_slice(&hue_hist);
+    signature.push(sat_mean);
+    signature.push(sat_std);
+    signature.push(val_mean);
+    signature.push(val_std);
+    signature.push(dark_count / total.max(1.0));
+    signature.push(highlight_count / total.max(1.0));
+    signature.push(gray_count / total.max(1.0));
+    signature.push(warm_count / total.max(1.0));
+    Ok(signature)
+}
+
+fn color_signature_weighted_distance(query: &[f32], candidate: &[f32]) -> f32 {
+    if query.len() != COLOR_SIGNATURE_DIM || candidate.len() != COLOR_SIGNATURE_DIM {
+        return f32::INFINITY;
+    }
+
+    let hue_len = COLOR_SIGNATURE_HUE_BINS;
+    let mut chi_sum = 0f32;
+    for i in 0..hue_len {
+        let q = query[i].max(0.0);
+        let c = candidate[i].max(0.0);
+        let denom = (q + c).max(1e-6);
+        let diff = q - c;
+        chi_sum += (diff * diff) / denom;
+    }
+    let hue_distance = 0.5 * chi_sum;
+
+    let stats_start = hue_len;
+    let sat_mean_diff = query[stats_start] - candidate[stats_start];
+    let sat_std_diff = query[stats_start + 1] - candidate[stats_start + 1];
+    let val_mean_diff = query[stats_start + 2] - candidate[stats_start + 2];
+    let val_std_diff = query[stats_start + 3] - candidate[stats_start + 3];
+    let dark_diff = query[stats_start + 4] - candidate[stats_start + 4];
+    let highlight_diff = query[stats_start + 5] - candidate[stats_start + 5];
+    let gray_diff = query[stats_start + 6] - candidate[stats_start + 6];
+    let warm_diff = query[stats_start + 7] - candidate[stats_start + 7];
+
+    let stats_distance = (
+        1.8 * sat_mean_diff * sat_mean_diff
+            + 1.2 * sat_std_diff * sat_std_diff
+            + 1.8 * val_mean_diff * val_mean_diff
+            + 1.1 * val_std_diff * val_std_diff
+            + 1.0 * dark_diff * dark_diff
+            + 1.0 * highlight_diff * highlight_diff
+            + 1.2 * gray_diff * gray_diff
+            + 1.4 * warm_diff * warm_diff
+    )
+        .sqrt();
+
+    2.4 * hue_distance + 1.0 * stats_distance
 }
 
 fn decode_external_image_payload(
@@ -2921,6 +4086,30 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_image_clip_embeddings_model_updated
           ON image_clip_embeddings(model_id, model_version, updated_at DESC);
 
+        CREATE TABLE IF NOT EXISTS image_atmosphere_signatures (
+          image_id TEXT PRIMARY KEY,
+          source_modified_at INTEGER NOT NULL,
+          source_file_size INTEGER NOT NULL,
+          signature_blob BLOB NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_atmosphere_signatures_updated
+          ON image_atmosphere_signatures(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS image_color_signatures (
+          image_id TEXT PRIMARY KEY,
+          source_modified_at INTEGER NOT NULL,
+          source_file_size INTEGER NOT NULL,
+          signature_blob BLOB NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_color_signatures_updated
+          ON image_color_signatures(updated_at DESC);
+
         CREATE TRIGGER IF NOT EXISTS trg_image_auto_tags_insert_known
         AFTER INSERT ON image_auto_tags
         WHEN NOT EXISTS (
@@ -4319,6 +5508,337 @@ fn collect_pending_tag_image_ids(conn: &Connection) -> Result<Vec<String>, Strin
     .map_err(|error| format!("Failed to collect pending tag images: {error}"))
 }
 
+fn generate_atmosphere_signatures_once(
+    database_path: &Path,
+    progress: &Arc<Mutex<AtmosphereGenerationProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
+    signature_cache: &Arc<Mutex<Option<SignatureCache>>>,
+) -> Result<i64, String> {
+    set_atmosphere_progress_phase(progress, "collecting");
+    let conn = open_database(database_path)?;
+    let candidates = load_atmosphere_generation_candidates(&conn)?;
+    set_atmosphere_progress_total(progress, candidates.len() as i64);
+    set_atmosphere_progress_phase(progress, "generating");
+
+    let mut generated = 0i64;
+    let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut processed = 0i64;
+
+    for candidate in &candidates {
+        if atmosphere_stop_requested(stop_requested) {
+            break;
+        }
+        wait_for_atmosphere_resume(progress, pause_requested, stop_requested);
+        if atmosphere_stop_requested(stop_requested) {
+            break;
+        }
+
+        let existing = conn
+            .query_row(
+                "
+                SELECT source_modified_at, source_file_size, signature_blob
+                FROM image_atmosphere_signatures
+                WHERE image_id = ?1
+                ",
+                params![candidate.image_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("Failed to read atmosphere signature: {error}"))?;
+        if let Some((source_modified_at, source_file_size, blob)) = existing {
+            if source_modified_at == candidate.modified_at
+                && source_file_size == candidate.file_size
+                && decode_f32_blob(&blob)
+                    .map(|vector| vector.len() == ATMOSPHERE_SIGNATURE_DIM)
+                    .unwrap_or(false)
+            {
+                skipped += 1;
+                processed += 1;
+                set_atmosphere_progress_counts(progress, processed, generated, skipped, failed);
+                continue;
+            }
+        }
+
+        if !Path::new(&candidate.source_path).is_file() {
+            if candidate.priority > 0 {
+                skipped += 1;
+            } else {
+                failed += 1;
+            }
+            processed += 1;
+            set_atmosphere_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        }
+
+        match compute_atmosphere_signature_from_path(&candidate.source_path) {
+            Ok(signature) => {
+                conn.execute(
+                    "
+                    INSERT INTO image_atmosphere_signatures (
+                      image_id, source_modified_at, source_file_size, signature_blob, updated_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    ON CONFLICT(image_id) DO UPDATE SET
+                      source_modified_at = excluded.source_modified_at,
+                      source_file_size = excluded.source_file_size,
+                      signature_blob = excluded.signature_blob,
+                      updated_at = excluded.updated_at
+                    ",
+                    params![
+                        candidate.image_id,
+                        candidate.modified_at,
+                        candidate.file_size,
+                        encode_f32_blob(&signature),
+                        now_ms()
+                    ],
+                )
+                .map_err(|error| format!("Failed to save atmosphere signature: {error}"))?;
+                upsert_signature_cache_entry(
+                    signature_cache,
+                    &candidate.image_id,
+                    signature.clone(),
+                    ATMOSPHERE_SIGNATURE_DIM,
+                );
+                generated += 1;
+            }
+            Err(error) => {
+                failed += 1;
+                set_atmosphere_progress_error(progress, &error);
+                push_atmosphere_progress_recent_error(progress, &error);
+            }
+        }
+        processed += 1;
+        set_atmosphere_progress_counts(progress, processed, generated, skipped, failed);
+    }
+
+    if atmosphere_stop_requested(stop_requested) {
+        set_atmosphere_progress_phase(progress, "idle");
+    }
+    Ok(generated)
+}
+
+fn load_atmosphere_generation_candidates(
+    conn: &Connection,
+) -> Result<Vec<AtmosphereGenerationCandidate>, String> {
+    let rows = load_atmosphere_signature_candidates(conn, None)?;
+    let mut result = Vec::<AtmosphereGenerationCandidate>::with_capacity(rows.len());
+    for row in rows {
+        let thumbnail_is_current = matches!(
+            (row.thumbnail_source_modified_at, row.thumbnail_source_file_size),
+            (Some(modified_at), Some(file_size)) if modified_at == row.modified_at && file_size == row.file_size
+        );
+        let use_thumbnail = thumbnail_is_current
+            && row
+                .thumbnail_path
+                .as_deref()
+                .map(|path| Path::new(path).is_file())
+                .unwrap_or(false);
+        let source_path = if use_thumbnail {
+            row.thumbnail_path.unwrap_or_else(|| row.image_path.clone())
+        } else {
+            row.image_path.clone()
+        };
+        let priority = if use_thumbnail { 0 } else { 1 };
+        result.push(AtmosphereGenerationCandidate {
+            image_id: row.image_id,
+            source_path,
+            modified_at: row.modified_at,
+            file_size: row.file_size,
+            priority,
+        });
+    }
+    result.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| b.modified_at.cmp(&a.modified_at))
+            .then_with(|| a.image_id.cmp(&b.image_id))
+    });
+    Ok(result)
+}
+
+fn generate_color_signatures_once(
+    database_path: &Path,
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
+    signature_cache: &Arc<Mutex<Option<SignatureCache>>>,
+) -> Result<i64, String> {
+    set_color_signature_progress_phase(progress, "collecting");
+    let conn = open_database(database_path)?;
+    let existing_before_cleanup: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_color_signatures", [], |row| row.get(0))
+        .map_err(|error| format!("Failed to count existing color signatures: {error}"))?;
+    eprintln!(
+        "[color-signature] existing records before cleanup: {}",
+        existing_before_cleanup
+    );
+    let removed_incompatible = clear_incompatible_color_signature_records(&conn)?;
+    eprintln!(
+        "[color-signature] removed incompatible records: {}",
+        removed_incompatible
+    );
+    let candidates = load_color_signature_generation_candidates(&conn)?;
+    set_color_signature_progress_total(progress, candidates.len() as i64);
+    set_color_signature_progress_phase(progress, "generating");
+
+    let mut generated = 0i64;
+    let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut processed = 0i64;
+
+    for candidate in &candidates {
+        if color_signature_stop_requested(stop_requested) {
+            break;
+        }
+        wait_for_color_signature_resume(progress, pause_requested, stop_requested);
+        if color_signature_stop_requested(stop_requested) {
+            break;
+        }
+
+        let existing = conn
+            .query_row(
+                "
+                SELECT source_modified_at, source_file_size, signature_blob
+                FROM image_color_signatures
+                WHERE image_id = ?1
+                ",
+                params![candidate.image_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("Failed to read color signature: {error}"))?;
+        if let Some((source_modified_at, source_file_size, blob)) = existing {
+            if source_modified_at == candidate.modified_at
+                && source_file_size == candidate.file_size
+                && decode_f32_blob(&blob)
+                    .map(|vector| vector.len() == COLOR_SIGNATURE_DIM)
+                    .unwrap_or(false)
+            {
+                skipped += 1;
+                processed += 1;
+                set_color_signature_progress_counts(progress, processed, generated, skipped, failed);
+                continue;
+            }
+        }
+
+        let Some(thumbnail_path) = candidate.thumbnail_path.as_deref() else {
+            skipped += 1;
+            processed += 1;
+            set_color_signature_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        };
+        if !Path::new(thumbnail_path).is_file() {
+            skipped += 1;
+            processed += 1;
+            set_color_signature_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        }
+
+        match compute_color_signature_from_path(thumbnail_path) {
+            Ok(signature) => {
+                conn.execute(
+                    "
+                    INSERT INTO image_color_signatures (
+                      image_id, source_modified_at, source_file_size, signature_blob, updated_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    ON CONFLICT(image_id) DO UPDATE SET
+                      source_modified_at = excluded.source_modified_at,
+                      source_file_size = excluded.source_file_size,
+                      signature_blob = excluded.signature_blob,
+                      updated_at = excluded.updated_at
+                    ",
+                    params![
+                        candidate.image_id,
+                        candidate.modified_at,
+                        candidate.file_size,
+                        encode_f32_blob(&signature),
+                        now_ms()
+                    ],
+                )
+                .map_err(|error| format!("Failed to save color signature: {error}"))?;
+                upsert_signature_cache_entry(
+                    signature_cache,
+                    &candidate.image_id,
+                    signature.clone(),
+                    COLOR_SIGNATURE_DIM,
+                );
+                generated += 1;
+            }
+            Err(error) => {
+                failed += 1;
+                set_color_signature_progress_error(progress, &error);
+                push_color_signature_progress_recent_error(progress, &error);
+            }
+        }
+
+        processed += 1;
+        set_color_signature_progress_counts(progress, processed, generated, skipped, failed);
+    }
+
+    if color_signature_stop_requested(stop_requested) {
+        set_color_signature_progress_phase(progress, "idle");
+    }
+    eprintln!(
+        "[color-signature] pass done: generated={}, skipped={}, failed={}, processed={}, total_candidates={}",
+        generated,
+        skipped,
+        failed,
+        processed,
+        candidates.len()
+    );
+    Ok(generated)
+}
+
+fn load_color_signature_generation_candidates(
+    conn: &Connection,
+) -> Result<Vec<ColorSignatureGenerationCandidate>, String> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT
+              i.id,
+              t.thumb_path,
+              i.modified_at,
+              i.file_size
+            FROM images i
+            LEFT JOIN image_thumbnails t ON t.image_id = i.id
+            WHERE i.source = 'library'
+              AND COALESCE(i.trashed, 0) = 0
+              AND COALESCE(i.missing, 0) = 0
+            ORDER BY i.modified_at DESC, i.id ASC
+            ",
+        )
+        .map_err(|error| format!("Failed to load color signature candidates: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ColorSignatureGenerationCandidate {
+                image_id: row.get(0)?,
+                thumbnail_path: row.get(1)?,
+                modified_at: row.get(2)?,
+                file_size: row.get(3)?,
+            })
+        })
+        .map_err(|error| format!("Failed to load color signature candidates: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load color signature candidates: {error}"))?;
+    Ok(rows)
+}
+
 fn generate_thumbnails_once(
     database_path: &Path,
     progress: &Arc<Mutex<ThumbnailGenerationProgress>>,
@@ -4761,6 +6281,54 @@ pub fn warmup_clip_vector_cache(state: &AppState) -> Result<(), String> {
     ensure_clip_vector_cache_loaded(state)
 }
 
+fn ensure_atmosphere_signature_cache_loaded(state: &AppState) -> Result<(), String> {
+    {
+        let cache = state
+            .atmosphere_signature_cache
+            .lock()
+            .map_err(|_| "Atmosphere signature cache state is locked".to_string())?;
+        if cache.is_some() {
+            return Ok(());
+        }
+    }
+
+    let conn = open_database(&state.database_path)?;
+    let vectors = load_existing_atmosphere_signatures(&conn, None)?;
+    let mut cache = state
+        .atmosphere_signature_cache
+        .lock()
+        .map_err(|_| "Atmosphere signature cache state is locked".to_string())?;
+    *cache = Some(SignatureCache {
+        dimension: ATMOSPHERE_SIGNATURE_DIM,
+        vectors,
+    });
+    Ok(())
+}
+
+fn ensure_color_signature_cache_loaded(state: &AppState) -> Result<(), String> {
+    {
+        let cache = state
+            .color_signature_cache
+            .lock()
+            .map_err(|_| "Color signature cache state is locked".to_string())?;
+        if cache.is_some() {
+            return Ok(());
+        }
+    }
+
+    let conn = open_database(&state.database_path)?;
+    let vectors = load_existing_color_signatures(&conn, None)?;
+    let mut cache = state
+        .color_signature_cache
+        .lock()
+        .map_err(|_| "Color signature cache state is locked".to_string())?;
+    *cache = Some(SignatureCache {
+        dimension: COLOR_SIGNATURE_DIM,
+        vectors,
+    });
+    Ok(())
+}
+
 fn ensure_clip_vector_cache_loaded(state: &AppState) -> Result<(), String> {
     {
         let cache = state
@@ -4780,6 +6348,18 @@ fn ensure_clip_vector_cache_loaded(state: &AppState) -> Result<(), String> {
         .map_err(|_| "Clip vector cache state is locked".to_string())?;
     *cache = Some(loaded);
     Ok(())
+}
+
+fn clear_optional_cache<T>(cache: &Arc<Mutex<Option<T>>>) {
+    if let Ok(mut value) = cache.lock() {
+        *value = None;
+    }
+}
+
+fn invalidate_all_similarity_caches(state: &AppState) {
+    clear_optional_cache(&state.clip_vector_cache);
+    clear_optional_cache(&state.atmosphere_signature_cache);
+    clear_optional_cache(&state.color_signature_cache);
 }
 
 fn load_clip_vector_cache_from_database(conn: &Connection) -> Result<ClipImageVectorCache, String> {
@@ -4868,6 +6448,41 @@ fn upsert_clip_vector_cache_entry(
                 cache.dimension = vector.len();
             }
             if cache.dimension != vector.len() {
+                return;
+            }
+            cache.vectors.insert(image_id.to_string(), vector);
+        }
+    }
+}
+
+fn remove_signature_cache_entry(
+    signature_cache: &Arc<Mutex<Option<SignatureCache>>>,
+    image_id: &str,
+) -> Result<(), String> {
+    let mut cache = signature_cache
+        .lock()
+        .map_err(|_| "Signature cache state is locked".to_string())?;
+    if let Some(cache) = cache.as_mut() {
+        cache.vectors.remove(image_id);
+    }
+    Ok(())
+}
+
+fn upsert_signature_cache_entry(
+    signature_cache: &Arc<Mutex<Option<SignatureCache>>>,
+    image_id: &str,
+    vector: Vec<f32>,
+    expected_dimension: usize,
+) {
+    if vector.is_empty() || vector.len() != expected_dimension {
+        return;
+    }
+    if let Ok(mut cache) = signature_cache.lock() {
+        if let Some(cache) = cache.as_mut() {
+            if cache.dimension == 0 {
+                cache.dimension = expected_dimension;
+            }
+            if cache.dimension != expected_dimension {
                 return;
             }
             cache.vectors.insert(image_id.to_string(), vector);
@@ -5250,6 +6865,22 @@ fn cleanup_orphan_thumbnail_files(conn: &Connection, thumb_root: &Path) -> Resul
     Ok(())
 }
 
+fn clear_color_signature_cache_storage(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM image_color_signatures", [])
+        .map_err(|error| format!("Failed to clear color signature cache: {error}"))?;
+    Ok(())
+}
+
+fn clear_incompatible_color_signature_records(conn: &Connection) -> Result<i64, String> {
+    let removed = conn
+        .execute(
+        "DELETE FROM image_color_signatures WHERE length(signature_blob) != ?1",
+        params![(COLOR_SIGNATURE_DIM as i64) * 4],
+    )
+    .map_err(|error| format!("Failed to clear incompatible color signatures: {error}"))?;
+    Ok(removed as i64)
+}
+
 fn thumbnail_stop_requested(stop_requested: &Arc<Mutex<bool>>) -> bool {
     stop_requested.lock().map(|value| *value).unwrap_or(false)
 }
@@ -5269,6 +6900,58 @@ fn wait_for_thumbnail_resume(
         }
         if thumbnail_pause_requested(pause_requested) {
             set_thumbnail_progress_phase(progress, "paused");
+            thread::sleep(std::time::Duration::from_millis(120));
+            continue;
+        }
+        break;
+    }
+}
+
+fn atmosphere_stop_requested(stop_requested: &Arc<Mutex<bool>>) -> bool {
+    stop_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn atmosphere_pause_requested(pause_requested: &Arc<Mutex<bool>>) -> bool {
+    pause_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn wait_for_atmosphere_resume(
+    progress: &Arc<Mutex<AtmosphereGenerationProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
+) {
+    loop {
+        if atmosphere_stop_requested(stop_requested) {
+            return;
+        }
+        if atmosphere_pause_requested(pause_requested) {
+            set_atmosphere_progress_phase(progress, "paused");
+            thread::sleep(std::time::Duration::from_millis(120));
+            continue;
+        }
+        break;
+    }
+}
+
+fn color_signature_stop_requested(stop_requested: &Arc<Mutex<bool>>) -> bool {
+    stop_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn color_signature_pause_requested(pause_requested: &Arc<Mutex<bool>>) -> bool {
+    pause_requested.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn wait_for_color_signature_resume(
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    pause_requested: &Arc<Mutex<bool>>,
+    stop_requested: &Arc<Mutex<bool>>,
+) {
+    loop {
+        if color_signature_stop_requested(stop_requested) {
+            return;
+        }
+        if color_signature_pause_requested(pause_requested) {
+            set_color_signature_progress_phase(progress, "paused");
             thread::sleep(std::time::Duration::from_millis(120));
             continue;
         }
@@ -5613,6 +7296,173 @@ fn push_thumbnail_progress_recent_error(
 
 fn set_thumbnail_progress_done(progress: &Arc<Mutex<ThumbnailGenerationProgress>>) {
     update_thumbnail_progress(progress, |state| {
+        state.running = false;
+        state.paused = false;
+        state.phase = "idle".to_string();
+    });
+}
+
+fn set_atmosphere_progress(
+    progress: &Arc<Mutex<AtmosphereGenerationProgress>>,
+    next: AtmosphereGenerationProgress,
+) {
+    if let Ok(mut state) = progress.lock() {
+        *state = next;
+    }
+}
+
+fn update_atmosphere_progress<F>(progress: &Arc<Mutex<AtmosphereGenerationProgress>>, update: F)
+where
+    F: FnOnce(&mut AtmosphereGenerationProgress),
+{
+    if let Ok(mut state) = progress.lock() {
+        update(&mut state);
+    }
+}
+
+fn set_atmosphere_progress_phase(progress: &Arc<Mutex<AtmosphereGenerationProgress>>, phase: &str) {
+    update_atmosphere_progress(progress, |state| {
+        state.phase = phase.to_string();
+        state.running = phase != "idle";
+        state.paused = phase == "paused";
+    });
+}
+
+fn set_atmosphere_progress_total(progress: &Arc<Mutex<AtmosphereGenerationProgress>>, total: i64) {
+    update_atmosphere_progress(progress, |state| {
+        state.total_candidates = total.max(0);
+    });
+}
+
+fn set_atmosphere_progress_counts(
+    progress: &Arc<Mutex<AtmosphereGenerationProgress>>,
+    processed: i64,
+    generated: i64,
+    skipped: i64,
+    failed: i64,
+) {
+    update_atmosphere_progress(progress, |state| {
+        state.processed_images = processed.max(0);
+        state.generated_images = generated.max(0);
+        state.skipped_images = skipped.max(0);
+        state.failed_images = failed.max(0);
+    });
+}
+
+fn set_atmosphere_progress_error(progress: &Arc<Mutex<AtmosphereGenerationProgress>>, error: &str) {
+    update_atmosphere_progress(progress, |state| {
+        state.last_error = Some(error.to_string());
+    });
+}
+
+fn push_atmosphere_progress_recent_error(
+    progress: &Arc<Mutex<AtmosphereGenerationProgress>>,
+    error: &str,
+) {
+    update_atmosphere_progress(progress, |state| {
+        let text = error.trim();
+        if text.is_empty() {
+            return;
+        }
+        state.recent_errors.push(text.to_string());
+        if state.recent_errors.len() > 12 {
+            let overflow = state.recent_errors.len() - 12;
+            state.recent_errors.drain(0..overflow);
+        }
+    });
+}
+
+fn set_atmosphere_progress_done(progress: &Arc<Mutex<AtmosphereGenerationProgress>>) {
+    update_atmosphere_progress(progress, |state| {
+        state.running = false;
+        state.paused = false;
+        state.phase = "idle".to_string();
+    });
+}
+
+fn set_color_signature_progress(
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    next: ColorSignatureGenerationProgress,
+) {
+    if let Ok(mut state) = progress.lock() {
+        *state = next;
+    }
+}
+
+fn update_color_signature_progress<F>(
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    update: F,
+) where
+    F: FnOnce(&mut ColorSignatureGenerationProgress),
+{
+    if let Ok(mut state) = progress.lock() {
+        update(&mut state);
+    }
+}
+
+fn set_color_signature_progress_phase(
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    phase: &str,
+) {
+    update_color_signature_progress(progress, |state| {
+        state.phase = phase.to_string();
+        state.running = phase != "idle";
+        state.paused = phase == "paused";
+    });
+}
+
+fn set_color_signature_progress_total(
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    total: i64,
+) {
+    update_color_signature_progress(progress, |state| {
+        state.total_candidates = total.max(0);
+    });
+}
+
+fn set_color_signature_progress_counts(
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    processed: i64,
+    generated: i64,
+    skipped: i64,
+    failed: i64,
+) {
+    update_color_signature_progress(progress, |state| {
+        state.processed_images = processed.max(0);
+        state.generated_images = generated.max(0);
+        state.skipped_images = skipped.max(0);
+        state.failed_images = failed.max(0);
+    });
+}
+
+fn set_color_signature_progress_error(
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    error: &str,
+) {
+    update_color_signature_progress(progress, |state| {
+        state.last_error = Some(error.to_string());
+    });
+}
+
+fn push_color_signature_progress_recent_error(
+    progress: &Arc<Mutex<ColorSignatureGenerationProgress>>,
+    error: &str,
+) {
+    update_color_signature_progress(progress, |state| {
+        let text = error.trim();
+        if text.is_empty() {
+            return;
+        }
+        state.recent_errors.push(text.to_string());
+        if state.recent_errors.len() > 12 {
+            let overflow = state.recent_errors.len() - 12;
+            state.recent_errors.drain(0..overflow);
+        }
+    });
+}
+
+fn set_color_signature_progress_done(progress: &Arc<Mutex<ColorSignatureGenerationProgress>>) {
+    update_color_signature_progress(progress, |state| {
         state.running = false;
         state.paused = false;
         state.phase = "idle".to_string();
