@@ -135,6 +135,16 @@ export function useGalleryMasonry(options: UseGalleryMasonryOptions) {
     }
   }
 
+  function scrollGalleryToTop(scopeKey = activeScrollScopeKey.value) {
+    activeScrollScopeKey.value = scopeKey
+    scrollTopByScope.set(scopeKey, 0)
+    galleryScrollTop.value = 0
+    if (galleryEl.value) {
+      galleryEl.value.scrollTop = 0
+      galleryViewportHeight.value = galleryEl.value.clientHeight
+    }
+  }
+
   return {
     galleryEl,
     galleryScrollTop,
@@ -150,6 +160,7 @@ export function useGalleryMasonry(options: UseGalleryMasonryOptions) {
     updateViewportSize,
     saveGalleryScrollPosition,
     restoreGalleryScrollPosition,
+    scrollGalleryToTop,
   }
 }
 

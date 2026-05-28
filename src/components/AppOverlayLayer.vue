@@ -75,7 +75,10 @@ defineProps<{
         :key="folder.id"
         :data-folder-id="folder.id"
         type="button"
-        :class="{ 'is-drop-target': dragState.overFolderId === folder.id }"
+        :class="{
+          'is-drop-target': dragState.overFolderId === folder.id,
+          'is-folder-parent': folder.hasChildren,
+        }"
         :style="{ paddingLeft: `${12 + folder.depth * 14}px` }"
       >
         <span v-if="folder.hasChildren" class="folder-drop-panel__twist">

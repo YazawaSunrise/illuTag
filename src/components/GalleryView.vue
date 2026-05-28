@@ -677,10 +677,9 @@ function onSearchWheel(event: WheelEvent) {
                 搜索
               </button>
               <button
-                v-if="externalImageQueryPreviewUrl || externalImageQueryUrl"
                 type="button"
                 class="gallery-search__lens-clear"
-                @click="handlers.clearExternalImageSearch()"
+                @click="handlers.clearAllSearchInputs()"
               >
                 清除
               </button>

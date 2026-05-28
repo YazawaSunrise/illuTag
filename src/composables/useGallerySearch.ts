@@ -35,6 +35,7 @@ type UseGallerySearchOptions<TLibraryStore extends LibraryStoreLike> = {
   clamp: (value: number, min: number, max: number) => number
   toFileSrc?: (path: string) => string
   pickExternalImagePath?: () => Promise<string | null>
+  onBeforeRunSearch?: () => void
   onOpenImageDetail?: () => void
   onCloseImageDetail?: () => void
 }
@@ -494,6 +495,15 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     searchError.value = ''
   }
 
+  function clearAllSearchInputs() {
+    searchRequestToken.value += 1
+    searchRunning.value = false
+    searchError.value = ''
+    clearTextSearchInputs()
+    clearImageSearchInputs()
+    searchMode.value = 'text'
+  }
+
   function setExternalImageSearchType(value: 'default' | 'atmosphere' | 'color') {
     externalImageSearchType.value = value
     if (searchMode.value === 'image') {
@@ -738,6 +748,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     }
     searchExecuteTimer.value = window.setTimeout(() => {
       searchExecuteTimer.value = null
+      options.onBeforeRunSearch?.()
       void runGallerySearch()
     }, Math.max(0, delayMs))
   }
@@ -823,6 +834,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     setSearchConfidenceMax,
     executeGallerySearch,
     clearExternalImageSearch,
+    clearAllSearchInputs,
     setExternalImageQueryUrl,
     pasteExternalImageSearchFromPasteEvent,
     setExternalImageSearchFromFile,

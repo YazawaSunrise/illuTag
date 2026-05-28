@@ -395,6 +395,7 @@ const {
   setSearchConfidenceMax,
   executeGallerySearch,
   clearExternalImageSearch,
+  clearAllSearchInputs,
   setExternalImageQueryUrl,
   pasteExternalImageSearchFromPasteEvent,
   setExternalImageSearchFromFile,
@@ -413,6 +414,9 @@ const {
   clamp,
   toFileSrc: convertFileSrc,
   pickExternalImagePath: pickExternalImageSearchFilePath,
+  onBeforeRunSearch() {
+    scrollGalleryToTop(galleryScrollScopeKeyOf(activeUserFolderId.value))
+  },
   onOpenImageDetail() {
     imageDetailContextMenu.value = null
   },
@@ -431,6 +435,7 @@ const {
   updateViewportSize,
   saveGalleryScrollPosition,
   restoreGalleryScrollPosition,
+  scrollGalleryToTop,
 } = useGalleryMasonry({
   visibleImages,
   convertFileSrc,
@@ -1514,6 +1519,7 @@ const galleryViewHandlers = {
   setSearchConfidenceMax,
   executeGallerySearch,
   clearExternalImageSearch,
+  clearAllSearchInputs,
   setExternalImageQueryUrl,
   pasteExternalImageSearchFromPasteEvent,
   setExternalImageSearchFromFile,
