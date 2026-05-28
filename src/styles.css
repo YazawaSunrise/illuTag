@@ -738,12 +738,13 @@ button {
   flex: 1;
   flex-direction: column;
   min-width: 0;
-  height: 100vh;
+  min-height: 0;
+  height: 100%;
 }
 
 .workspace.is-titlebar-pinned {
   margin-top: 0;
-  height: 100vh;
+  height: 100%;
 }
 
 .app-shell.is-titlebar-pinned .sidebar-hotspot,
@@ -1753,6 +1754,15 @@ button {
   gap: 18px;
   padding: 24px;
   overflow: auto;
+}
+
+.settings > * {
+  flex-shrink: 0;
+}
+
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .workspace.is-settings-view {
+  height: calc(100% - var(--app-titlebar-offset));
+  margin-top: var(--app-titlebar-offset);
 }
 
 .settings__header {

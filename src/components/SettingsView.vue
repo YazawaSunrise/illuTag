@@ -53,6 +53,165 @@ defineProps<{
       </div>
     </div>
 
+    <label class="setting-toggle">
+      <input
+        :checked="sidebarPinned"
+        type="checkbox"
+        @change="handlers.setSidebarPinned(($event.target as HTMLInputElement).checked)"
+      />
+      <span>侧边栏常开</span>
+    </label>
+
+    <label class="setting-toggle">
+      <input
+        :checked="themeMode === 'dark'"
+        type="checkbox"
+        @change="handlers.setThemeMode(($event.target as HTMLInputElement).checked ? 'dark' : 'light')"
+      />
+      <span>深色模式</span>
+    </label>
+
+    <label class="setting-toggle">
+      <input
+        :checked="autoFixRightSidebarOnPreview"
+        type="checkbox"
+        @change="handlers.setAutoFixRightSidebarOnPreview(($event.target as HTMLInputElement).checked)"
+      />
+      <span>预览参考板时自动固定右侧栏</span>
+    </label>
+
+    <label class="setting-toggle">
+      <input
+        :checked="thumbnailCacheEnabled"
+        type="checkbox"
+        @change="handlers.setThumbnailCacheEnabled(($event.target as HTMLInputElement).checked)"
+      />
+      <span>启用缩略图缓存（WebP 768）</span>
+    </label>
+
+    <label class="setting-toggle">
+      <input
+        :checked="autoScanOnStartup"
+        type="checkbox"
+        @change="handlers.setAutoScanOnStartup(($event.target as HTMLInputElement).checked)"
+      />
+      <span>启动时自动扫描</span>
+    </label>
+
+    <div class="settings__thumbnail-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
+        @click="handlers.startThumbnailGeneration()"
+      >
+        开始生成缩略图
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning || isThumbnailGenerationPaused"
+        @click="handlers.pauseThumbnailGeneration()"
+      >
+        暂停
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning || !isThumbnailGenerationPaused"
+        @click="handlers.resumeThumbnailGeneration()"
+      >
+        继续
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning"
+        @click="handlers.stopThumbnailGeneration()"
+      >
+        停止
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
+        @click="handlers.rebuildThumbnailCache()"
+      >
+        重建缩略图缓存
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
+        @click="handlers.clearThumbnailCache()"
+      >
+        清空缩略图缓存
+      </button>
+    </div>
+
+    <div v-if="thumbnailProgressText" class="settings__progress-group">
+      <p class="settings__progress">{{ thumbnailProgressText }}</p>
+      <div
+        class="settings__progressbar"
+        role="progressbar"
+        :aria-valuenow="thumbnailProgressPercent"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div class="settings__progressbar-fill" :style="{ width: `${thumbnailProgressPercent}%` }" />
+      </div>
+    </div>
+    <div v-if="thumbnailRecentErrors.length > 0" class="settings__scan-errors">
+      <p class="settings__scan-errors-title">缩略图最近错误</p>
+      <ul>
+        <li v-for="(entry, index) in thumbnailRecentErrors" :key="`thumb-${index}-${entry}`">{{ entry }}</li>
+      </ul>
+    </div>
+
+    <div class="settings__thumbnail-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isNaturalLanguageScanRunning"
+        @click="handlers.startNaturalLanguageScan()"
+      >
+        {{ isNaturalLanguageScanRunning ? '自然语言扫描中…' : '开始自然语言扫描' }}
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isNaturalLanguageScanRunning || isNaturalLanguageScanPaused"
+        @click="handlers.pauseNaturalLanguageScan()"
+      >
+        暂停
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!isNaturalLanguageScanRunning || !isNaturalLanguageScanPaused"
+        @click="handlers.resumeNaturalLanguageScan()"
+      >
+        继续
+      </button>
+      <button
+        class="danger-button"
+        type="button"
+        :disabled="!isNaturalLanguageScanRunning"
+        @click="handlers.stopNaturalLanguageScan()"
+      >
+        停止
+      </button>
+    </div>
+    <p v-if="naturalLanguageScanProgressText" class="settings__progress">{{ naturalLanguageScanProgressText }}</p>
+    <div v-if="naturalLanguageScanRecentErrors.length > 0" class="settings__scan-errors">
+      <p class="settings__scan-errors-title">最近自然语言扫描错误</p>
+      <ul>
+        <li v-for="(entry, index) in naturalLanguageScanRecentErrors" :key="`nl-${index}-${entry}`">
+          {{ entry }}
+        </li>
+      </ul>
+    </div>
+
     <div class="settings__thumbnail-actions">
       <button
         class="secondary-button"
@@ -177,121 +336,6 @@ defineProps<{
       </ul>
     </div>
 
-    <label class="setting-toggle">
-      <input
-        :checked="sidebarPinned"
-        type="checkbox"
-        @change="handlers.setSidebarPinned(($event.target as HTMLInputElement).checked)"
-      />
-      <span>侧边栏常开</span>
-    </label>
-
-    <label class="setting-toggle">
-      <input
-        :checked="themeMode === 'dark'"
-        type="checkbox"
-        @change="handlers.setThemeMode(($event.target as HTMLInputElement).checked ? 'dark' : 'light')"
-      />
-      <span>深色模式</span>
-    </label>
-
-    <label class="setting-toggle">
-      <input
-        :checked="autoFixRightSidebarOnPreview"
-        type="checkbox"
-        @change="handlers.setAutoFixRightSidebarOnPreview(($event.target as HTMLInputElement).checked)"
-      />
-      <span>预览参考板时自动固定右侧栏</span>
-    </label>
-
-    <label class="setting-toggle">
-      <input
-        :checked="thumbnailCacheEnabled"
-        type="checkbox"
-        @change="handlers.setThumbnailCacheEnabled(($event.target as HTMLInputElement).checked)"
-      />
-      <span>启用缩略图缓存（WebP 768）</span>
-    </label>
-
-    <div class="settings__thumbnail-actions">
-      <button
-        class="secondary-button"
-        type="button"
-        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
-        @click="handlers.startThumbnailGeneration()"
-      >
-        开始生成缩略图
-      </button>
-      <button
-        class="secondary-button"
-        type="button"
-        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning || isThumbnailGenerationPaused"
-        @click="handlers.pauseThumbnailGeneration()"
-      >
-        暂停
-      </button>
-      <button
-        class="secondary-button"
-        type="button"
-        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning || !isThumbnailGenerationPaused"
-        @click="handlers.resumeThumbnailGeneration()"
-      >
-        继续
-      </button>
-      <button
-        class="danger-button"
-        type="button"
-        :disabled="!thumbnailCacheEnabled || !isThumbnailGenerationRunning"
-        @click="handlers.stopThumbnailGeneration()"
-      >
-        停止
-      </button>
-      <button
-        class="secondary-button"
-        type="button"
-        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
-        @click="handlers.rebuildThumbnailCache()"
-      >
-        重建缩略图缓存
-      </button>
-      <button
-        class="danger-button"
-        type="button"
-        :disabled="!thumbnailCacheEnabled || isThumbnailGenerationRunning"
-        @click="handlers.clearThumbnailCache()"
-      >
-        清空缩略图缓存
-      </button>
-    </div>
-
-    <div v-if="thumbnailProgressText" class="settings__progress-group">
-      <p class="settings__progress">{{ thumbnailProgressText }}</p>
-      <div
-        class="settings__progressbar"
-        role="progressbar"
-        :aria-valuenow="thumbnailProgressPercent"
-        aria-valuemin="0"
-        aria-valuemax="100"
-      >
-        <div class="settings__progressbar-fill" :style="{ width: `${thumbnailProgressPercent}%` }" />
-      </div>
-    </div>
-    <div v-if="thumbnailRecentErrors.length > 0" class="settings__scan-errors">
-      <p class="settings__scan-errors-title">缩略图最近错误</p>
-      <ul>
-        <li v-for="(entry, index) in thumbnailRecentErrors" :key="`thumb-${index}-${entry}`">{{ entry }}</li>
-      </ul>
-    </div>
-
-    <label class="setting-toggle">
-      <input
-        :checked="autoScanOnStartup"
-        type="checkbox"
-        @change="handlers.setAutoScanOnStartup(($event.target as HTMLInputElement).checked)"
-      />
-      <span>启动时自动扫描</span>
-    </label>
-
     <div class="settings__thumbnail-actions">
       <button
         class="secondary-button"
@@ -331,50 +375,6 @@ defineProps<{
       <p class="settings__scan-errors-title">最近扫描错误</p>
       <ul>
         <li v-for="(entry, index) in scanRecentErrors" :key="`${index}-${entry}`">{{ entry }}</li>
-      </ul>
-    </div>
-
-    <div class="settings__thumbnail-actions">
-      <button
-        class="secondary-button"
-        type="button"
-        :disabled="isNaturalLanguageScanRunning"
-        @click="handlers.startNaturalLanguageScan()"
-      >
-        {{ isNaturalLanguageScanRunning ? '自然语言扫描中…' : '开始自然语言扫描' }}
-      </button>
-      <button
-        class="secondary-button"
-        type="button"
-        :disabled="!isNaturalLanguageScanRunning || isNaturalLanguageScanPaused"
-        @click="handlers.pauseNaturalLanguageScan()"
-      >
-        暂停
-      </button>
-      <button
-        class="secondary-button"
-        type="button"
-        :disabled="!isNaturalLanguageScanRunning || !isNaturalLanguageScanPaused"
-        @click="handlers.resumeNaturalLanguageScan()"
-      >
-        继续
-      </button>
-      <button
-        class="danger-button"
-        type="button"
-        :disabled="!isNaturalLanguageScanRunning"
-        @click="handlers.stopNaturalLanguageScan()"
-      >
-        停止
-      </button>
-    </div>
-    <p v-if="naturalLanguageScanProgressText" class="settings__progress">{{ naturalLanguageScanProgressText }}</p>
-    <div v-if="naturalLanguageScanRecentErrors.length > 0" class="settings__scan-errors">
-      <p class="settings__scan-errors-title">最近自然语言扫描错误</p>
-      <ul>
-        <li v-for="(entry, index) in naturalLanguageScanRecentErrors" :key="`nl-${index}-${entry}`">
-          {{ entry }}
-        </li>
       </ul>
     </div>
 

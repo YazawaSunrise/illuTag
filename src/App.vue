@@ -1670,6 +1670,7 @@ function formatError(error: unknown) {
       class="workspace"
       :class="{
         'is-titlebar-pinned': isTitlebarPinned,
+        'is-settings-view': isSettingsView,
         'is-reference-preview-active': isReferencePreviewActive && rightSidebarPinned,
         'is-right-sidebar-fixed': rightSidebarPinned,
       }"
