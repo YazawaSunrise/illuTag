@@ -55,10 +55,6 @@ const isAddingFolder = ref(false)
 const statusText = ref('还没有添加图库文件夹')
 const errorText = ref('')
 const folderPathInput = ref('')
-const clipTestImagePathInput = ref('')
-const clipTestTextsInput = ref('二次元插画\n黑发女孩\n城市夜景')
-const clipTestResultText = ref('')
-const clipTestRunning = ref(false)
 const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
 const isTitlebarHovered = ref(false)
@@ -797,24 +793,6 @@ async function pickFolder() {
   }
 }
 
-async function pickClipTestImage() {
-  errorText.value = ''
-  const selected = await open({
-    directory: false,
-    multiple: false,
-    title: '选择检索测试图片',
-    filters: [
-      {
-        name: 'Images',
-        extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'ico'],
-      },
-    ],
-  })
-  if (typeof selected === 'string') {
-    clipTestImagePathInput.value = selected
-  }
-}
-
 async function pickExternalImageSearchFilePath() {
   const selected = await open({
     directory: false,
@@ -828,43 +806,6 @@ async function pickExternalImageSearchFilePath() {
     ],
   })
   return typeof selected === 'string' ? selected : null
-}
-
-async function runClipSearchSmokeTest() {
-  errorText.value = ''
-  clipTestResultText.value = ''
-
-  const imagePath = clipTestImagePathInput.value.trim()
-  if (!imagePath) {
-    errorText.value = '请先选择一张测试图片'
-    return
-  }
-
-  const texts = clipTestTextsInput.value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0)
-  if (texts.length === 0) {
-    errorText.value = '请至少输入一条候选文本（每行一条）'
-    return
-  }
-
-  clipTestRunning.value = true
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const result = await invoke<unknown>('test_chinese_clip_onnx_search_command', {
-      imagePath,
-      texts,
-      topK: Math.min(10, texts.length),
-      modelDir: null,
-      provider: 'cpu',
-    })
-    clipTestResultText.value = JSON.stringify(result, null, 2)
-  } catch (error) {
-    errorText.value = formatError(error)
-  } finally {
-    clipTestRunning.value = false
-  }
 }
 
 async function addFolder() {
@@ -1438,14 +1379,6 @@ const settingsViewHandlers = {
   setFolderPathInput(value: string) {
     folderPathInput.value = value
   },
-  pickClipTestImage,
-  runClipSearchSmokeTest,
-  setClipTestImagePathInput(value: string) {
-    clipTestImagePathInput.value = value
-  },
-  setClipTestTextsInput(value: string) {
-    clipTestTextsInput.value = value
-  },
   removeFolder,
 }
 
@@ -1753,10 +1686,6 @@ function formatError(error: unknown) {
         :natural-language-scan-progress-text="naturalLanguageScanProgressText"
         :natural-language-scan-recent-errors="naturalLanguageScanRecentErrors"
         :theme-mode="themeMode"
-        :clip-test-image-path-input="clipTestImagePathInput"
-        :clip-test-texts-input="clipTestTextsInput"
-        :clip-test-result-text="clipTestResultText"
-        :clip-test-running="clipTestRunning"
         :folder-path-input="folderPathInput"
         :is-picking-folder="isPickingFolder"
         :is-adding-folder="isAddingFolder"

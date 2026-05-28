@@ -32,10 +32,6 @@ defineProps<{
   naturalLanguageScanProgressText: string
   naturalLanguageScanRecentErrors: string[]
   themeMode: ThemeMode
-  clipTestImagePathInput: string
-  clipTestTextsInput: string
-  clipTestResultText: string
-  clipTestRunning: boolean
   folderPathInput: string
   isPickingFolder: boolean
   isAddingFolder: boolean
@@ -319,37 +315,6 @@ defineProps<{
         </li>
       </ul>
     </div>
-
-    <section class="settings__clip-test">
-      <h3>Chinese-CLIP 临时检索测试</h3>
-      <p>手动选择一张图片，输入候选文本（每行一条），点击测试查看相似度排序。</p>
-      <div class="settings__clip-test-row">
-        <input
-          :value="clipTestImagePathInput"
-          class="folder-input"
-          type="text"
-          placeholder="测试图片路径"
-          autocomplete="off"
-          @input="handlers.setClipTestImagePathInput(($event.target as HTMLInputElement).value)"
-        />
-        <button class="secondary-button" type="button" :disabled="clipTestRunning" @click="handlers.pickClipTestImage()">
-          选择图片
-        </button>
-      </div>
-      <textarea
-        :value="clipTestTextsInput"
-        class="settings__clip-test-textarea"
-        rows="4"
-        placeholder="每行一条候选文本"
-        @input="handlers.setClipTestTextsInput(($event.target as HTMLTextAreaElement).value)"
-      />
-      <div class="settings__clip-test-actions">
-        <button class="secondary-button" type="button" :disabled="clipTestRunning" @click="handlers.runClipSearchSmokeTest()">
-          {{ clipTestRunning ? '测试中...' : '运行临时检索测试' }}
-        </button>
-      </div>
-      <pre v-if="clipTestResultText" class="settings__clip-test-result">{{ clipTestResultText }}</pre>
-    </section>
 
     <form class="folder-form" @submit.prevent="handlers.addFolder()">
       <input

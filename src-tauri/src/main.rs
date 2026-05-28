@@ -40,7 +40,6 @@ use illutag_core::library::{
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
-    test_chinese_clip_onnx_search,
     AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
@@ -115,17 +114,6 @@ fn test_wd_swinv2_tagger_command(
         model_dir,
         &state,
     )
-}
-
-#[tauri::command]
-fn test_chinese_clip_onnx_search_command(
-    image_path: String,
-    texts: Vec<String>,
-    top_k: Option<usize>,
-    model_dir: Option<String>,
-    provider: Option<String>,
-) -> Result<serde_json::Value, String> {
-    test_chinese_clip_onnx_search(image_path, texts, top_k, model_dir, provider)
 }
 
 #[tauri::command]
@@ -663,7 +651,6 @@ fn main() {
             read_image_bytes_command,
             copy_image_to_system_clipboard_command,
             test_wd_swinv2_tagger_command,
-            test_chinese_clip_onnx_search_command,
             start_scan_all_folders_with_tagging_command,
             background_scan_status_command,
             background_scan_progress_command,

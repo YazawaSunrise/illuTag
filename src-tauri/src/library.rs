@@ -19,7 +19,7 @@ use std::{
         mpsc::{self, TrySendError},
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
 
@@ -802,81 +802,6 @@ pub fn test_wd_swinv2_tagger(
     result.general_threshold = general_threshold;
     result.character_threshold = character_threshold;
     Ok(result)
-}
-
-pub fn test_chinese_clip_onnx_search(
-    image_path: String,
-    texts: Vec<String>,
-    top_k: Option<usize>,
-    model_dir: Option<String>,
-    provider: Option<String>,
-) -> Result<serde_json::Value, String> {
-    if image_path.trim().is_empty() {
-        return Err("Image path is empty".to_string());
-    }
-    if !Path::new(&image_path).is_file() {
-        return Err(format!("Image not found: {image_path}"));
-    }
-
-    let mut candidates = Vec::<String>::new();
-    for item in texts {
-        let trimmed = item.trim();
-        if !trimmed.is_empty() {
-            candidates.push(trimmed.to_string());
-        }
-    }
-    if candidates.is_empty() {
-        return Err("Please provide at least one candidate text".to_string());
-    }
-
-    let model_root = resolve_chinese_clip_model_dir(model_dir.as_deref())?;
-    let script_path = resolve_chinese_clip_smoke_script_path()?;
-    let top_k = top_k.unwrap_or(5).max(1).min(200);
-    let provider = provider.unwrap_or_else(|| "cpu".to_string());
-
-    let mut command = Command::new("python");
-    command
-        .arg("-X")
-        .arg("utf8")
-        .arg(&script_path)
-        .arg("--model-dir")
-        .arg(&model_root)
-        .arg("--image")
-        .arg(&image_path)
-        .arg("--top-k")
-        .arg(top_k.to_string())
-        .arg("--provider")
-        .arg(provider);
-    command.env("PYTHONUTF8", "1");
-    command.env("PYTHONIOENCODING", "utf-8");
-    for text in &candidates {
-        command.arg("--text").arg(text);
-    }
-
-    let output = command.output().map_err(|error| {
-        format!(
-            "Failed to start Chinese-CLIP smoke test script: {error}. Ensure Python and dependencies are installed."
-        )
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if stderr.is_empty() {
-            "unknown error".to_string()
-        } else {
-            stderr
-        };
-        return Err(format!(
-            "Chinese-CLIP smoke test failed: {detail}. If dependency missing, run: pip install onnxruntime numpy pillow"
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err("Chinese-CLIP smoke test returned empty output".to_string());
-    }
-
-    serde_json::from_str(&stdout).map_err(|error| format!("Failed to parse Chinese-CLIP output: {error}"))
 }
 
 pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, String> {
@@ -1821,12 +1746,6 @@ pub fn search_gallery_image_ids_by_natural_language(
     Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
 }
 
-fn count_non_empty_candidate_ids(candidate_image_ids: Option<&Vec<String>>) -> usize {
-    candidate_image_ids
-        .map(|ids| ids.iter().filter(|id| !id.trim().is_empty()).count())
-        .unwrap_or(0)
-}
-
 pub fn search_gallery_image_ids_by_external_image(
     image_path: Option<String>,
     image_url: Option<String>,
@@ -1837,14 +1756,11 @@ pub fn search_gallery_image_ids_by_external_image(
     limit: Option<usize>,
     state: &AppState,
 ) -> Result<Vec<String>, String> {
-    let total_started_at = Instant::now();
-    let payload_started_at = Instant::now();
     let mode = search_type
         .as_deref()
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "default".to_string());
-    let candidate_count = count_non_empty_candidate_ids(candidate_image_ids.as_ref());
 
     let query_path = image_path
         .as_deref()
@@ -1882,12 +1798,6 @@ pub fn search_gallery_image_ids_by_external_image(
         temp_query_path = Some(temp_path.clone());
         temp_path.to_string_lossy().to_string()
     };
-    eprintln!(
-        "[image-search-prof] mode={} candidates={} payload_prepare_ms={}",
-        mode,
-        candidate_count,
-        payload_started_at.elapsed().as_millis()
-    );
 
     let result = (|| -> Result<Vec<String>, String> {
         if mode == "color" {
@@ -1907,17 +1817,8 @@ pub fn search_gallery_image_ids_by_external_image(
             );
         }
 
-        let mode_started_at = Instant::now();
-        let cache_preloaded = state
-            .clip_vector_cache
-            .lock()
-            .map_err(|_| "Clip vector cache state is locked".to_string())?
-            .is_some();
-        let ensure_started_at = Instant::now();
         ensure_clip_vector_cache_loaded(state)?;
-        let ensure_cache_ms = ensure_started_at.elapsed().as_millis();
 
-        let query_embedding_started_at = Instant::now();
         let model_root = resolve_chinese_clip_model_dir(None)?;
         let script_path = resolve_chinese_clip_image_service_script_path()?;
         let mut service_guard = state
@@ -1933,16 +1834,13 @@ pub fn search_gallery_image_ids_by_external_image(
         if query_embedding.is_empty() {
             return Err("External image embedding is empty".to_string());
         }
-        let query_embedding_ms = query_embedding_started_at.elapsed().as_millis();
 
-        let filter_started_at = Instant::now();
         let candidate_filter = candidate_image_ids.map(|list| {
             list.into_iter()
                 .map(|id| id.trim().to_string())
                 .filter(|id| !id.is_empty())
                 .collect::<HashSet<_>>()
         });
-        let filter_ms = filter_started_at.elapsed().as_millis();
         if matches!(candidate_filter, Some(ref set) if set.is_empty()) {
             return Ok(Vec::new());
         }
@@ -1963,26 +1861,9 @@ pub fn search_gallery_image_ids_by_external_image(
         if cache.dimension != query_embedding.len() {
             return Ok(Vec::new());
         }
-        let cache_vectors = cache.vectors.len();
-        eprintln!(
-            "[image-search-prof] mode=default candidates={} cache_vectors={} cache_preloaded={}",
-            candidate_count,
-            cache_vectors,
-            cache_preloaded
-        );
-        eprintln!(
-            "[image-search-prof] mode=default ensure_cache_ms={}",
-            ensure_cache_ms
-        );
-        eprintln!(
-            "[image-search-prof] mode=default query_signature_ms={}",
-            query_embedding_ms
-        );
-        eprintln!("[image-search-prof] mode=default filter_ms={}", filter_ms);
 
         let top_k = limit.unwrap_or(NATURAL_LANGUAGE_SEARCH_DEFAULT_TOP_K).max(1);
         let mut heap = BinaryHeap::<NaturalLanguageSearchHeapEntry>::new();
-        let score_started_at = Instant::now();
         for (image_id, vector) in &cache.vectors {
             if let Some(filter) = &candidate_filter {
                 if !filter.contains(image_id) {
@@ -2004,9 +1885,7 @@ pub fn search_gallery_image_ids_by_external_image(
                 let _ = heap.pop();
             }
         }
-        let score_ms = score_started_at.elapsed().as_millis();
 
-        let sort_started_at = Instant::now();
         let mut ranked = Vec::<NaturalLanguageSearchHeapEntry>::with_capacity(heap.len());
         while let Some(entry) = heap.pop() {
             ranked.push(entry);
@@ -2017,22 +1896,12 @@ pub fn search_gallery_image_ids_by_external_image(
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| a.image_id.cmp(&b.image_id))
         });
-        let sort_ms = sort_started_at.elapsed().as_millis();
-        let total_ms = mode_started_at.elapsed().as_millis();
-        eprintln!("[image-search-prof] mode=default score_ms={}", score_ms);
-        eprintln!("[image-search-prof] mode=default sort_ms={}", sort_ms);
-        eprintln!("[image-search-prof] mode=default total_ms={}", total_ms);
         Ok(ranked.into_iter().map(|entry| entry.image_id).collect())
     })();
 
     if let Some(path) = temp_query_path {
         let _ = fs::remove_file(path);
     }
-    eprintln!(
-        "[image-search-prof] mode={} total_ms={}",
-        mode,
-        total_started_at.elapsed().as_millis()
-    );
     result
 }
 
@@ -5673,18 +5542,7 @@ fn generate_color_signatures_once(
 ) -> Result<i64, String> {
     set_color_signature_progress_phase(progress, "collecting");
     let conn = open_database(database_path)?;
-    let existing_before_cleanup: i64 = conn
-        .query_row("SELECT COUNT(*) FROM image_color_signatures", [], |row| row.get(0))
-        .map_err(|error| format!("Failed to count existing color signatures: {error}"))?;
-    eprintln!(
-        "[color-signature] existing records before cleanup: {}",
-        existing_before_cleanup
-    );
-    let removed_incompatible = clear_incompatible_color_signature_records(&conn)?;
-    eprintln!(
-        "[color-signature] removed incompatible records: {}",
-        removed_incompatible
-    );
+    clear_incompatible_color_signature_records(&conn)?;
     let candidates = load_color_signature_generation_candidates(&conn)?;
     set_color_signature_progress_total(progress, candidates.len() as i64);
     set_color_signature_progress_phase(progress, "generating");
@@ -5793,14 +5651,6 @@ fn generate_color_signatures_once(
     if color_signature_stop_requested(stop_requested) {
         set_color_signature_progress_phase(progress, "idle");
     }
-    eprintln!(
-        "[color-signature] pass done: generated={}, skipped={}, failed={}, processed={}, total_candidates={}",
-        generated,
-        skipped,
-        failed,
-        processed,
-        candidates.len()
-    );
     Ok(generated)
 }
 
@@ -7792,40 +7642,6 @@ fn resolve_chinese_clip_model_dir(explicit_dir: Option<&str>) -> Result<PathBuf,
     }
 
     Err("Cannot find Chinese-CLIP ONNX model directory (expected model/chinese-clip-vit-base-patch16/onnx)".to_string())
-}
-
-fn resolve_chinese_clip_smoke_script_path() -> Result<PathBuf, String> {
-    let mut candidates = Vec::<PathBuf>::new();
-    if let Ok(cwd) = env::current_dir() {
-        candidates.push(
-            cwd.join("src-tauri")
-                .join("scripts")
-                .join("chinese_clip_onnx_smoke_test.py"),
-        );
-        candidates.push(cwd.join("scripts").join("chinese_clip_onnx_smoke_test.py"));
-    }
-    if let Ok(exe_path) = env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            candidates.push(exe_dir.join("scripts").join("chinese_clip_onnx_smoke_test.py"));
-            candidates.push(exe_dir.join("..").join("scripts").join("chinese_clip_onnx_smoke_test.py"));
-            candidates.push(
-                exe_dir
-                    .join("..")
-                    .join("..")
-                    .join("src-tauri")
-                    .join("scripts")
-                    .join("chinese_clip_onnx_smoke_test.py"),
-            );
-        }
-    }
-
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    Err("Cannot find chinese_clip_onnx_smoke_test.py under src-tauri/scripts".to_string())
 }
 
 fn resolve_chinese_clip_image_service_script_path() -> Result<PathBuf, String> {
