@@ -41,6 +41,7 @@ const props = defineProps<{
   isLoading: boolean
   showUnclassifiedToggle: boolean
   isUnclassifiedOnly: boolean
+  favoriteImageIds: string[]
   layoutItems: GalleryLayoutItem[]
   totalHeight: number
   contentWidth: number
@@ -817,11 +818,13 @@ function onSearchWheel(event: WheelEvent) {
     <SegmentedMasonry
       v-else
       :items="layoutItems"
+      :favorite-image-ids="favoriteImageIds"
       :total-height="totalHeight"
       :content-width="contentWidth"
       :active-drag-image-id="dragState?.imageId ?? null"
       @image-pointer-down="handlers.startImagePress"
       @image-pointer-up="handlers.clearImagePress"
+      @image-favorite-toggle="handlers.toggleGalleryImageFavorite"
       @image-click="handlers.openGalleryImageDetail"
       @image-context-menu="handlers.openGalleryImageMenu"
     />

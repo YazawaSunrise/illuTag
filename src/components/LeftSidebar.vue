@@ -24,7 +24,7 @@ defineProps<{
   visible: boolean
   sidebarPinned: boolean
   viewMode: ViewMode
-  activeUserFolderId: number | 'all' | 'random' | 'trash'
+  activeUserFolderId: number | 'all' | 'random' | 'favorites' | 'trash'
   folderTree: FolderTreeItem[]
   folderDragOverId: number | null
   draggedFolderId: number | null
@@ -53,7 +53,7 @@ defineProps<{
           <span>illuTag</span>
         </div>
         <button
-          v-if="!sidebarPinned"
+          v-if="false"
           class="sidebar__toggle"
           type="button"
           aria-label="隐藏侧边栏"
@@ -82,6 +82,15 @@ defineProps<{
           @click="handlers.showRandomImages()"
         >
           随机
+        </button>
+
+        <button
+          class="sidebar__nav-button"
+          type="button"
+          :class="{ 'is-active': viewMode === 'gallery' && activeUserFolderId === 'favorites' }"
+          @click="handlers.showFavoriteImages()"
+        >
+          我喜爱的
         </button>
 
         <button

@@ -29,7 +29,7 @@ type LibraryStoreLike = {
 type UseGallerySearchOptions<TLibraryStore extends LibraryStoreLike> = {
   library: Ref<TLibraryStore>
   folderScopedImages: Ref<GalleryImage[]>
-  activeUserFolderId: Ref<number | 'all' | 'random' | 'trash'>
+  activeUserFolderId: Ref<number | 'all' | 'random' | 'favorites' | 'trash'>
   randomGalleryVisitSerial: Ref<number>
   lastImageDragEndedAt: Ref<number>
   formatError: (error: unknown) => string

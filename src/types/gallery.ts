@@ -12,6 +12,7 @@ export type GalleryImage = {
   folderId: number
   missing: boolean
   trashed: boolean
+  isFavorite: boolean
   source: string
 }
 

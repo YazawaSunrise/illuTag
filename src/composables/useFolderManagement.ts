@@ -63,7 +63,7 @@ const defaultFolderDragDelayMs = 160
 export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   options: UseFolderManagementOptions<TLibraryStore>,
 ) {
-  const activeUserFolderId = ref<number | 'all' | 'random' | 'trash'>('all')
+  const activeUserFolderId = ref<number | 'all' | 'random' | 'favorites' | 'trash'>('all')
   const randomGalleryVisitSerial = ref(0)
   const unclassifiedOnlyParentFolderId = ref<number | null>(null)
   const newFolderName = ref('')
@@ -111,6 +111,9 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       return galleryImages.filter((image) => image.trashed)
     }
     const activeImages = galleryImages.filter((image) => !image.trashed)
+    if (activeUserFolderId.value === 'favorites') {
+      return activeImages.filter((image) => image.isFavorite)
+    }
     if (activeUserFolderId.value === 'all' || activeUserFolderId.value === 'random') return activeImages
 
     const scopeFolderIds = collectDescendantFolderIds(activeUserFolderId.value)
@@ -286,6 +289,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       if (
         activeUserFolderId.value !== 'all' &&
         activeUserFolderId.value !== 'random' &&
+        activeUserFolderId.value !== 'favorites' &&
         activeUserFolderId.value !== 'trash' &&
         !options.library.value.userFolders.some((item) => item.id === activeUserFolderId.value)
       ) {
@@ -374,6 +378,13 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'random'
     randomGalleryVisitSerial.value += 1
+    unclassifiedOnlyParentFolderId.value = null
+    options.activeReferenceBoardId.value = null
+  }
+
+  function showFavoriteImages() {
+    options.viewMode.value = 'gallery'
+    activeUserFolderId.value = 'favorites'
     unclassifiedOnlyParentFolderId.value = null
     options.activeReferenceBoardId.value = null
   }
@@ -653,6 +664,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     closeFolderContextMenu,
     showAllImages,
     showRandomImages,
+    showFavoriteImages,
     showTrashImages,
     onUserFolderRowClick,
     toggleFolderUnclassifiedOnly,

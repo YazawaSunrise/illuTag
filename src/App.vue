@@ -238,6 +238,7 @@ const {
   closeFolderContextMenu,
   showAllImages,
   showRandomImages,
+  showFavoriteImages,
   showTrashImages,
   onUserFolderRowClick,
   toggleFolderUnclassifiedOnly,
@@ -446,6 +447,10 @@ const {
     imageDetailContextMenu.value = null
   },
 })
+
+const favoriteVisibleImageIds = computed(() =>
+  visibleImages.value.filter((image) => image.isFavorite).map((image) => image.id),
+)
 
 const {
   renderedLayoutItems,
@@ -1379,6 +1384,18 @@ async function restoreGalleryImageFromTrash(imageId: string) {
   }
 }
 
+async function toggleGalleryImageFavorite(imageId: string, favorite: boolean) {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    library.value = await invoke<LibraryStore>('toggle_image_favorite_command', {
+      imageId,
+      favorite,
+    })
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
 async function removeGalleryImageFromFolder(imageId: string) {
   if (typeof activeUserFolderId.value !== 'number') return
   try {
@@ -1475,6 +1492,7 @@ const leftSidebarHandlers = {
   closeByToggle: closeSidebarByToggle,
   showAllImages,
   showRandomImages,
+  showFavoriteImages,
   showTrashImages,
   openFolderSectionMenu,
   openFolderMenu,
@@ -1597,6 +1615,7 @@ const galleryViewHandlers = {
   toggleActiveFolderUnclassifiedOnly,
   startImagePress,
   clearImagePress,
+  toggleGalleryImageFavorite,
   openGalleryImageDetail,
   openGalleryImageMenu,
 }
@@ -1633,9 +1652,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-function galleryScrollScopeKeyOf(folderId: number | 'all' | 'random' | 'trash') {
+function galleryScrollScopeKeyOf(folderId: number | 'all' | 'random' | 'favorites' | 'trash') {
   if (folderId === 'all') return 'all'
   if (folderId === 'random') return 'random'
+  if (folderId === 'favorites') return 'favorites'
   if (folderId === 'trash') return 'trash'
   return `folder:${folderId}`
 }
@@ -1829,6 +1849,7 @@ function formatError(error: unknown) {
         :is-loading="isLoading"
         :show-unclassified-toggle="showGalleryUnclassifiedToggle"
         :is-unclassified-only="isGalleryUnclassifiedOnly"
+        :favorite-image-ids="favoriteVisibleImageIds"
         :layout-items="renderedLayoutItems"
         :total-height="totalHeight"
         :content-width="masonryContentWidth"
@@ -1962,7 +1983,11 @@ function formatError(error: unknown) {
       @contextmenu.prevent
     >
       <button
-        v-if="activeUserFolderId === 'all' || activeUserFolderId === 'random'"
+        v-if="
+          activeUserFolderId === 'all' ||
+          activeUserFolderId === 'random' ||
+          activeUserFolderId === 'favorites'
+        "
         class="is-danger"
         type="button"
         @click="removeGalleryImageFromIndex(galleryImageContextMenu.imageId)"

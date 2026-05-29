@@ -151,6 +151,7 @@ pub struct GalleryImage {
     pub folder_id: i64,
     pub missing: bool,
     pub trashed: bool,
+    pub is_favorite: bool,
     pub source: String,
 }
 
@@ -922,6 +923,29 @@ pub fn restore_image_from_trash(image_id: String, state: &AppState) -> Result<Li
     let store = load_store(&conn)?;
     *library = Some(store.clone());
     invalidate_all_similarity_caches(state);
+    Ok(store)
+}
+
+pub fn toggle_image_favorite(
+    image_id: String,
+    favorite: bool,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+    conn.execute(
+        "UPDATE images SET is_favorite = ?1 WHERE id = ?2 AND source = 'library'",
+        params![if favorite { 1 } else { 0 }, image_id],
+    )
+    .map_err(|error| format!("Failed to update image favorite state: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
     Ok(store)
 }
 
@@ -4311,6 +4335,7 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
           folder_id INTEGER NOT NULL,
           missing INTEGER NOT NULL DEFAULT 0,
           trashed INTEGER NOT NULL DEFAULT 0,
+          is_favorite INTEGER NOT NULL DEFAULT 0,
           content_hash TEXT,
           source TEXT NOT NULL DEFAULT 'library',
           FOREIGN KEY(folder_id) REFERENCES folders(id) ON DELETE CASCADE
@@ -4638,6 +4663,13 @@ fn ensure_library_columns(conn: &Connection) -> Result<(), String> {
             [],
         )
         .map_err(|error| format!("Failed to upgrade images.trashed column: {error}"))?;
+    }
+    if !table_has_column(conn, "images", "is_favorite")? {
+        conn.execute(
+            "ALTER TABLE images ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|error| format!("Failed to upgrade images.is_favorite column: {error}"))?;
     }
     Ok(())
 }
@@ -4986,7 +5018,7 @@ fn load_images(conn: &Connection) -> Result<Vec<GalleryImage>, String> {
             "
             SELECT
               i.id, i.path, t.thumb_path, i.file_name, i.ext, i.width, i.height, i.file_size, i.modified_at,
-              i.imported_at, i.folder_id, i.missing, i.trashed, i.source
+              i.imported_at, i.folder_id, i.missing, i.trashed, i.is_favorite, i.source
             FROM images i
             LEFT JOIN image_thumbnails t ON t.image_id = i.id
             ORDER BY modified_at DESC, path ASC
@@ -5010,7 +5042,8 @@ fn load_images(conn: &Connection) -> Result<Vec<GalleryImage>, String> {
                 folder_id: row.get(10)?,
                 missing: row.get::<_, i64>(11)? != 0,
                 trashed: row.get::<_, i64>(12)? != 0,
-                source: row.get(13)?,
+                is_favorite: row.get::<_, i64>(13)? != 0,
+                source: row.get(14)?,
             })
         })
         .map_err(|error| format!("读取图片索引失败：{error}"))?
@@ -5241,7 +5274,7 @@ fn load_image_record(conn: &Connection, image_id: &str) -> Result<GalleryImage, 
         "
         SELECT
           i.id, i.path, t.thumb_path, i.file_name, i.ext, i.width, i.height, i.file_size, i.modified_at,
-          i.imported_at, i.folder_id, i.missing, i.trashed, i.source
+          i.imported_at, i.folder_id, i.missing, i.trashed, i.is_favorite, i.source
         FROM images i
         LEFT JOIN image_thumbnails t ON t.image_id = i.id
         WHERE i.id = ?1
@@ -5262,7 +5295,8 @@ fn load_image_record(conn: &Connection, image_id: &str) -> Result<GalleryImage, 
                 folder_id: row.get(10)?,
                 missing: row.get::<_, i64>(11)? != 0,
                 trashed: row.get::<_, i64>(12)? != 0,
-                source: row.get(13)?,
+                is_favorite: row.get::<_, i64>(13)? != 0,
+                source: row.get(14)?,
             })
         },
     )

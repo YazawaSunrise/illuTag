@@ -43,6 +43,7 @@ use illutag_core::library::{
     move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
     restore_image_from_trash,
+    toggle_image_favorite,
     restore_reference_board_item,
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
@@ -88,6 +89,15 @@ fn restore_image_from_trash_command(
     state: State<AppState>,
 ) -> Result<LibraryStore, String> {
     restore_image_from_trash(image_id, &state)
+}
+
+#[tauri::command]
+fn toggle_image_favorite_command(
+    image_id: String,
+    favorite: bool,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    toggle_image_favorite(image_id, favorite, &state)
 }
 
 #[tauri::command]
@@ -700,6 +710,7 @@ fn main() {
             remove_gallery_folder_command,
             remove_image_from_index_command,
             restore_image_from_trash_command,
+            toggle_image_favorite_command,
             read_image_bytes_command,
             copy_image_to_system_clipboard_command,
             test_wd_swinv2_tagger_command,
