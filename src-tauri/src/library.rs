@@ -1120,7 +1120,7 @@ pub fn test_wd_swinv2_tagger(
     Ok(result)
 }
 
-pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, String> {
+fn start_scan_all_folders_worker(state: &AppState, with_tagging: bool) -> Result<bool, String> {
     let mut running = state
         .background_scan_running
         .lock()
@@ -1173,6 +1173,7 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
                 &background_scan_progress,
                 &background_scan_pause_requested_flag,
                 &background_scan_stop_requested_flag,
+                with_tagging,
             ) {
                 Ok(scan_result) => {
                     if let Ok(mut cache) = library_cache.lock() {
@@ -1181,17 +1182,19 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
                     clear_optional_cache(&clip_vector_cache);
                     clear_optional_cache(&atmosphere_signature_cache);
                     clear_optional_cache(&color_signature_cache);
-                    if let Err(error) = tag_images_with_wd_model(
-                        &database_path,
-                        &scan_result.tag_queue_image_ids,
-                        &background_scan_progress,
-                        &background_scan_pause_requested_flag,
-                        &background_scan_stop_requested_flag,
-                        &wd_tagger_service,
-                    ) {
-                        set_scan_progress_error(&background_scan_progress, &error);
-                        push_scan_progress_recent_error(&background_scan_progress, &error);
-                        eprintln!("[wd-tag] {error}");
+                    if with_tagging {
+                        if let Err(error) = tag_images_with_wd_model(
+                            &database_path,
+                            &scan_result.tag_queue_image_ids,
+                            &background_scan_progress,
+                            &background_scan_pause_requested_flag,
+                            &background_scan_stop_requested_flag,
+                            &wd_tagger_service,
+                        ) {
+                            set_scan_progress_error(&background_scan_progress, &error);
+                            push_scan_progress_recent_error(&background_scan_progress, &error);
+                            eprintln!("[wd-tag] {error}");
+                        }
                     }
                 }
                 Err(error) => {
@@ -1256,6 +1259,14 @@ pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, Str
     });
 
     Ok(true)
+}
+
+pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, String> {
+    start_scan_all_folders_worker(state, true)
+}
+
+pub fn start_scan_all_folders_collect_only(state: &AppState) -> Result<bool, String> {
+    start_scan_all_folders_worker(state, false)
 }
 
 pub fn background_scan_status(state: &AppState) -> Result<BackgroundScanStatus, String> {
@@ -6193,6 +6204,7 @@ fn scan_all_folders_and_collect_new_images(
     progress: &Arc<Mutex<BackgroundScanProgress>>,
     pause_requested: &Arc<Mutex<bool>>,
     stop_requested: &Arc<Mutex<bool>>,
+    collect_tag_queue: bool,
 ) -> Result<ScanCollectResult, String> {
     let conn = open_database(database_path)?;
     let scanned_at = now_ms();
@@ -6282,6 +6294,13 @@ fn scan_all_folders_and_collect_new_images(
     }
 
     if background_scan_stop_requested(stop_requested) {
+        return Ok(ScanCollectResult {
+            tag_queue_image_ids: Vec::new(),
+        });
+    }
+
+    if !collect_tag_queue {
+        set_scan_progress_queued_images(progress, 0);
         return Ok(ScanCollectResult {
             tag_queue_image_ids: Vec::new(),
         });

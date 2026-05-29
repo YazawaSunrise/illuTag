@@ -63,6 +63,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
   const isBackgroundScanPaused = ref(false)
   const scanProgressText = ref('')
   const scanRecentErrors = ref<string[]>([])
+  const lastBackgroundScanProgress = ref<BackgroundScanProgress | null>(null)
   const isNaturalLanguageScanRunning = ref(false)
   const isNaturalLanguageScanPaused = ref(false)
   const naturalLanguageScanProgressText = ref('')
@@ -98,8 +99,29 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
         scanProgressText.value = '扫描任务已在后台运行，已排队下一轮扫描'
       }
       await refreshBackgroundScanStatus()
+      return started
     } catch (error) {
       options.setErrorText(options.formatError(error))
+      return false
+    }
+  }
+
+  async function startScanAllFoldersCollectOnly() {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const started = await invoke<boolean>('start_scan_all_folders_collect_only_command')
+      if (started) {
+        isBackgroundScanRunning.value = true
+        isBackgroundScanPaused.value = false
+        scanProgressText.value = 'Scan task started'
+      } else {
+        scanProgressText.value = 'Scan task already running; queued next round'
+      }
+      await refreshBackgroundScanStatus()
+      return started
+    } catch (error) {
+      options.setErrorText(options.formatError(error))
+      return false
     }
   }
 
@@ -198,6 +220,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
       isBackgroundScanRunning.value = Boolean(status.running)
 
       const progress = await invoke<BackgroundScanProgress>('background_scan_progress_command')
+      lastBackgroundScanProgress.value = progress
       isBackgroundScanRunning.value = Boolean(progress.running)
       isBackgroundScanPaused.value = Boolean(progress.paused)
       scanProgressText.value = buildScanProgressText(progress)
@@ -333,10 +356,9 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
     scanProgressPollTimer.value = null
   }
 
-  function startAutoScanIfEnabled() {
-    if (autoScanOnStartup.value) {
-      void startScanAllFolders()
-    }
+  async function startAutoScanIfEnabled() {
+    if (!autoScanOnStartup.value) return false
+    return await startScanAllFoldersCollectOnly()
   }
 
   function buildNaturalLanguageScanProgressText(progress: NaturalLanguageScanProgress) {
@@ -405,6 +427,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
     isBackgroundScanPaused,
     scanProgressText,
     scanRecentErrors,
+    lastBackgroundScanProgress,
     isNaturalLanguageScanRunning,
     isNaturalLanguageScanPaused,
     naturalLanguageScanProgressText,
@@ -412,6 +435,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
     initAutoScanOnStartupFromStorage,
     setAutoScanOnStartup,
     startScanAllFolders,
+    startScanAllFoldersCollectOnly,
     pauseScanAllFolders,
     resumeScanAllFolders,
     stopScanAllFolders,
@@ -421,6 +445,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
     stopNaturalLanguageScan,
     startStartupCleanup,
     refreshBackgroundScanStatus,
+    refreshNaturalLanguageScanStatus,
     startBackgroundScanPolling,
     stopBackgroundScanPolling,
     startAutoScanIfEnabled,

@@ -50,7 +50,7 @@ use illutag_core::library::{
     restore_reference_board_item,
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
-    bring_reference_board_item_to_front, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
+    bring_reference_board_item_to_front, start_scan_all_folders_collect_only, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
     AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
@@ -139,6 +139,11 @@ fn test_wd_swinv2_tagger_command(
 #[tauri::command]
 fn start_scan_all_folders_with_tagging_command(state: State<AppState>) -> Result<bool, String> {
     start_scan_all_folders_with_tagging(&state)
+}
+
+#[tauri::command]
+fn start_scan_all_folders_collect_only_command(state: State<AppState>) -> Result<bool, String> {
+    start_scan_all_folders_collect_only(&state)
 }
 
 #[tauri::command]
@@ -828,6 +833,7 @@ fn main() {
             copy_image_to_system_clipboard_command,
             test_wd_swinv2_tagger_command,
             start_scan_all_folders_with_tagging_command,
+            start_scan_all_folders_collect_only_command,
             background_scan_status_command,
             background_scan_progress_command,
             pause_background_scan_command,

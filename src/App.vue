@@ -587,6 +587,7 @@ const {
   isBackgroundScanPaused,
   scanProgressText,
   scanRecentErrors,
+  lastBackgroundScanProgress,
   isNaturalLanguageScanRunning,
   isNaturalLanguageScanPaused,
   naturalLanguageScanProgressText,
@@ -603,6 +604,7 @@ const {
   stopNaturalLanguageScan,
   startStartupCleanup,
   refreshBackgroundScanStatus,
+  refreshNaturalLanguageScanStatus,
   startBackgroundScanPolling,
   stopBackgroundScanPolling,
   startAutoScanIfEnabled,
@@ -627,6 +629,7 @@ const {
   stopThumbnailGeneration,
   clearThumbnailCache,
   rebuildThumbnailCache,
+  refreshThumbnailGenerationStatus,
   startThumbnailGenerationPolling,
   stopThumbnailGenerationPolling,
 } = useThumbnailGeneration({
@@ -648,6 +651,7 @@ const {
   resumeAtmosphereGeneration,
   stopAtmosphereGeneration,
   rebuildAtmosphereSignatureCache,
+  refreshAtmosphereGenerationStatus,
   startAtmosphereGenerationPolling,
   stopAtmosphereGenerationPolling,
 } = useAtmosphereGeneration({
@@ -669,6 +673,7 @@ const {
   resumeColorSignatureGeneration,
   stopColorSignatureGeneration,
   rebuildColorSignatureCache,
+  refreshColorSignatureGenerationStatus,
   startColorSignatureGenerationPolling,
   stopColorSignatureGenerationPolling,
 } = useColorSignatureGeneration({
@@ -809,11 +814,56 @@ onMounted(async () => {
   startAtmosphereGenerationPolling()
   startColorSignatureGenerationPolling()
   void startStartupCleanup()
-  startAutoScanIfEnabled()
-  if (thumbnailCacheEnabled.value && !isBackgroundScanRunning.value) {
+  void runStartupAutoScanPipeline()
+  if (thumbnailCacheEnabled.value && !isBackgroundScanRunning.value && !autoScanOnStartup.value) {
     void startThumbnailGeneration()
   }
 })
+
+const startupAutoScanPipelineRunning = ref(false)
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+async function waitUntilIdle(refresh: () => Promise<void>, isRunning: () => boolean) {
+  await refresh()
+  while (isRunning()) {
+    await sleep(700)
+    await refresh()
+  }
+}
+
+async function runStartupAutoScanPipeline() {
+  if (startupAutoScanPipelineRunning.value) return
+  startupAutoScanPipelineRunning.value = true
+  try {
+    const started = await startAutoScanIfEnabled()
+    if (!started) return
+
+    await waitUntilIdle(refreshBackgroundScanStatus, () => isBackgroundScanRunning.value)
+    const newImages = Math.max(0, Number(lastBackgroundScanProgress.value?.newImages ?? 0))
+    if (newImages <= 0) return
+
+    await startThumbnailGeneration()
+    await waitUntilIdle(refreshThumbnailGenerationStatus, () => isThumbnailGenerationRunning.value)
+
+    await startNaturalLanguageScan()
+    await waitUntilIdle(refreshNaturalLanguageScanStatus, () => isNaturalLanguageScanRunning.value)
+
+    await startAtmosphereGeneration()
+    await waitUntilIdle(refreshAtmosphereGenerationStatus, () => isAtmosphereGenerationRunning.value)
+
+    await startColorSignatureGeneration()
+    await waitUntilIdle(refreshColorSignatureGenerationStatus, () => isColorSignatureGenerationRunning.value)
+
+    await startScanAllFolders()
+  } finally {
+    startupAutoScanPipelineRunning.value = false
+  }
+}
 
 onUnmounted(() => {
   stopBackgroundScanPolling()
@@ -936,12 +986,14 @@ watch(
 
 watch(thumbnailCacheEnabled, (enabled) => {
   if (!enabled) return
+  if (startupAutoScanPipelineRunning.value) return
   if (isBackgroundScanRunning.value) return
   void startThumbnailGeneration()
 })
 
 watch(isBackgroundScanRunning, (running, wasRunning) => {
   if (!wasRunning || running) return
+  if (startupAutoScanPipelineRunning.value) return
   if (!thumbnailCacheEnabled.value) return
   void startThumbnailGeneration()
 })
