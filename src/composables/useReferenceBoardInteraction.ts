@@ -84,12 +84,19 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
   const referenceBoardCanvasMenu = ref<ReferenceBoardCanvasMenu>(null)
   const lastBoardPointerWorld = ref<{ x: number; y: number; at: number } | null>(null)
   const suppressNextCanvasContextMenu = ref(false)
+  const suppressNextItemContextMenu = ref(false)
 
   function closeReferenceBoardCanvasMenu() {
     referenceBoardCanvasMenu.value = null
   }
 
   function openReferenceBoardItemMenu(itemId: number, event: MouseEvent) {
+    if (suppressNextItemContextMenu.value) {
+      suppressNextItemContextMenu.value = false
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     event.preventDefault()
     event.stopPropagation()
     options.closeImageDetailContextMenu()
@@ -210,9 +217,18 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
   function startBoardPan(event: PointerEvent) {
     if (event.button !== 2) return
     const target = event.target as HTMLElement | null
-    if (target?.closest('.reference-board-card')) return
+    const cardElement = target?.closest<HTMLElement>('.reference-board-card') ?? null
+    const cardItemIdRaw = cardElement?.dataset.referenceBoardItemId
+    const cardItemId = cardItemIdRaw ? Number(cardItemIdRaw) : null
+    const isSelectedCard =
+      cardItemId !== null &&
+      Number.isFinite(cardItemId) &&
+      selectedReferenceBoardItemId.value === cardItemId
+    if (cardElement && !isSelectedCard) return
     closeReferenceBoardCanvasMenu()
-    selectedReferenceBoardItemId.value = null
+    if (!isSelectedCard) {
+      selectedReferenceBoardItemId.value = null
+    }
 
     boardInteraction.value = {
       itemId: -1,
@@ -298,6 +314,7 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
     if (interaction.mode === 'pan') {
       if (interaction.panMoved) {
         suppressNextCanvasContextMenu.value = true
+        suppressNextItemContextMenu.value = true
       }
       return
     }

@@ -761,6 +761,10 @@ watch([visibleImages, sidebarPinned], async () => {
 watch(
   [viewMode, activeUserFolderId],
   async ([nextViewMode, nextFolderId], [prevViewMode, prevFolderId]) => {
+    if (nextViewMode === 'gallery' && prevFolderId !== nextFolderId) {
+      clearAllSearchInputs()
+    }
+
     const prevScopeKey = galleryScrollScopeKeyOf(prevFolderId)
     const nextScopeKey = galleryScrollScopeKeyOf(nextFolderId)
 
@@ -1613,6 +1617,7 @@ const galleryViewHandlers = {
   pasteExternalImageSearchFromClipboard,
   openSettings,
   toggleActiveFolderUnclassifiedOnly,
+  scrollGalleryToCurrentTop,
   startImagePress,
   clearImagePress,
   toggleGalleryImageFavorite,
@@ -1658,6 +1663,10 @@ function galleryScrollScopeKeyOf(folderId: number | 'all' | 'random' | 'favorite
   if (folderId === 'favorites') return 'favorites'
   if (folderId === 'trash') return 'trash'
   return `folder:${folderId}`
+}
+
+function scrollGalleryToCurrentTop() {
+  scrollGalleryToTop(galleryScrollScopeKeyOf(activeUserFolderId.value))
 }
 
 function isPointInsideExternalImageSearchDropZone(x: number, y: number) {

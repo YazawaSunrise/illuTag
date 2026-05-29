@@ -1,5 +1,6 @@
 ﻿<script setup lang="ts">
 import { LoadingOne, Search } from '@icon-park/vue-next'
+import CircleDoubleUp from '@icon-park/vue-next/es/icons/CircleDoubleUp'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import SegmentedMasonry from './SegmentedMasonry.vue'
 import type { GalleryLayoutItem } from '../types/gallery'
@@ -796,6 +797,24 @@ function onSearchWheel(event: WheelEvent) {
             </button>
           </div>
         </div>
+      </div>
+      <div class="gallery-search__back-top-row">
+        <button
+          type="button"
+          class="gallery-search__back-top"
+          aria-label="返回顶部"
+          @click="handlers.scrollGalleryToCurrentTop()"
+        >
+          <CircleDoubleUp
+            class="gallery-search__back-top-icon"
+            theme="outline"
+            :size="18"
+            :stroke-width="3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            :fill="['currentColor']"
+          />
+        </button>
       </div>
     </div>
 

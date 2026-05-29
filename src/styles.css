@@ -1579,6 +1579,53 @@ button {
   padding-right: 34px;
 }
 
+.gallery-search__back-top-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding-top: 2px;
+}
+
+.gallery-search__back-top {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  color: #dce6f1;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 90ms ease;
+}
+
+.gallery-search__back-top:hover {
+  background: rgb(220 230 241 / 0.12);
+}
+
+.gallery-search__back-top:active {
+  transform: translateY(1px) scale(0.96);
+}
+
+.gallery-search__back-top-icon {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+}
+
+.gallery-search__back-top-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
 .gallery-search__submit-icon {
   display: block;
 }
@@ -2957,6 +3004,15 @@ button {
 }
 
 .app-shell.theme-light .gallery-search__submit:hover:not(:disabled) {
+  background: rgb(15 23 42 / 0.08);
+}
+
+.app-shell.theme-light .gallery-search__back-top {
+  color: #1f2937;
+  background: transparent;
+}
+
+.app-shell.theme-light .gallery-search__back-top:hover {
   background: rgb(15 23 42 / 0.08);
 }
 
