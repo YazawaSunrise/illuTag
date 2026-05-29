@@ -25,6 +25,7 @@ defineProps<{
   sidebarPinned: boolean
   viewMode: ViewMode
   activeUserFolderId: number | 'all' | 'random' | 'favorites' | 'trash'
+  tagManagerOpen: boolean
   folderTree: FolderTreeItem[]
   folderDragOverId: number | null
   draggedFolderId: number | null
@@ -101,6 +102,18 @@ defineProps<{
         >
           回收站
         </button>
+
+        <div class="sidebar-tag-manager">
+          <div class="sidebar-tag-manager__title">标签</div>
+          <button
+            class="sidebar__nav-button"
+            type="button"
+            :class="{ 'is-active': tagManagerOpen }"
+            @click="handlers.openTagManager()"
+          >
+            标签管理
+          </button>
+        </div>
 
         <div class="folder-section" @contextmenu="handlers.openFolderSectionMenu($event)">
           <div class="folder-section__title">文件夹</div>

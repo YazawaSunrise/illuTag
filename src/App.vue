@@ -24,6 +24,7 @@ import { useReferenceBoardInteraction } from './composables/useReferenceBoardInt
 import { useReferenceBoardClipboard } from './composables/useReferenceBoardClipboard'
 import { useReferenceBoardHistory } from './composables/useReferenceBoardHistory'
 import { useReferenceBoardViewport } from './composables/useReferenceBoardViewport'
+import { useTagManagement } from './composables/useTagManagement'
 import type { GalleryImage, GalleryLayoutItem } from './types/gallery'
 import type {
   BoardWorldBounds,
@@ -398,6 +399,8 @@ const {
   activeImageDetailId,
   activeImageDetail,
   groupedImageTags,
+  activeImageCustomTags,
+  activeImageSupplementTags,
   setSearchPointerInside,
   setSearchFocus,
   setSearchViewportState,
@@ -425,6 +428,12 @@ const {
   selectExternalImageSearchFile,
   pasteExternalImageSearchFromClipboard,
   searchBySingleTag,
+  addImageUserCustomTag,
+  removeImageUserCustomTag,
+  addImageUserSupplementTag,
+  removeImageUserSupplementTag,
+  suggestKnownAutoTagsForInput,
+  findExactKnownAutoTag,
   closeImageDetail,
   openGalleryImageDetail,
 } = useGallerySearch<LibraryStore>({
@@ -448,9 +457,81 @@ const {
   },
 })
 
+type KnownAutoTagSuggestion = {
+  tagEn: string
+  tagZh?: string | null
+  imageCount: number
+  isUserCustom?: boolean
+}
+
+const imageDetailCustomTagDraft = ref('')
+const imageDetailCustomTagEditorOpen = ref(false)
+const imageDetailCustomTagConflict = ref<{
+  input: string
+  tagEn: string
+  tagZh: string | null
+} | null>(null)
+const imageDetailCustomTagExpandedFolderIds = ref<number[]>([])
+const imageDetailCustomTagSelectedExistingTags = ref<string[]>([])
+const imageDetailSupplementPickerOpen = ref(false)
+const imageDetailSupplementQuery = ref('')
+const imageDetailSupplementSuggestions = ref<KnownAutoTagSuggestion[]>([])
+const imageDetailSupplementSuggestLoading = ref(false)
+const imageDetailSupplementSuggestTimer = ref<number | null>(null)
+const imageDetailSupplementSuggestRequestToken = ref(0)
+
 const favoriteVisibleImageIds = computed(() =>
   visibleImages.value.filter((image) => image.isFavorite).map((image) => image.id),
 )
+
+const activeTagManagerFolder = computed(() =>
+  tagManagerFolders.value.find((folder) => folder.id === activeTagManagerFolderId.value) ?? null,
+)
+
+const tagManagerDraggingTagText = ref<string | null>(null)
+const tagManagerDragOverFolderId = ref<number | null>(null)
+
+const activeTagManagerFolderNameForHint = computed(() => activeTagManagerFolder.value?.name ?? '')
+
+const activeTagManagerFolderTags = computed(() => activeTagManagerFolder.value?.tags ?? [])
+
+function startTagManagerTagDrag(tagText: string, event: DragEvent) {
+  const normalized = tagText.trim()
+  if (!normalized) return
+  tagManagerDraggingTagText.value = normalized
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', normalized)
+  }
+}
+
+function endTagManagerTagDrag() {
+  tagManagerDraggingTagText.value = null
+  tagManagerDragOverFolderId.value = null
+}
+
+function onTagManagerFolderDragOver(folderId: number, event: DragEvent) {
+  if (!tagManagerDraggingTagText.value) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  tagManagerDragOverFolderId.value = folderId
+}
+
+function onTagManagerFolderDragLeave(folderId: number) {
+  if (tagManagerDragOverFolderId.value === folderId) {
+    tagManagerDragOverFolderId.value = null
+  }
+}
+
+async function onTagManagerFolderDrop(folderId: number, event: DragEvent) {
+  event.preventDefault()
+  const text = event.dataTransfer?.getData('text/plain')?.trim() ?? ''
+  const tagText = text || tagManagerDraggingTagText.value || ''
+  tagManagerDragOverFolderId.value = null
+  if (!tagText) return
+  await assignTagToFolder(tagText, folderId)
+  tagManagerDraggingTagText.value = null
+}
 
 const {
   renderedLayoutItems,
@@ -643,6 +724,29 @@ const {
   formatError,
 })
 
+const {
+  tagManagerOpen,
+  isTagManagerLoading,
+  tagManagerFolders,
+  activeTagManagerFolderId,
+  tagManagerUnclassifiedTags,
+  newTagManagerFolderName,
+  newTagManagerTagText,
+  openTagManager,
+  closeTagManager,
+  reloadTagManagementState,
+  createTagManagerFolder,
+  createTagManagerTag,
+  assignTagToFolder,
+  unassignTag,
+  deleteTagManagerFolder,
+} = useTagManagement({
+  formatError,
+  setErrorText(value) {
+    errorText.value = value
+  },
+})
+
 onMounted(async () => {
   initAppSettingsFromStorage()
   expandedReferenceBoardFolderIds.value = readStoredIdSet(expandedReferenceBoardFolderIdsStorageKey)
@@ -701,6 +805,7 @@ onUnmounted(() => {
   window.removeEventListener('click', closeGalleryImageContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
   closeImportLibraryFolderPicker(null)
+  resetImageDetailUserTagEditor()
 })
 
 watch(sidebarPinned, async (value) => {
@@ -714,6 +819,21 @@ watch(rightSidebarPinned, async (value) => {
   await nextTick()
   updateViewportSize()
 })
+
+watch(
+  () => activeImageDetailId.value,
+  () => {
+    resetImageDetailUserTagEditor()
+  },
+)
+
+watch(
+  () => imageDetailSupplementQuery.value,
+  () => {
+    if (!imageDetailSupplementPickerOpen.value) return
+    queueImageDetailSupplementSuggestions()
+  },
+)
 
 watch(expandedReferenceBoardFolderIds, (value) => {
   localStorage.setItem(
@@ -917,6 +1037,8 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     cancelReferenceBoardRename()
     closeReferenceBoardCanvasMenu()
     closeImportLibraryFolderPicker(null)
+    closeTagManager()
+    endTagManagerTagDrag()
     closeImageDetail()
     closeGalleryImageContextMenu()
     cancelImageDrag()
@@ -1308,8 +1430,14 @@ function closeRightSidebarByHover() {
 }
 
 function openSettings() {
+  closeTagManager()
   viewMode.value = 'settings'
   sidebarHoverOpen.value = false
+}
+
+function openTagManagerPanel() {
+  viewMode.value = 'gallery'
+  void openTagManager()
 }
 
 function hideSearchPanel() {
@@ -1427,6 +1555,202 @@ async function copyGalleryImageToClipboard(imageId: string) {
   }
 }
 
+function resetImageDetailUserTagEditor() {
+  imageDetailCustomTagDraft.value = ''
+  imageDetailCustomTagEditorOpen.value = false
+  imageDetailCustomTagConflict.value = null
+  imageDetailCustomTagExpandedFolderIds.value = []
+  imageDetailCustomTagSelectedExistingTags.value = []
+  imageDetailSupplementPickerOpen.value = false
+  imageDetailSupplementQuery.value = ''
+  imageDetailSupplementSuggestions.value = []
+  imageDetailSupplementSuggestLoading.value = false
+  if (imageDetailSupplementSuggestTimer.value !== null) {
+    window.clearTimeout(imageDetailSupplementSuggestTimer.value)
+    imageDetailSupplementSuggestTimer.value = null
+  }
+}
+
+function openImageDetailCustomTagEditor() {
+  imageDetailCustomTagEditorOpen.value = true
+  imageDetailCustomTagDraft.value = ''
+  imageDetailCustomTagExpandedFolderIds.value = []
+  imageDetailCustomTagSelectedExistingTags.value = []
+  void reloadTagManagementState()
+}
+
+function cancelImageDetailCustomTagEditor() {
+  imageDetailCustomTagEditorOpen.value = false
+  imageDetailCustomTagDraft.value = ''
+  imageDetailCustomTagExpandedFolderIds.value = []
+  imageDetailCustomTagSelectedExistingTags.value = []
+}
+
+function isImageDetailTagFolderExpanded(folderId: number) {
+  return imageDetailCustomTagExpandedFolderIds.value.includes(folderId)
+}
+
+function toggleImageDetailTagFolderExpanded(folderId: number) {
+  if (isImageDetailTagFolderExpanded(folderId)) {
+    imageDetailCustomTagExpandedFolderIds.value = imageDetailCustomTagExpandedFolderIds.value.filter((id) => id !== folderId)
+    return
+  }
+  imageDetailCustomTagExpandedFolderIds.value = [...imageDetailCustomTagExpandedFolderIds.value, folderId]
+}
+
+function isImageDetailExistingTagSelected(tagText: string) {
+  return imageDetailCustomTagSelectedExistingTags.value.includes(tagText)
+}
+
+function toggleImageDetailExistingTag(tagText: string) {
+  const normalized = tagText.trim()
+  if (!normalized) return
+  if (isImageDetailExistingTagSelected(normalized)) {
+    imageDetailCustomTagSelectedExistingTags.value = imageDetailCustomTagSelectedExistingTags.value.filter((tag) => tag !== normalized)
+    return
+  }
+  imageDetailCustomTagSelectedExistingTags.value = [...imageDetailCustomTagSelectedExistingTags.value, normalized]
+}
+
+async function submitImageDetailCustomTagDraft() {
+  const imageId = activeImageDetailId.value
+  if (!imageId) return
+  const input = imageDetailCustomTagDraft.value.trim()
+  const selectedTags = Array.from(
+    new Set(imageDetailCustomTagSelectedExistingTags.value.map((tag) => tag.trim()).filter((tag) => tag.length > 0)),
+  )
+  if (!input && selectedTags.length === 0) return
+  try {
+    const matched = input ? await findExactKnownAutoTag(input) : null
+    if (input && matched) {
+      imageDetailCustomTagConflict.value = {
+        input,
+        tagEn: matched.tagEn,
+        tagZh: matched.tagZh ?? null,
+      }
+      imageDetailCustomTagEditorOpen.value = false
+      return
+    }
+    const existingCustomTagSet = new Set(activeImageCustomTags.value.map((tag) => tag.tagText))
+    if (input && !existingCustomTagSet.has(input)) {
+      await addImageUserCustomTag(imageId, input)
+      existingCustomTagSet.add(input)
+    }
+    for (const selectedTag of selectedTags) {
+      if (existingCustomTagSet.has(selectedTag)) continue
+      await addImageUserCustomTag(imageId, selectedTag)
+      existingCustomTagSet.add(selectedTag)
+    }
+    imageDetailCustomTagDraft.value = ''
+    imageDetailCustomTagEditorOpen.value = false
+    imageDetailCustomTagSelectedExistingTags.value = []
+    imageDetailCustomTagExpandedFolderIds.value = []
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function resolveImageDetailCustomTagConflict(mode: 'supplement' | 'custom') {
+  const conflict = imageDetailCustomTagConflict.value
+  const imageId = activeImageDetailId.value
+  if (!conflict || !imageId) return
+  try {
+    if (mode === 'supplement') {
+      await addImageUserSupplementTag(imageId, conflict.tagEn, conflict.tagZh)
+    } else {
+      const suffix = '（自定义）'
+      const targetTag = conflict.input.endsWith(suffix) ? conflict.input : `${conflict.input}${suffix}`
+      await addImageUserCustomTag(imageId, targetTag)
+    }
+    imageDetailCustomTagConflict.value = null
+    imageDetailCustomTagDraft.value = ''
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function removeImageDetailCustomTag(tagText: string) {
+  const imageId = activeImageDetailId.value
+  if (!imageId) return
+  try {
+    await removeImageUserCustomTag(imageId, tagText)
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function removeImageDetailSupplementTag(tagEn: string) {
+  const imageId = activeImageDetailId.value
+  if (!imageId) return
+  try {
+    await removeImageUserSupplementTag(imageId, tagEn)
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function refreshImageDetailSupplementSuggestionsNow() {
+  if (!imageDetailSupplementPickerOpen.value) return
+  const keyword = imageDetailSupplementQuery.value.trim()
+  if (!keyword) {
+    imageDetailSupplementSuggestions.value = []
+    imageDetailSupplementSuggestLoading.value = false
+    return
+  }
+  const token = imageDetailSupplementSuggestRequestToken.value + 1
+  imageDetailSupplementSuggestRequestToken.value = token
+  imageDetailSupplementSuggestLoading.value = true
+  try {
+    const rows = await suggestKnownAutoTagsForInput(keyword, 60)
+    if (token !== imageDetailSupplementSuggestRequestToken.value) return
+    const existing = new Set(activeImageSupplementTags.value.map((item) => item.tagEn))
+    imageDetailSupplementSuggestions.value = rows.filter((item) => !existing.has(item.tagEn))
+  } catch (error) {
+    if (token !== imageDetailSupplementSuggestRequestToken.value) return
+    imageDetailSupplementSuggestions.value = []
+    errorText.value = formatError(error)
+  } finally {
+    if (token === imageDetailSupplementSuggestRequestToken.value) {
+      imageDetailSupplementSuggestLoading.value = false
+    }
+  }
+}
+
+function queueImageDetailSupplementSuggestions() {
+  if (imageDetailSupplementSuggestTimer.value !== null) {
+    window.clearTimeout(imageDetailSupplementSuggestTimer.value)
+    imageDetailSupplementSuggestTimer.value = null
+  }
+  imageDetailSupplementSuggestTimer.value = window.setTimeout(() => {
+    imageDetailSupplementSuggestTimer.value = null
+    void refreshImageDetailSupplementSuggestionsNow()
+  }, 140)
+}
+
+function openImageDetailSupplementPicker() {
+  imageDetailSupplementPickerOpen.value = true
+  imageDetailSupplementQuery.value = ''
+  imageDetailSupplementSuggestions.value = []
+}
+
+function closeImageDetailSupplementPicker() {
+  imageDetailSupplementPickerOpen.value = false
+  imageDetailSupplementQuery.value = ''
+  imageDetailSupplementSuggestions.value = []
+  imageDetailSupplementSuggestLoading.value = false
+}
+
+async function addImageDetailSupplementTag(suggestion: KnownAutoTagSuggestion) {
+  const imageId = activeImageDetailId.value
+  if (!imageId) return
+  try {
+    await addImageUserSupplementTag(imageId, suggestion.tagEn, suggestion.tagZh ?? null)
+    closeImageDetailSupplementPicker()
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
 function searchByTagFromImageDetail(tagEn: string, tagZh?: string | null) {
   searchBySingleTag(tagEn, tagZh ?? null)
   closeImageDetail()
@@ -1498,6 +1822,7 @@ const leftSidebarHandlers = {
   showRandomImages,
   showFavoriteImages,
   showTrashImages,
+  openTagManager: openTagManagerPanel,
   openFolderSectionMenu,
   openFolderMenu,
   startFolderPointer,
@@ -1735,6 +2060,7 @@ function formatError(error: unknown) {
       :sidebar-pinned="sidebarPinnedEffective"
       :view-mode="viewMode"
       :active-user-folder-id="activeUserFolderId"
+      :tag-manager-open="tagManagerOpen"
       :folder-tree="folderTree"
       :folder-drag-over-id="folderDragOverId"
       :dragged-folder-id="draggedFolderId"
@@ -1900,6 +2226,121 @@ function formatError(error: unknown) {
       </article>
     </div>
 
+    <div
+      v-if="tagManagerOpen"
+      class="tag-manager-layer"
+      @click="
+        closeTagManager();
+        endTagManagerTagDrag();
+      "
+    >
+      <article class="tag-manager-modal" @click.stop>
+        <header class="tag-manager-modal__header">
+          <div class="tag-manager-modal__title">标签管理</div>
+          <button
+            class="tag-manager-modal__close"
+            type="button"
+            @click="
+              closeTagManager();
+              endTagManagerTagDrag();
+            "
+          >
+            ×
+          </button>
+        </header>
+        <div class="tag-manager-modal__content">
+          <aside class="tag-manager-modal__folders">
+            <div class="tag-manager-modal__section-title">标签文件夹</div>
+            <div class="tag-manager-modal__folder-list">
+              <button
+                v-for="folder in tagManagerFolders"
+                :key="folder.id"
+                type="button"
+                class="tag-manager-modal__folder-item"
+                :class="{
+                  'is-active': activeTagManagerFolderId === folder.id,
+                  'is-drop-target': tagManagerDragOverFolderId === folder.id,
+                }"
+                @click="activeTagManagerFolderId = folder.id"
+                @dragover="onTagManagerFolderDragOver(folder.id, $event)"
+                @dragleave="onTagManagerFolderDragLeave(folder.id)"
+                @drop="onTagManagerFolderDrop(folder.id, $event)"
+              >
+                <span>{{ folder.name }}</span>
+                <small>{{ folder.tags.length }}</small>
+              </button>
+            </div>
+            <div class="tag-manager-modal__create-row">
+              <input
+                v-model.trim="newTagManagerFolderName"
+                class="tag-manager-modal__create-input"
+                type="text"
+                placeholder="新建标签文件夹"
+                @keydown.enter.prevent="createTagManagerFolder()"
+              />
+              <button type="button" class="secondary-button tag-manager-modal__action" @click="createTagManagerFolder()">
+                新建
+              </button>
+            </div>
+            <button
+              type="button"
+              class="danger-button tag-manager-modal__action"
+              :disabled="activeTagManagerFolderId === null"
+              @click="activeTagManagerFolderId !== null ? deleteTagManagerFolder(activeTagManagerFolderId) : null"
+            >
+              删除当前文件夹
+            </button>
+          </aside>
+          <section class="tag-manager-modal__tags">
+            <div class="tag-manager-modal__section-title">
+              未分类标签
+              <span v-if="activeTagManagerFolderNameForHint">（拖拽到左侧「{{ activeTagManagerFolderNameForHint }}」）</span>
+            </div>
+            <div class="tag-manager-modal__tag-list">
+              <span
+                v-for="tag in tagManagerUnclassifiedTags"
+                :key="`unclassified:${tag}`"
+                class="gallery-search__chip tag-manager-modal__tag-chip"
+                draggable="true"
+                @dragstart="startTagManagerTagDrag(tag, $event)"
+                @dragend="endTagManagerTagDrag()"
+              >
+                <span class="gallery-search__chip-text">{{ tag }}</span>
+              </span>
+            </div>
+            <div class="tag-manager-modal__create-row">
+              <input
+                v-model.trim="newTagManagerTagText"
+                class="tag-manager-modal__create-input"
+                type="text"
+                placeholder="新建标签"
+                @keydown.enter.prevent="createTagManagerTag()"
+              />
+              <button type="button" class="secondary-button tag-manager-modal__action" @click="createTagManagerTag()">
+                新建标签
+              </button>
+            </div>
+            <div class="tag-manager-modal__section-title">当前文件夹标签</div>
+            <div class="tag-manager-modal__tag-list">
+              <span
+                v-for="tag in activeTagManagerFolderTags"
+                :key="`folder-tag:${tag}`"
+                class="gallery-search__chip tag-manager-modal__tag-chip"
+                draggable="true"
+                @dragstart="startTagManagerTagDrag(tag, $event)"
+                @dragend="endTagManagerTagDrag()"
+              >
+                <span class="gallery-search__chip-text">{{ tag }}</span>
+                <button type="button" class="gallery-search__chip-remove" @click.stop="unassignTag(tag)">×</button>
+              </span>
+              <p v-if="activeTagManagerFolderTags.length === 0" class="tag-manager-modal__placeholder">当前文件夹还没有标签</p>
+            </div>
+            <div v-if="isTagManagerLoading" class="tag-manager-modal__placeholder">处理中...</div>
+          </section>
+        </div>
+      </article>
+    </div>
+
     <div v-if="activeImageDetail" class="image-detail-layer" @click="closeImageDetail()">
       <article class="image-detail-modal" @click.stop>
         <button class="image-detail-modal__close" type="button" @click="closeImageDetail()">×</button>
@@ -1936,6 +2377,80 @@ function formatError(error: unknown) {
                       </div>
                     </div>
                   </div>
+                  <section class="image-detail-modal__user-tags-section">
+                    <h4>自定义标签</h4>
+                    <div class="image-detail-modal__user-tags-box">
+                      <div class="image-detail-modal__user-tags-scroll">
+                        <button
+                          v-if="activeImageCustomTags.length === 0"
+                          type="button"
+                          class="image-detail-modal__chip-plus"
+                          @click="openImageDetailCustomTagEditor()"
+                        >
+                          +
+                        </button>
+                        <span
+                          v-for="tag in activeImageCustomTags"
+                          :key="`custom:${tag.tagText}`"
+                          class="gallery-search__chip image-detail-modal__user-chip"
+                        >
+                          <span class="gallery-search__chip-text">{{ tag.tagText }}</span>
+                          <button
+                            type="button"
+                            class="gallery-search__chip-remove"
+                            @click.stop="removeImageDetailCustomTag(tag.tagText)"
+                          >
+                            ×
+                          </button>
+                        </span>
+                        <button
+                          v-if="activeImageCustomTags.length > 0"
+                          type="button"
+                          class="image-detail-modal__chip-plus"
+                          @click="openImageDetailCustomTagEditor()"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+                  <section class="image-detail-modal__user-tags-section">
+                    <h4>补充自动标签</h4>
+                    <div class="image-detail-modal__user-tags-box">
+                      <div class="image-detail-modal__user-tags-scroll">
+                        <button
+                          v-if="activeImageSupplementTags.length === 0"
+                          type="button"
+                          class="image-detail-modal__chip-plus"
+                          @click="openImageDetailSupplementPicker()"
+                        >
+                          +
+                        </button>
+                        <span
+                          v-for="tag in activeImageSupplementTags"
+                          :key="`supplement:${tag.tagEn}`"
+                          class="gallery-search__chip image-detail-modal__user-chip"
+                        >
+                          <span class="gallery-search__chip-text">{{ tag.tagZh || tag.tagEn }}</span>
+                          <button
+                            type="button"
+                            class="gallery-search__chip-remove"
+                            @click.stop="removeImageDetailSupplementTag(tag.tagEn)"
+                          >
+                            ×
+                          </button>
+                        </span>
+                        <button
+                          v-if="activeImageSupplementTags.length > 0"
+                          type="button"
+                          class="image-detail-modal__chip-plus"
+                          @click="openImageDetailSupplementPicker()"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </section>
                   <section class="image-detail-modal__tags">
                     <h4>自动标签</h4>
                     <div v-if="groupedImageTags.length > 0" class="image-detail-modal__tags-scroll">
@@ -1969,6 +2484,151 @@ function formatError(error: unknown) {
               </div>
             </aside>
           </div>
+        </div>
+
+        <div
+          v-if="imageDetailCustomTagEditorOpen"
+          class="image-detail-modal__dialog-layer"
+          @click="cancelImageDetailCustomTagEditor()"
+        >
+          <article class="image-detail-modal__dialog" @click.stop>
+            <h4>添加自定义标签</h4>
+            <input
+              v-model.trim="imageDetailCustomTagDraft"
+              class="image-detail-modal__dialog-input"
+              type="text"
+              placeholder="创建标签"
+              @keydown.enter.prevent="submitImageDetailCustomTagDraft()"
+            />
+            <section class="image-detail-modal__existing-tags-picker">
+              <div class="image-detail-modal__existing-tags-title">从已有的标签中选择</div>
+              <div
+                v-if="tagManagerFolders.length > 0 || tagManagerUnclassifiedTags.length > 0"
+                class="image-detail-modal__existing-folder-list"
+              >
+                <div
+                  v-for="folder in tagManagerFolders"
+                  :key="`detail-custom-folder:${folder.id}`"
+                  class="image-detail-modal__existing-folder"
+                >
+                  <button
+                    type="button"
+                    class="image-detail-modal__existing-folder-toggle"
+                    @click="toggleImageDetailTagFolderExpanded(folder.id)"
+                  >
+                    <span class="image-detail-modal__existing-folder-caret">
+                      {{ isImageDetailTagFolderExpanded(folder.id) ? '▾' : '▸' }}
+                    </span>
+                    <span class="image-detail-modal__existing-folder-name">{{ folder.name }}</span>
+                    <small>{{ folder.tags.length }}</small>
+                  </button>
+                  <div v-if="isImageDetailTagFolderExpanded(folder.id)" class="image-detail-modal__existing-tag-list">
+                    <button
+                      v-for="tagText in folder.tags"
+                      :key="`detail-custom-folder-tag:${folder.id}:${tagText}`"
+                      type="button"
+                      class="gallery-search__chip image-detail-modal__existing-tag-chip"
+                      :class="{ 'is-selected': isImageDetailExistingTagSelected(tagText) }"
+                      @click="toggleImageDetailExistingTag(tagText)"
+                    >
+                      <span class="gallery-search__chip-text">{{ tagText }}</span>
+                    </button>
+                    <p v-if="folder.tags.length === 0" class="image-detail-modal__dialog-empty">该文件夹暂无标签</p>
+                  </div>
+                </div>
+                <div v-if="tagManagerUnclassifiedTags.length > 0" class="image-detail-modal__existing-folder">
+                  <button
+                    type="button"
+                    class="image-detail-modal__existing-folder-toggle"
+                    @click="toggleImageDetailTagFolderExpanded(-1)"
+                  >
+                    <span class="image-detail-modal__existing-folder-caret">
+                      {{ isImageDetailTagFolderExpanded(-1) ? '▾' : '▸' }}
+                    </span>
+                    <span class="image-detail-modal__existing-folder-name">未分类标签</span>
+                    <small>{{ tagManagerUnclassifiedTags.length }}</small>
+                  </button>
+                  <div v-if="isImageDetailTagFolderExpanded(-1)" class="image-detail-modal__existing-tag-list">
+                    <button
+                      v-for="tagText in tagManagerUnclassifiedTags"
+                      :key="`detail-custom-unclassified-tag:${tagText}`"
+                      type="button"
+                      class="gallery-search__chip image-detail-modal__existing-tag-chip"
+                      :class="{ 'is-selected': isImageDetailExistingTagSelected(tagText) }"
+                      @click="toggleImageDetailExistingTag(tagText)"
+                    >
+                      <span class="gallery-search__chip-text">{{ tagText }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <p v-else class="image-detail-modal__dialog-empty">暂无可选标签</p>
+            </section>
+            <div class="image-detail-modal__dialog-actions">
+              <button type="button" class="secondary-button" @click="cancelImageDetailCustomTagEditor()">取消</button>
+              <button type="button" class="primary-button" @click="submitImageDetailCustomTagDraft()">添加</button>
+            </div>
+          </article>
+        </div>
+
+        <div
+          v-if="imageDetailCustomTagConflict"
+          class="image-detail-modal__dialog-layer"
+          @click="imageDetailCustomTagConflict = null"
+        >
+          <article class="image-detail-modal__dialog" @click.stop>
+            <h4>标签已存在</h4>
+            <p class="image-detail-modal__dialog-text">
+              已有此自动标签（{{ imageDetailCustomTagConflict.tagZh || imageDetailCustomTagConflict.tagEn }}），进行补充还是新建用户自定义标签？
+            </p>
+            <div class="image-detail-modal__dialog-actions">
+              <button type="button" class="secondary-button" @click="imageDetailCustomTagConflict = null">取消</button>
+              <button type="button" class="secondary-button" @click="resolveImageDetailCustomTagConflict('supplement')">
+                补充
+              </button>
+              <button type="button" class="primary-button" @click="resolveImageDetailCustomTagConflict('custom')">
+                自定义
+              </button>
+            </div>
+          </article>
+        </div>
+
+        <div
+          v-if="imageDetailSupplementPickerOpen"
+          class="image-detail-modal__dialog-layer"
+          @click="closeImageDetailSupplementPicker()"
+        >
+          <article class="image-detail-modal__dialog image-detail-modal__dialog--wide" @click.stop>
+            <h4>补充自动标签</h4>
+            <input
+              v-model.trim="imageDetailSupplementQuery"
+              class="image-detail-modal__dialog-input"
+              type="text"
+              placeholder="搜索已有自动标签"
+            />
+            <div class="image-detail-modal__dialog-list">
+              <button
+                v-for="item in imageDetailSupplementSuggestions"
+                :key="`supplement-pick:${item.tagEn}`"
+                type="button"
+                class="image-detail-modal__dialog-option"
+                @click="addImageDetailSupplementTag(item)"
+              >
+                <span class="image-detail-modal__dialog-option-main">{{ item.tagZh || item.tagEn }}</span>
+                <span class="image-detail-modal__dialog-option-sub">{{ item.tagZh ? item.tagEn : '' }}</span>
+              </button>
+              <p
+                v-if="!imageDetailSupplementSuggestLoading && imageDetailSupplementQuery && imageDetailSupplementSuggestions.length === 0"
+                class="image-detail-modal__dialog-empty"
+              >
+                未找到可添加的标签
+              </p>
+              <p v-if="imageDetailSupplementSuggestLoading" class="image-detail-modal__dialog-empty">搜索中...</p>
+            </div>
+            <div class="image-detail-modal__dialog-actions">
+              <button type="button" class="secondary-button" @click="closeImageDetailSupplementPicker()">关闭</button>
+            </div>
+          </article>
         </div>
 
         <div

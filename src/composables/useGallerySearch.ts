@@ -5,6 +5,7 @@ type KnownAutoTagSuggestion = {
   tagEn: string
   tagZh?: string | null
   imageCount: number
+  isUserCustom?: boolean
 }
 
 type GallerySearchFilters = {
@@ -20,6 +21,21 @@ type ImageTagRecord = {
   tagZh?: string | null
   confidence: number
   category?: string | null
+}
+
+type ImageUserCustomTag = {
+  tagText: string
+}
+
+type ImageUserSupplementTag = {
+  tagEn: string
+  tagZh?: string | null
+}
+
+type ImageUserTagSummary = {
+  imageId: string
+  customTags: ImageUserCustomTag[]
+  supplementTags: ImageUserSupplementTag[]
 }
 
 type LibraryStoreLike = {
@@ -77,6 +93,8 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
 
   const activeImageDetailId = ref<string | null>(null)
   const activeImageTagRows = ref<ImageTagRecord[]>([])
+  const activeImageCustomTags = ref<ImageUserCustomTag[]>([])
+  const activeImageSupplementTags = ref<ImageUserSupplementTag[]>([])
   const searchResultImageIds = ref<Set<string> | null>(null)
   const naturalLanguageRankedImageIds = ref<string[] | null>(null)
   const searchRequestToken = ref(0)
@@ -657,6 +675,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       const rows = await invoke<Array<Record<string, unknown>>>('suggest_known_auto_tags_command', {
         query: keyword,
         limit: 30,
+        includeUserCustom: true,
       })
       if (token !== searchSuggestRequestToken.value) return
       const selected = new Set(searchZhSelected.value.map((item) => item.tagEn))
@@ -665,6 +684,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
           tagEn: String(item.tagEn ?? item.tag_en ?? ''),
           tagZh: (item.tagZh ?? item.tag_zh ?? null) as string | null,
           imageCount: Number(item.imageCount ?? item.image_count ?? 0),
+          isUserCustom: Boolean(item.isUserCustom ?? item.is_user_custom ?? false),
         }))
         .filter((item) => item.tagEn.length > 0 && !selected.has(item.tagEn))
       searchZhOpen.value = searchZhSuggestions.value.length > 0
@@ -816,9 +836,140 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     }
   }
 
+  function parseImageUserTagSummary(summary: Record<string, unknown>): ImageUserTagSummary {
+    const customTagsSource = summary.customTags ?? summary.custom_tags
+    const supplementTagsSource = summary.supplementTags ?? summary.supplement_tags
+    const customTagsRaw: unknown[] = Array.isArray(customTagsSource) ? customTagsSource : []
+    const supplementTagsRaw: unknown[] = Array.isArray(supplementTagsSource) ? supplementTagsSource : []
+    const customTags = customTagsRaw
+      .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+      .map((item) => ({
+        tagText: String(item.tagText ?? item.tag_text ?? '').trim(),
+      }))
+      .filter((item) => item.tagText.length > 0)
+    const supplementTags = supplementTagsRaw
+      .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+      .map((item) => ({
+        tagEn: String(item.tagEn ?? item.tag_en ?? '').trim(),
+        tagZh: (item.tagZh ?? item.tag_zh ?? null) as string | null,
+      }))
+      .filter((item) => item.tagEn.length > 0)
+    return {
+      imageId: String(summary.imageId ?? summary.image_id ?? activeImageDetailId.value ?? ''),
+      customTags,
+      supplementTags,
+    }
+  }
+
+  function applyImageUserTagSummary(summary: ImageUserTagSummary) {
+    activeImageCustomTags.value = summary.customTags
+    activeImageSupplementTags.value = summary.supplementTags
+  }
+
+  async function refreshImageUserTags(imageId: string) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const summaryRaw = await invoke<Record<string, unknown>>('list_image_user_tags_command', {
+        imageId,
+      })
+      if (activeImageDetailId.value !== imageId) return
+      applyImageUserTagSummary(parseImageUserTagSummary(summaryRaw))
+    } catch {
+      if (activeImageDetailId.value !== imageId) return
+      activeImageCustomTags.value = []
+      activeImageSupplementTags.value = []
+    }
+  }
+
+  async function addImageUserCustomTag(imageId: string, tagText: string) {
+    const normalized = tagText.trim()
+    if (!normalized) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    const summaryRaw = await invoke<Record<string, unknown>>('add_image_user_custom_tag_command', {
+      imageId,
+      tagText: normalized,
+    })
+    if (activeImageDetailId.value !== imageId) return
+    applyImageUserTagSummary(parseImageUserTagSummary(summaryRaw))
+  }
+
+  async function removeImageUserCustomTag(imageId: string, tagText: string) {
+    const normalized = tagText.trim()
+    if (!normalized) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    const summaryRaw = await invoke<Record<string, unknown>>('remove_image_user_custom_tag_command', {
+      imageId,
+      tagText: normalized,
+    })
+    if (activeImageDetailId.value !== imageId) return
+    applyImageUserTagSummary(parseImageUserTagSummary(summaryRaw))
+  }
+
+  async function addImageUserSupplementTag(imageId: string, tagEn: string, tagZh?: string | null) {
+    const normalized = tagEn.trim()
+    if (!normalized) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    const summaryRaw = await invoke<Record<string, unknown>>('add_image_user_supplement_tag_command', {
+      imageId,
+      tagEn: normalized,
+      tagZh: tagZh ?? null,
+    })
+    if (activeImageDetailId.value !== imageId) return
+    applyImageUserTagSummary(parseImageUserTagSummary(summaryRaw))
+  }
+
+  async function removeImageUserSupplementTag(imageId: string, tagEn: string) {
+    const normalized = tagEn.trim()
+    if (!normalized) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    const summaryRaw = await invoke<Record<string, unknown>>('remove_image_user_supplement_tag_command', {
+      imageId,
+      tagEn: normalized,
+    })
+    if (activeImageDetailId.value !== imageId) return
+    applyImageUserTagSummary(parseImageUserTagSummary(summaryRaw))
+  }
+
+  async function suggestKnownAutoTagsForInput(
+    query: string,
+    limit = 30,
+    options?: { includeUserCustom?: boolean },
+  ): Promise<KnownAutoTagSuggestion[]> {
+    const keyword = query.trim()
+    if (!keyword) return []
+    const { invoke } = await import('@tauri-apps/api/core')
+    const rows = await invoke<Array<Record<string, unknown>>>('suggest_known_auto_tags_command', {
+      query: keyword,
+      limit,
+      includeUserCustom: Boolean(options?.includeUserCustom),
+    })
+    return rows
+      .map((item) => ({
+        tagEn: String(item.tagEn ?? item.tag_en ?? ''),
+        tagZh: (item.tagZh ?? item.tag_zh ?? null) as string | null,
+        imageCount: Number(item.imageCount ?? item.image_count ?? 0),
+        isUserCustom: Boolean(item.isUserCustom ?? item.is_user_custom ?? false),
+      }))
+      .filter((item) => item.tagEn.length > 0)
+  }
+
+  async function findExactKnownAutoTag(input: string): Promise<KnownAutoTagSuggestion | null> {
+    const keyword = input.trim()
+    if (!keyword) return null
+    const keywordLower = keyword.toLowerCase()
+    const suggestions = await suggestKnownAutoTagsForInput(keyword, 60)
+    for (const suggestion of suggestions) {
+      if (suggestion.tagEn.toLowerCase() === keywordLower) return suggestion
+      if ((suggestion.tagZh ?? '').trim().toLowerCase() === keywordLower) return suggestion
+    }
+    return null
+  }
+
   function closeImageDetail() {
     activeImageDetailId.value = null
     activeImageTagRows.value = []
+    activeImageCustomTags.value = []
+    activeImageSupplementTags.value = []
     options.onCloseImageDetail?.()
   }
 
@@ -827,6 +978,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     activeImageDetailId.value = item.id
     options.onOpenImageDetail?.()
     void loadImageAutoTags(item.id)
+    void refreshImageUserTags(item.id)
   }
 
   return {
@@ -857,6 +1009,8 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     activeImageDetailId,
     activeImageDetail,
     activeImageTagRows,
+    activeImageCustomTags,
+    activeImageSupplementTags,
     groupedImageTags,
     setSearchPointerInside,
     setSearchFocus,
@@ -882,6 +1036,13 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     selectExternalImageSearchFile,
     pasteExternalImageSearchFromClipboard,
     searchBySingleTag,
+    refreshImageUserTags,
+    addImageUserCustomTag,
+    removeImageUserCustomTag,
+    addImageUserSupplementTag,
+    removeImageUserSupplementTag,
+    suggestKnownAutoTagsForInput,
+    findExactKnownAutoTag,
     closeImageDetail,
     openGalleryImageDetail,
   }

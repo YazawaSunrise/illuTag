@@ -1,0 +1,66 @@
+{
+  "official_alternate_costume": {
+    "error": "",
+    "http_status": 200,
+    "payload": {
+      "body": "[[Alternate costume]]s of official origin, whether it be from the creators themselves, or from second-parties involved in the given copyright. Generally a costume other than the standard one the character appears in.\r\n\r\nThese can often times appear in manga/anime (beach episodes, as one example), video games (whether as unlockables or as skins to be bought in gacha games), and on special events. Figures which can have such costumes include [[Virtual YouTuber]]s.\r\n\r\n[b]Only[/b] use this tag for official costumes of the wearer themselves. If the character is wearing an official costume belonging to another character, use [[alternate costume]] or [[cosplay]] instead as applicable.\r\n\r\n[b]Do not[/b] use this tag with [[alternate costume]], the tags are mutually exclusive.\r\n\r\nh4. Examples\r\n\r\n* !post #9729220\r\n\r\nh4. See also\r\n\r\n* [[official alternate hairstyle]]\r\n** [[official alternate hair length]]",
+      "created_at": "2020-08-15T23:17:19.767-04:00",
+      "id": 115644,
+      "is_deleted": false,
+      "is_locked": false,
+      "other_names": [
+        "セカコス",
+        "新衣装公開",
+        "官方换装"
+      ],
+      "title": "official_alternate_costume",
+      "updated_at": "2026-05-17T15:16:22.674-04:00"
+    },
+    "status": "ok",
+    "url": "https://danbooru.donmai.us/wiki_pages/official_alternate_costume.json"
+  },
+  "rabbit_ears": {
+    "error": "",
+    "http_status": 200,
+    "payload": {
+      "body": "A character with [[rabbit]]-like ears, such as a [[rabbit girl]] or a [[Playboy bunny]].\r\n\r\nIf the character does not usually have rabbit ears, add [[kemonomimi mode]]. If the ears are real, add [[rabbit girl]] or [[rabbit boy]] accordingly. If the ears are fake, like the kind worn by [[Playboy bunny|Playboy bunnies]], add [[fake animal ears]].\r\n\r\nFor characters that are using their hands to form rabbit ears, see [[rabbit pose]]; for characters creating 'rabbit ears' behind another character, see [[bunny ears prank]].\r\n\r\nh4. Examples\r\n\r\n* !post #5999997\r\n* !post #6032984\r\n* !post #9079385: [[Lop rabbit ears]]\r\n* !post #5665419: [[Fake animal ears]]\r\n\r\nh4. See also\r\n\r\n* [[Lop rabbit ears]]\r\n* [[animal ears]]\r\n* [[rabbit tail]]\r\n* [[fake animal ears]] \r\n** [[rabbit ear hairband]] \r\n** [[rabbit ear headphones]]\r\n** [[rabbit hood]]",
+      "created_at": "2012-10-03T07:01:05.105-04:00",
+      "id": 38395,
+      "is_deleted": false,
+      "is_locked": false,
+      "other_names": [
+        "うさぎ耳",
+        "ウサギ耳",
+        "うさみみ",
+        "うさ耳",
+        "兎耳",
+        "兔耳",
+        "ウサミミ",
+        "ウサ耳"
+      ],
+      "title": "rabbit_ears",
+      "updated_at": "2026-01-17T10:48:19.386-05:00"
+    },
+    "status": "ok",
+    "url": "https://danbooru.donmai.us/wiki_pages/rabbit_ears.json"
+  },
+  "striped_clothes": {
+    "error": "",
+    "http_status": 200,
+    "payload": {
+      "body": "A piece of clothing with a striped pattern. Stripes are typically wide, equally-sized bands of alternating colors.\r\n\r\nh4. Examples\r\n\r\n* !post #9461796\r\n* !post #8373673\r\n* !post #8050566\r\n\r\nh4. Related tags\r\n\r\nh6. Topwear\r\n\r\n* [[striped shirt]]\r\n* [[striped dress]]\r\n* [[striped jacket]]\r\n* [[striped hoodie]]\r\n* [[striped kimono]]\r\n* [[striped leotard]]\r\n* [[striped pajamas]]\r\n* [[striped sweater]]\r\n* [[striped vest]]\r\n\r\nh6. Bottomwear\r\n\r\n* [[striped pants]]\r\n* [[striped skirt]]\r\n* [[striped shorts]]\r\n* [[striped bike shorts]]\r\n* [[striped buruma]]\r\n\r\nh6. Underwear and swimwear\r\n\r\n* [[striped bra]]\r\n* [[striped panties]]\r\n* [[striped bikini]]\r\n* [[striped one-piece swimsuit]]\r\n\r\nh6. Legwear\r\n\r\n* [[striped pantyhose]]\r\n* [[striped thighhighs]]\r\n* [[striped socks]]\r\n* [[striped footwear]]\r\n\r\nh6. Accessories\r\n\r\n* [[striped apron]]\r\n* [[striped bowtie]]\r\n* [[striped gloves]]\r\n* [[striped hairband]]\r\n* [[striped headwear]]\r\n* [[striped neckerchief]]\r\n* [[striped necktie]]\r\n* [[striped ribbon]] \r\n* [[striped scarf]]\r\n* [[striped sarong]]\r\n* [[striped scrunchie]]\r\n* [[striped wrist cuffs]]\r\n\r\nh6. Patterns\r\n\r\n* [[vertical-striped clothes]]\r\n* [[diagonal-striped clothes]]\r\n\r\nh4. See also\r\n\r\n* [[pinstripe pattern]]",
+      "created_at": "2024-01-14T11:20:35.092-05:00",
+      "id": 181904,
+      "is_deleted": false,
+      "is_locked": false,
+      "other_names": [
+        "ストライプ",
+        "条纹服饰"
+      ],
+      "title": "striped_clothes",
+      "updated_at": "2026-02-26T14:56:42.030-05:00"
+    },
+    "status": "ok",
+    "url": "https://danbooru.donmai.us/wiki_pages/striped_clothes.json"
+  }
+}

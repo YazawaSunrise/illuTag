@@ -261,6 +261,44 @@ pub struct KnownAutoTagSuggestion {
     pub tag_en: String,
     pub tag_zh: Option<String>,
     pub image_count: i64,
+    pub is_user_custom: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageUserCustomTag {
+    pub tag_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageUserSupplementTag {
+    pub tag_en: String,
+    pub tag_zh: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageUserTagSummary {
+    pub image_id: String,
+    pub custom_tags: Vec<ImageUserCustomTag>,
+    pub supplement_tags: Vec<ImageUserSupplementTag>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserTagFolder {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagManagementState {
+    pub folders: Vec<UserTagFolder>,
+    pub unclassified_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3109,9 +3147,426 @@ pub fn list_image_auto_tags(
     })
 }
 
+fn normalize_tag_text(value: &str) -> String {
+    value.trim().to_string()
+}
+
+fn normalize_optional_tag_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+}
+
+fn upsert_user_custom_tag(conn: &Connection, tag_text: &str) -> Result<(), String> {
+    let normalized = tag_text.trim();
+    if normalized.is_empty() {
+        return Ok(());
+    }
+    let now = now_ms();
+    conn.execute(
+        "
+        INSERT INTO user_custom_tags (tag_text, created_at, updated_at)
+        VALUES (?1, ?2, ?2)
+        ON CONFLICT(tag_text) DO UPDATE SET
+          updated_at = excluded.updated_at
+        ",
+        params![normalized, now],
+    )
+    .map_err(|error| format!("Failed to upsert user custom tag: {error}"))?;
+    Ok(())
+}
+
+fn load_image_user_tag_summary(conn: &Connection, image_id: &str) -> Result<ImageUserTagSummary, String> {
+    let mut custom_stmt = conn
+        .prepare(
+            "
+            SELECT tag_text
+            FROM image_user_custom_tags
+            WHERE image_id = ?1
+            ORDER BY updated_at DESC, tag_text COLLATE NOCASE
+            ",
+        )
+        .map_err(|error| format!("Failed to load custom user tags: {error}"))?;
+    let custom_tags = custom_stmt
+        .query_map(params![image_id], |row| {
+            Ok(ImageUserCustomTag {
+                tag_text: row.get(0)?,
+            })
+        })
+        .map_err(|error| format!("Failed to load custom user tags: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load custom user tags: {error}"))?;
+
+    let mut supplement_stmt = conn
+        .prepare(
+            "
+            SELECT
+              s.tag_en,
+              COALESCE(NULLIF(s.tag_zh, ''), d.tag_zh) AS tag_zh
+            FROM image_user_supplement_tags s
+            LEFT JOIN tag_dictionary d ON d.tag_en = s.tag_en
+            WHERE s.image_id = ?1
+            ORDER BY s.updated_at DESC, s.tag_en COLLATE NOCASE
+            ",
+        )
+        .map_err(|error| format!("Failed to load supplement user tags: {error}"))?;
+    let supplement_tags = supplement_stmt
+        .query_map(params![image_id], |row| {
+            Ok(ImageUserSupplementTag {
+                tag_en: row.get(0)?,
+                tag_zh: row.get(1)?,
+            })
+        })
+        .map_err(|error| format!("Failed to load supplement user tags: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load supplement user tags: {error}"))?;
+
+    Ok(ImageUserTagSummary {
+        image_id: image_id.to_string(),
+        custom_tags,
+        supplement_tags,
+    })
+}
+
+pub fn list_image_user_tags(image_id: String, state: &AppState) -> Result<ImageUserTagSummary, String> {
+    let conn = open_database(&state.database_path)?;
+    load_image_user_tag_summary(&conn, &image_id)
+}
+
+pub fn add_image_user_custom_tag(
+    image_id: String,
+    tag_text: String,
+    state: &AppState,
+) -> Result<ImageUserTagSummary, String> {
+    let normalized = normalize_tag_text(&tag_text);
+    if normalized.is_empty() {
+        return Err("Tag text cannot be empty".to_string());
+    }
+    let conn = open_database(&state.database_path)?;
+    let now = now_ms();
+    conn.execute(
+        "
+        INSERT INTO image_user_custom_tags (
+          image_id, tag_text, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?3)
+        ON CONFLICT(image_id, tag_text) DO UPDATE SET
+          updated_at = excluded.updated_at
+        ",
+        params![image_id, normalized, now],
+    )
+    .map_err(|error| format!("Failed to add custom user tag: {error}"))?;
+    upsert_user_custom_tag(&conn, &normalized)?;
+    load_image_user_tag_summary(&conn, &image_id)
+}
+
+pub fn remove_image_user_custom_tag(
+    image_id: String,
+    tag_text: String,
+    state: &AppState,
+) -> Result<ImageUserTagSummary, String> {
+    let normalized = normalize_tag_text(&tag_text);
+    if normalized.is_empty() {
+        return Err("Tag text cannot be empty".to_string());
+    }
+    let conn = open_database(&state.database_path)?;
+    conn.execute(
+        "DELETE FROM image_user_custom_tags WHERE image_id = ?1 AND tag_text = ?2",
+        params![image_id, normalized],
+    )
+    .map_err(|error| format!("Failed to remove custom user tag: {error}"))?;
+    load_image_user_tag_summary(&conn, &image_id)
+}
+
+pub fn add_image_user_supplement_tag(
+    image_id: String,
+    tag_en: String,
+    tag_zh: Option<String>,
+    state: &AppState,
+) -> Result<ImageUserTagSummary, String> {
+    let normalized_tag_en = normalize_tag_text(&tag_en);
+    if normalized_tag_en.is_empty() {
+        return Err("Tag text cannot be empty".to_string());
+    }
+    let normalized_tag_zh = normalize_optional_tag_text(tag_zh);
+    let conn = open_database(&state.database_path)?;
+    let now = now_ms();
+    conn.execute(
+        "
+        INSERT INTO image_user_supplement_tags (
+          image_id, tag_en, tag_zh, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?4)
+        ON CONFLICT(image_id, tag_en) DO UPDATE SET
+          tag_zh = COALESCE(excluded.tag_zh, image_user_supplement_tags.tag_zh),
+          updated_at = excluded.updated_at
+        ",
+        params![image_id, normalized_tag_en, normalized_tag_zh, now],
+    )
+    .map_err(|error| format!("Failed to add supplement user tag: {error}"))?;
+    load_image_user_tag_summary(&conn, &image_id)
+}
+
+pub fn remove_image_user_supplement_tag(
+    image_id: String,
+    tag_en: String,
+    state: &AppState,
+) -> Result<ImageUserTagSummary, String> {
+    let normalized_tag_en = normalize_tag_text(&tag_en);
+    if normalized_tag_en.is_empty() {
+        return Err("Tag text cannot be empty".to_string());
+    }
+    let conn = open_database(&state.database_path)?;
+    conn.execute(
+        "DELETE FROM image_user_supplement_tags WHERE image_id = ?1 AND tag_en = ?2",
+        params![image_id, normalized_tag_en],
+    )
+    .map_err(|error| format!("Failed to remove supplement user tag: {error}"))?;
+    load_image_user_tag_summary(&conn, &image_id)
+}
+
+fn cleanup_orphan_user_tag_folder_members(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "
+        DELETE FROM user_tag_folder_members
+        WHERE tag_text NOT IN (
+          SELECT tag_text FROM user_custom_tags
+          UNION
+          SELECT DISTINCT tag_text FROM image_user_custom_tags
+        )
+        ",
+        [],
+    )
+    .map_err(|error| format!("Failed to cleanup orphan user tag members: {error}"))?;
+    Ok(())
+}
+
+fn load_tag_management_state(conn: &Connection) -> Result<TagManagementState, String> {
+    cleanup_orphan_user_tag_folder_members(conn)?;
+
+    let mut folder_stmt = conn
+        .prepare(
+            "
+            SELECT id, name, sort_order
+            FROM user_tag_folders
+            ORDER BY sort_order ASC, id ASC
+            ",
+        )
+        .map_err(|error| format!("Failed to prepare user tag folders query: {error}"))?;
+
+    let folder_rows = folder_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })
+        .map_err(|error| format!("Failed to query user tag folders: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to query user tag folders: {error}"))?;
+
+    let mut tag_stmt = conn
+        .prepare(
+            "
+            SELECT m.tag_text
+            FROM user_tag_folder_members m
+            JOIN (
+              SELECT tag_text FROM user_custom_tags
+              UNION
+              SELECT DISTINCT tag_text FROM image_user_custom_tags
+            ) c ON c.tag_text = m.tag_text
+            WHERE m.folder_id = ?1
+            ORDER BY m.tag_text COLLATE NOCASE
+            ",
+        )
+        .map_err(|error| format!("Failed to prepare user tag folder tags query: {error}"))?;
+
+    let mut folders = Vec::<UserTagFolder>::with_capacity(folder_rows.len());
+    for (id, name, sort_order) in folder_rows {
+        let tags = tag_stmt
+            .query_map(params![id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Failed to query user tag folder tags: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to query user tag folder tags: {error}"))?;
+        folders.push(UserTagFolder {
+            id,
+            name,
+            sort_order,
+            tags,
+        });
+    }
+
+    let mut unclassified_stmt = conn
+        .prepare(
+            "
+            SELECT c.tag_text
+            FROM (
+              SELECT tag_text FROM user_custom_tags
+              UNION
+              SELECT DISTINCT tag_text FROM image_user_custom_tags
+            ) c
+            LEFT JOIN user_tag_folder_members m ON m.tag_text = c.tag_text
+            WHERE m.tag_text IS NULL
+            ORDER BY c.tag_text COLLATE NOCASE
+            ",
+        )
+        .map_err(|error| format!("Failed to prepare unclassified user tags query: {error}"))?;
+    let unclassified_tags = unclassified_stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Failed to query unclassified user tags: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to query unclassified user tags: {error}"))?;
+
+    Ok(TagManagementState {
+        folders,
+        unclassified_tags,
+    })
+}
+
+pub fn list_tag_management_state(state: &AppState) -> Result<TagManagementState, String> {
+    let conn = open_database(&state.database_path)?;
+    load_tag_management_state(&conn)
+}
+
+pub fn create_user_tag_folder(name: String, state: &AppState) -> Result<TagManagementState, String> {
+    let normalized_name = name.trim().to_string();
+    if normalized_name.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    let conn = open_database(&state.database_path)?;
+    let now = now_ms();
+    let sort_order = conn
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM user_tag_folders",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Failed to query user tag folder sort order: {error}"))?;
+    conn.execute(
+        "
+        INSERT INTO user_tag_folders (name, sort_order, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?3)
+        ",
+        params![normalized_name, sort_order, now],
+    )
+    .map_err(|error| format!("Failed to create user tag folder: {error}"))?;
+    load_tag_management_state(&conn)
+}
+
+pub fn create_user_custom_tag(tag_text: String, state: &AppState) -> Result<TagManagementState, String> {
+    let normalized_tag = tag_text.trim().to_string();
+    if normalized_tag.is_empty() {
+        return Err("Tag cannot be empty".to_string());
+    }
+    let conn = open_database(&state.database_path)?;
+    upsert_user_custom_tag(&conn, &normalized_tag)?;
+    load_tag_management_state(&conn)
+}
+
+pub fn rename_user_tag_folder(
+    folder_id: i64,
+    name: String,
+    state: &AppState,
+) -> Result<TagManagementState, String> {
+    let normalized_name = name.trim().to_string();
+    if normalized_name.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    let conn = open_database(&state.database_path)?;
+    let now = now_ms();
+    let updated = conn
+        .execute(
+            "
+            UPDATE user_tag_folders
+            SET name = ?1, updated_at = ?2
+            WHERE id = ?3
+            ",
+            params![normalized_name, now, folder_id],
+        )
+        .map_err(|error| format!("Failed to rename user tag folder: {error}"))?;
+    if updated == 0 {
+        return Err("User tag folder not found".to_string());
+    }
+    load_tag_management_state(&conn)
+}
+
+pub fn delete_user_tag_folder(folder_id: i64, state: &AppState) -> Result<TagManagementState, String> {
+    let conn = open_database(&state.database_path)?;
+    let deleted = conn
+        .execute("DELETE FROM user_tag_folders WHERE id = ?1", params![folder_id])
+        .map_err(|error| format!("Failed to delete user tag folder: {error}"))?;
+    if deleted == 0 {
+        return Err("User tag folder not found".to_string());
+    }
+    load_tag_management_state(&conn)
+}
+
+pub fn assign_user_tag_to_folder(
+    folder_id: i64,
+    tag_text: String,
+    state: &AppState,
+) -> Result<TagManagementState, String> {
+    let normalized_tag = tag_text.trim().to_string();
+    if normalized_tag.is_empty() {
+        return Err("Tag cannot be empty".to_string());
+    }
+    let conn = open_database(&state.database_path)?;
+    let folder_exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM user_tag_folders WHERE id = ?1)",
+            params![folder_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Failed to verify user tag folder: {error}"))?;
+    if folder_exists == 0 {
+        return Err("User tag folder not found".to_string());
+    }
+    let tag_exists = conn
+        .query_row(
+            "
+            SELECT EXISTS(
+              SELECT 1 FROM user_custom_tags WHERE tag_text = ?1
+              UNION
+              SELECT 1 FROM image_user_custom_tags WHERE tag_text = ?1
+            )
+            ",
+            params![normalized_tag.clone()],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Failed to verify user tag source: {error}"))?;
+    if tag_exists == 0 {
+        return Err("Tag not found in custom tags".to_string());
+    }
+    let now = now_ms();
+    conn.execute(
+        "
+        INSERT INTO user_tag_folder_members (folder_id, tag_text, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?3)
+        ON CONFLICT(tag_text) DO UPDATE SET
+          folder_id = excluded.folder_id,
+          updated_at = excluded.updated_at
+        ",
+        params![folder_id, normalized_tag, now],
+    )
+    .map_err(|error| format!("Failed to assign user tag to folder: {error}"))?;
+    load_tag_management_state(&conn)
+}
+
+pub fn unassign_user_tag_from_folder(tag_text: String, state: &AppState) -> Result<TagManagementState, String> {
+    let normalized_tag = tag_text.trim().to_string();
+    if normalized_tag.is_empty() {
+        return Err("Tag cannot be empty".to_string());
+    }
+    let conn = open_database(&state.database_path)?;
+    conn.execute(
+        "DELETE FROM user_tag_folder_members WHERE tag_text = ?1",
+        params![normalized_tag],
+    )
+    .map_err(|error| format!("Failed to unassign user tag from folder: {error}"))?;
+    load_tag_management_state(&conn)
+}
+
 pub fn suggest_known_auto_tags(
     query: String,
     limit: Option<i64>,
+    include_user_custom: Option<bool>,
     state: &AppState,
 ) -> Result<Vec<KnownAutoTagSuggestion>, String> {
     let keyword = query.trim();
@@ -3123,42 +3578,97 @@ pub fn suggest_known_auto_tags(
     let like = format!("%{}%", escape_like_pattern(&keyword_lower));
     let like_prefix = format!("{}%", escape_like_pattern(&keyword_lower));
     let limit = limit.unwrap_or(20).clamp(1, 80);
+    let include_user_custom = include_user_custom.unwrap_or(false);
     let mut stmt = conn
         .prepare(
             "
+            WITH custom_tag_candidates AS (
+              SELECT tag_text FROM user_custom_tags
+              UNION
+              SELECT tag_text FROM image_user_custom_tags
+            ),
+            custom_tag_counts AS (
+              SELECT
+                iuct.tag_text,
+                COUNT(DISTINCT iuct.image_id) AS image_count
+              FROM image_user_custom_tags iuct
+              JOIN images i ON i.id = iuct.image_id
+              WHERE i.source = 'library'
+                AND COALESCE(i.trashed, 0) = 0
+              GROUP BY iuct.tag_text
+            ),
+            candidates AS (
             SELECT
-              k.tag_en,
+              k.tag_en AS tag_en,
               COALESCE(NULLIF(k.tag_zh, ''), d.tag_zh) AS tag_zh,
-              k.image_count
+              k.image_count AS image_count,
+              0 AS is_user_custom
             FROM known_image_tags k
             LEFT JOIN tag_dictionary d ON d.tag_en = k.tag_en
             WHERE k.model_name = ?1
               AND k.image_count > 0
-              AND (
-                LOWER(k.tag_en) LIKE ?2 ESCAPE '\\'
-                OR LOWER(COALESCE(NULLIF(k.tag_zh, ''), d.tag_zh, '')) LIKE ?2 ESCAPE '\\'
-              )
+            UNION ALL
+            SELECT
+              ct.tag_text AS tag_en,
+              ct.tag_text AS tag_zh,
+              COALESCE(cc.image_count, 0) AS image_count,
+              1 AS is_user_custom
+            FROM custom_tag_candidates ct
+            LEFT JOIN custom_tag_counts cc ON cc.tag_text = ct.tag_text
+            WHERE ?5 = 1
+            ),
+            filtered AS (
+              SELECT * FROM candidates
+              WHERE LOWER(tag_en) LIKE ?2 ESCAPE '\\'
+                 OR LOWER(COALESCE(tag_zh, '')) LIKE ?2 ESCAPE '\\'
+            ),
+            deduped AS (
+              SELECT
+                tag_en,
+                MAX(COALESCE(tag_zh, '')) AS tag_zh,
+                MAX(image_count) AS image_count,
+                MAX(is_user_custom) AS is_user_custom
+              FROM filtered
+              GROUP BY tag_en
+            )
+            SELECT
+              tag_en,
+              NULLIF(tag_zh, '') AS tag_zh,
+              image_count,
+              is_user_custom
+            FROM deduped
             ORDER BY
+              CASE WHEN is_user_custom = 1 THEN 0 ELSE 1 END,
               CASE
-                WHEN LOWER(COALESCE(NULLIF(k.tag_zh, ''), d.tag_zh, '')) LIKE ?3 ESCAPE '\\' THEN 0
-                WHEN LOWER(k.tag_en) LIKE ?3 ESCAPE '\\' THEN 1
+                WHEN LOWER(COALESCE(tag_zh, '')) LIKE ?3 ESCAPE '\\' THEN 0
+                WHEN LOWER(tag_en) LIKE ?3 ESCAPE '\\' THEN 1
                 ELSE 2
               END,
-              k.image_count DESC,
-              k.tag_en COLLATE NOCASE
+              image_count DESC,
+              tag_en COLLATE NOCASE
             LIMIT ?4
             ",
         )
         .map_err(|error| format!("Failed to prepare known tag suggestion query: {error}"))?;
 
     let rows = stmt
-        .query_map(params![WD_TAGGER_MODEL_NAME, like, like_prefix, limit], |row| {
+        .query_map(
+            params![
+                WD_TAGGER_MODEL_NAME,
+                like,
+                like_prefix,
+                limit,
+                if include_user_custom { 1 } else { 0 }
+            ],
+            |row| {
             Ok(KnownAutoTagSuggestion {
                 tag_en: row.get(0)?,
                 tag_zh: row.get(1)?,
                 image_count: row.get(2)?,
+                is_user_custom: row.get::<_, i64>(3)? != 0,
             })
-        })
+        },
+        )
         .map_err(|error| format!("Failed to query known tag suggestions: {error}"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Failed to query known tag suggestions: {error}"))
@@ -3208,13 +3718,25 @@ pub fn search_gallery_image_ids(
                 AND t.model_name = ?
                 AND t.tag_en = ?
                 AND t.confidence BETWEEN ? AND ?
+              UNION
+              SELECT 1
+              FROM image_user_supplement_tags ust
+              WHERE ust.image_id = images.id
+                AND ust.tag_en = ?
+              UNION
+              SELECT 1
+              FROM image_user_custom_tags uct
+              WHERE uct.image_id = images.id
+                AND uct.tag_text = ?
             )
             ",
         );
         params_values.push(Value::Text(WD_TAGGER_MODEL_NAME.to_string()));
-        params_values.push(Value::Text(tag_en));
+        params_values.push(Value::Text(tag_en.clone()));
         params_values.push(Value::Real(confidence_min as f64));
         params_values.push(Value::Real(confidence_max as f64));
+        params_values.push(Value::Text(tag_en.clone()));
+        params_values.push(Value::Text(tag_en));
     }
 
     let english_tokens = split_search_tokens(&filters.english_query);
@@ -3229,13 +3751,20 @@ pub fn search_gallery_image_ids(
                 AND t.model_name = ?
                 AND LOWER(REPLACE(t.tag_en, '_', ' ')) LIKE ? ESCAPE '\\'
                 AND t.confidence BETWEEN ? AND ?
+              UNION
+              SELECT 1
+              FROM image_user_supplement_tags ust
+              WHERE ust.image_id = images.id
+                AND LOWER(REPLACE(ust.tag_en, '_', ' ')) LIKE ? ESCAPE '\\'
             )
             ",
         );
         params_values.push(Value::Text(WD_TAGGER_MODEL_NAME.to_string()));
-        params_values.push(Value::Text(format!("%{}%", escape_like_pattern(&token))));
+        let token_like = format!("%{}%", escape_like_pattern(&token));
+        params_values.push(Value::Text(token_like.clone()));
         params_values.push(Value::Real(confidence_min as f64));
         params_values.push(Value::Real(confidence_max as f64));
+        params_values.push(Value::Text(token_like));
     }
 
     if has_confidence_filter && !has_zh_tag_constraints && !has_english_constraints {
@@ -4440,6 +4969,58 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
           ON known_image_tags(model_name, tag_zh);
         CREATE INDEX IF NOT EXISTS idx_known_image_tags_model_en
           ON known_image_tags(model_name, tag_en);
+
+        CREATE TABLE IF NOT EXISTS image_user_custom_tags (
+          image_id TEXT NOT NULL,
+          tag_text TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(image_id, tag_text),
+          FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_user_custom_tags_image_id
+          ON image_user_custom_tags(image_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS image_user_supplement_tags (
+          image_id TEXT NOT NULL,
+          tag_en TEXT NOT NULL,
+          tag_zh TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(image_id, tag_en),
+          FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_user_supplement_tags_image_id
+          ON image_user_supplement_tags(image_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS user_custom_tags (
+          tag_text TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS user_tag_folders (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS user_tag_folder_members (
+          folder_id INTEGER NOT NULL,
+          tag_text TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(folder_id, tag_text),
+          UNIQUE(tag_text),
+          FOREIGN KEY(folder_id) REFERENCES user_tag_folders(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_tag_folder_members_folder_id
+          ON user_tag_folder_members(folder_id, updated_at DESC);
 
         CREATE TABLE IF NOT EXISTS image_thumbnails (
           image_id TEXT PRIMARY KEY,

@@ -1,0 +1,501 @@
+﻿tag,count,zh_name,confidence,note
+bloodshot_eyes,777,bloodshot眼睛,medium,自动拆词；需校对未知片段: bloodshot
+green_horns,777,绿色角,medium,自动拆词组合，建议校对语序
+glitter,776,glitter,low,自动拆词；需校对未知片段: glitter
+holding_suitcase,776,拿着suitcase,medium,自动拆词；需校对未知片段: suitcase
+beer_bottle,776,beer瓶,medium,自动拆词；需校对未知片段: beer
+green_headband,776,绿色headband,medium,自动拆词；需校对未知片段: headband
+micro_bra,776,microbra,low,"自动拆词；需校对未知片段: micro, bra"
+ace_of_spades,775,acespades,low,"自动拆词；需校对未知片段: ace, spades"
+bipod,775,bipod,low,自动拆词；需校对未知片段: bipod
+no_feet,775,无脚,medium,自动拆词组合，建议校对语序
+motosu_school_uniform,775,motosu学校制服,medium,自动拆词；需校对未知片段: motosu
+horn_grab,774,horn抓住,medium,自动拆词；需校对未知片段: horn
+golden_arms,774,golden手臂,medium,自动拆词；需校对未知片段: golden
+crisis_management_form_(machimazo),774,crisismanagementform（machimazo）,low,"自动拆词；需校对未知片段: crisis, management, form"
+shamoji,773,shamoji,low,自动拆词；需校对未知片段: shamoji
+walther,773,walther,low,自动拆词；需校对未知片段: walther
+brown_serafuku,773,棕色水手服,medium,自动拆词组合，建议校对语序
+math,773,math,low,自动拆词；需校对未知片段: math
+red_nose,773,红色鼻子,medium,自动拆词组合，建议校对语序
+holding_leg,773,拿着腿,medium,自动拆词组合，建议校对语序
+animal_head,773,动物头,medium,自动拆词组合，建议校对语序
+black_scales,773,黑色scales,medium,自动拆词；需校对未知片段: scales
+bust_cup,772,bust杯子,medium,自动拆词；需校对未知片段: bust
+covered_clitoris,772,覆盖clitoris,medium,自动拆词；需校对未知片段: clitoris
+bulging_eyes,772,bulging眼睛,medium,自动拆词；需校对未知片段: bulging
+object_on_breast,772,物体在乳房,medium,自动拆词组合，建议校对语序
+dream_soul,772,dreamsoul,low,"自动拆词；需校对未知片段: dream, soul"
+nebula,771,nebula,low,自动拆词；需校对未知片段: nebula
+gold_coin,771,金色硬币,medium,自动拆词组合，建议校对语序
+panda_hood,771,panda兜帽,medium,自动拆词；需校对未知片段: panda
+elevator,770,elevator,low,自动拆词；需校对未知片段: elevator
+taut_swimsuit,770,taut泳装,medium,自动拆词；需校对未知片段: taut
+deer_tail,770,鹿尾巴,medium,自动拆词组合，建议校对语序
+purple_butterfly,770,紫色蝴蝶,medium,自动拆词组合，建议校对语序
+lolidom,769,lolidom,low,自动拆词；需校对未知片段: lolidom
+aqua_leotard,769,水色连体衣,medium,自动拆词组合，建议校对语序
+bathhouse,769,bathhouse,low,自动拆词；需校对未知片段: bathhouse
+laundry_basket,769,laundrybasket,low,"自动拆词；需校对未知片段: laundry, basket"
+double_amputee,769,双amputee,medium,自动拆词；需校对未知片段: amputee
+broccoli,769,broccoli,low,自动拆词；需校对未知片段: broccoli
+little_red_riding_hood_(grimm)_(cosplay),769,little红色骑乘兜帽(grimm)（cosplay）,low,"自动拆词；需校对未知片段: little, (grimm)"
+fur_cuffs,768,毛皮袖口,medium,自动拆词组合，建议校对语序
+broken_armor,768,破损盔甲,medium,自动拆词组合，建议校对语序
+through_screen,768,视screen,medium,自动拆词；需校对未知片段: screen
+wakamezake,767,wakamezake,low,自动拆词；需校对未知片段: wakamezake
+glowing_hand,767,发光手,medium,自动拆词组合，建议校对语序
+panties_under_shorts,767,内裤下短裤,medium,自动拆词组合，建议校对语序
+weasel_girl,767,weasel女孩,medium,自动拆词；需校对未知片段: weasel
+brown_lips,767,棕色嘴唇,medium,自动拆词组合，建议校对语序
+arm_around_back,766,手臂围绕背后,medium,自动拆词组合，建议校对语序
+hand_on_table,766,手在桌子,medium,自动拆词组合，建议校对语序
+white_sky,766,白色天空,medium,自动拆词组合，建议校对语序
+dilation_tape,766,dilationtape,low,"自动拆词；需校对未知片段: dilation, tape"
+arm_on_knee,766,手臂在膝,medium,自动拆词组合，建议校对语序
+maple_leaf_print,766,maple叶子印花,medium,自动拆词；需校对未知片段: maple
+kanba_girls_high_school_uniform,766,kanbagirlshigh学校制服,low,"自动拆词；需校对未知片段: kanba, girls, high"
+cabbage,765,cabbage,low,自动拆词；需校对未知片段: cabbage
+listening_to_music,765,listeningmusic,low,"自动拆词；需校对未知片段: listening, music"
+power_connection,765,power连接,medium,自动拆词；需校对未知片段: power
+lifebuoy_ornament,765,lifebuoy饰品,medium,自动拆词；需校对未知片段: lifebuoy
+exploding_clothes,764,exploding服装,medium,自动拆词；需校对未知片段: exploding
+right-over-left_kimono,764,right覆在left和服,low,"自动拆词；需校对未知片段: right, left"
+holding_creature,764,拿着creature,medium,自动拆词；需校对未知片段: creature
+floating_rock,764,漂浮rock,medium,自动拆词；需校对未知片段: rock
+stiletto_(weapon),764,stiletto（武器）,low,自动拆词；需校对未知片段: stiletto
+window_(computing),763,window（computing）,low,自动拆词；需校对未知片段: window
+clawed_gauntlets,763,clawedgauntlets,low,"自动拆词；需校对未知片段: clawed, gauntlets"
+canned_coffee,763,cannedcoffee,low,"自动拆词；需校对未知片段: canned, coffee"
+dogeza,763,dogeza,low,自动拆词；需校对未知片段: dogeza
+glass_shards,763,镜shards,medium,自动拆词；需校对未知片段: shards
+nipple_chain,762,乳头链条,medium,自动拆词组合，建议校对语序
+camisole_lift,762,吊带背心掀起,medium,自动拆词组合，建议校对语序
+frilled_headwear,761,荷叶边头饰,medium,自动拆词组合，建议校对语序
+cable_tail,761,cable尾巴,medium,自动拆词；需校对未知片段: cable
+chess,761,chess,low,自动拆词；需校对未知片段: chess
+red_male_underwear,761,红色男性内衣,medium,自动拆词组合，建议校对语序
+exposed_pocket,761,exposedpocket,low,"自动拆词；需校对未知片段: exposed, pocket"
+combat_knife,760,combat刀,medium,自动拆词；需校对未知片段: combat
+two-sided_coat,760,两个双面外套,medium,自动拆词组合，建议校对语序
+materia,759,materia,low,自动拆词；需校对未知片段: materia
+firelock,759,firelock,low,自动拆词；需校对未知片段: firelock
+volcano,759,volcano,low,自动拆词；需校对未知片段: volcano
+village,759,village,low,自动拆词；需校对未知片段: village
+trophy,759,trophy,low,自动拆词；需校对未知片段: trophy
+fingering_through_panties,758,fingering视内裤,medium,自动拆词；需校对未知片段: fingering
+dotted_background,758,dotted背景,medium,自动拆词；需校对未知片段: dotted
+eel,757,eel,low,自动拆词；需校对未知片段: eel
+paizuri_invitation,757,paizuriinvitation,low,"自动拆词；需校对未知片段: paizuri, invitation"
+safety_glasses,756,safetyglasses,low,"自动拆词；需校对未知片段: safety, glasses"
+holding_fish,755,拿着鱼,medium,自动拆词组合，建议校对语序
+front_slit,755,前部slit,medium,自动拆词；需校对未知片段: slit
+multitasking,754,multitasking,low,自动拆词；需校对未知片段: multitasking
+flippers,754,flippers,low,自动拆词；需校对未知片段: flippers
+honda,754,honda,low,自动拆词；需校对未知片段: honda
+leopard_girl,754,leopard女孩,medium,自动拆词；需校对未知片段: leopard
+wing_ears,753,翅膀耳朵,medium,自动拆词组合，建议校对语序
+smartphone_case,753,smartphonecase,low,"自动拆词；需校对未知片段: smartphone, case"
+kariyushi_shirt,753,kariyushi衬衫,medium,自动拆词；需校对未知片段: kariyushi
+knives_between_fingers,752,knives之间手指,medium,自动拆词；需校对未知片段: knives
+broken_sword,752,破损剑,medium,自动拆词组合，建议校对语序
+policeman,752,policeman,low,自动拆词；需校对未知片段: policeman
+spade_hair_ornament,752,spade头发饰品,medium,自动拆词；需校对未知片段: spade
+white_halo,752,白色光环,medium,自动拆词组合，建议校对语序
+male_underwear_peek,752,男性内衣露出,medium,自动拆词组合，建议校对语序
+hand_focus,751,手特写,medium,自动拆词组合，建议校对语序
+fitting_room,751,fittingroom,low,"自动拆词；需校对未知片段: fitting, room"
+carton,751,carton,low,自动拆词；需校对未知片段: carton
+cash_register,751,cashregister,low,"自动拆词；需校对未知片段: cash, register"
+unworn_jewelry,751,未穿戴饰品,medium,自动拆词组合，建议校对语序
+hanging_light,751,hanging浅色,medium,自动拆词；需校对未知片段: hanging
+leotard_peek,749,连体衣露出,medium,自动拆词组合，建议校对语序
+makeup_brush,749,makeupbrush,low,"自动拆词；需校对未知片段: makeup, brush"
+caliburn_(fate),748,caliburn（fate）,low,自动拆词；需校对未知片段: caliburn
+neck_garter,748,脖子吊袜带,medium,自动拆词组合，建议校对语序
+foot_worship,748,脚worship,medium,自动拆词；需校对未知片段: worship
+fried_chicken,748,friedchicken,low,"自动拆词；需校对未知片段: fried, chicken"
+weasel_tail,748,weasel尾巴,medium,自动拆词；需校对未知片段: weasel
+blue_suit,748,蓝色套装,medium,自动拆词组合，建议校对语序
+cross-laced_top,748,十字蕾丝边上装,medium,自动拆词组合，建议校对语序
+koishi_day,748,koishi日,medium,自动拆词；需校对未知片段: koishi
+table_humping,747,桌子humping,medium,自动拆词；需校对未知片段: humping
+whiteboard,747,whiteboard,low,自动拆词；需校对未知片段: whiteboard
+holding_photo,747,拿着photo,medium,自动拆词；需校对未知片段: photo
+vehicle_and_personification,747,vehiclepersonification,low,"自动拆词；需校对未知片段: vehicle, personification"
+bolt,747,螺栓,medium,自动拆词组合，建议校对语序
+compass,746,compass,low,自动拆词；需校对未知片段: compass
+youkai_(youkai_watch),746,youkai（youkai_watch）,low,自动拆词；需校对未知片段: youkai
+2b_(nier:automata)_(cosplay),746,2b(nier:automata)（cosplay）,low,"自动拆词；需校对未知片段: 2b, (nier:automata)"
+hunched_over,745,hunched覆在,medium,自动拆词；需校对未知片段: hunched
+holding_pole,745,拿着杆,medium,自动拆词组合，建议校对语序
+jacket_lift,745,夹克掀起,medium,自动拆词组合，建议校对语序
+fish_bone,744,鱼bone,medium,自动拆词；需校对未知片段: bone
+drowning,744,drowning,low,自动拆词；需校对未知片段: drowning
+holding_shovel,743,拿着shovel,medium,自动拆词；需校对未知片段: shovel
+marriage_proposal,743,marriageproposal,low,"自动拆词；需校对未知片段: marriage, proposal"
+backless_swimsuit,743,backless泳装,medium,自动拆词；需校对未知片段: backless
+gag_harness,743,口球harness,medium,自动拆词；需校对未知片段: harness
+tickling_armpits,743,挠痒armpits,medium,自动拆词；需校对未知片段: armpits
+jam,742,jam,low,自动拆词；需校对未知片段: jam
+chili_pepper,742,辣椒辣椒,medium,自动拆词组合，建议校对语序
+trash,742,trash,low,自动拆词；需校对未知片段: trash
+rust,742,rust,low,自动拆词；需校对未知片段: rust
+low-cut_armhole,742,低切开armhole,medium,自动拆词；需校对未知片段: armhole
+propeller_hair_ornament,742,propeller头发饰品,medium,自动拆词；需校对未知片段: propeller
+merman,741,merman,low,自动拆词；需校对未知片段: merman
+runny_nose,741,runny鼻子,medium,自动拆词；需校对未知片段: runny
+sprinkles,741,sprinkles,low,自动拆词；需校对未知片段: sprinkles
+fake_magazine_cover,741,假magazine覆盖,medium,自动拆词；需校对未知片段: magazine
+against_fourth_wall,741,againstfourth墙,low,"自动拆词；需校对未知片段: against, fourth"
+wide_oval_eyes,740,wideoval眼睛,low,"自动拆词；需校对未知片段: wide, oval"
+holding_cross,740,拿着十字,medium,自动拆词组合，建议校对语序
+sexual_coaching,740,sexualcoaching,low,"自动拆词；需校对未知片段: sexual, coaching"
+craft_essence_(fate),740,craftessence（fate）,low,"自动拆词；需校对未知片段: craft, essence"
+otter_tail,740,otter尾巴,medium,自动拆词；需校对未知片段: otter
+interior,739,interior,low,自动拆词；需校对未知片段: interior
+gumroad_username,739,gumroad用户名,medium,自动拆词；需校对未知片段: gumroad
+lime_(fruit),738,lime（fruit）,low,自动拆词；需校对未知片段: lime
+amestris_military_uniform,738,amestrismilitary制服,low,"自动拆词；需校对未知片段: amestris, military"
+cobblestone,738,cobblestone,low,自动拆词；需校对未知片段: cobblestone
+cupboard,738,cupboard,low,自动拆词；需校对未知片段: cupboard
+canteen,738,canteen,low,自动拆词；需校对未知片段: canteen
+taut_leotard,738,taut连体衣,medium,自动拆词；需校对未知片段: taut
+cork,737,cork,low,自动拆词；需校对未知片段: cork
+phoenix,737,phoenix,low,自动拆词；需校对未知片段: phoenix
+after_masturbation,737,之后自慰,medium,自动拆词组合，建议校对语序
+o-ring_swimsuit,737,o泳圈泳装,medium,自动拆词；需校对未知片段: o
+dorsal_fin,737,dorsalfin,low,"自动拆词；需校对未知片段: dorsal, fin"
+flying_fish,737,飞起鱼,medium,自动拆词组合，建议校对语序
+wind_turbine,736,windturbine,low,"自动拆词；需校对未知片段: wind, turbine"
+pom_pom_earrings,736,绒球绒球耳环,medium,自动拆词组合，建议校对语序
+checkered_bow,736,棋盘格蝴蝶结,medium,自动拆词组合，建议校对语序
+multiple_hairpins,736,多个hairpins,medium,自动拆词；需校对未知片段: hairpins
+record,735,record,low,自动拆词；需校对未知片段: record
+smelling_clothes,735,smelling服装,medium,自动拆词；需校对未知片段: smelling
+light_brown_background,735,浅色棕色背景,medium,自动拆词组合，建议校对语序
+lance_of_longinus_(evangelion),735,lancelonginus（evangelion）,low,"自动拆词；需校对未知片段: lance, longinus"
+studded_choker,735,studded项圈,medium,自动拆词；需校对未知片段: studded
+red_bandeau,735,红色抹胸,medium,自动拆词组合，建议校对语序
+croissant,735,croissant,low,自动拆词；需校对未知片段: croissant
+jolly_roger,735,jollyroger,low,"自动拆词；需校对未知片段: jolly, roger"
+red_trim,734,红色trim,medium,自动拆词；需校对未知片段: trim
+mechanic,734,mechanic,low,自动拆词；需校对未知片段: mechanic
+covering_another's_mouth,734,遮住他人的嘴,medium,自动拆词组合，建议校对语序
+single_garter_strap,734,单个吊袜带带子,medium,自动拆词组合，建议校对语序
+lane_line,733,laneline,low,"自动拆词；需校对未知片段: lane, line"
+brain,733,brain,low,自动拆词；需校对未知片段: brain
+humping,733,humping,low,自动拆词；需校对未知片段: humping
+fruit_hat_ornament,733,fruit帽子饰品,medium,自动拆词；需校对未知片段: fruit
+ski_goggles,733,skigoggles,low,"自动拆词；需校对未知片段: ski, goggles"
+starfish_hair_ornament,733,starfish头发饰品,medium,自动拆词；需校对未知片段: starfish
+hand_on_own_forehead,732,手在自己的额头,medium,自动拆词组合，建议校对语序
+holding_briefcase,732,拿着briefcase,medium,自动拆词；需校对未知片段: briefcase
+brown_sash,732,棕色腰带,medium,自动拆词组合，建议校对语序
+orca,732,orca,low,自动拆词；需校对未知片段: orca
+urinal,732,urinal,low,自动拆词；需校对未知片段: urinal
+van,732,van,low,自动拆词；需校对未知片段: van
+layered_kimono,732,layered和服,medium,自动拆词；需校对未知片段: layered
+o-ring_belt,732,o泳圈腰带,medium,自动拆词；需校对未知片段: o
+striped_vest,732,条纹背心,medium,自动拆词组合，建议校对语序
+like_and_retweet,732,点赞转发,medium,自动拆词组合，建议校对语序
+green_cardigan,731,绿色开衫,medium,自动拆词组合，建议校对语序
+aqua_hairband,731,水色发带,medium,自动拆词组合，建议校对语序
+square,731,square,low,自动拆词；需校对未知片段: square
+entangled,731,entangled,low,自动拆词；需校对未知片段: entangled
+billboard,731,billboard,low,自动拆词；需校对未知片段: billboard
+yellow_gemstone,731,黄色宝石,medium,自动拆词组合，建议校对语序
+plate_carrier,731,platecarrier,low,"自动拆词；需校对未知片段: plate, carrier"
+surfing,730,surfing,low,自动拆词；需校对未知片段: surfing
+police_car,730,policecar,low,"自动拆词；需校对未知片段: police, car"
+crystal_wings,730,crystal翅膀,medium,自动拆词；需校对未知片段: crystal
+limiter_(tsukumo_sana),730,限制器（九十九佐命）,medium,角色关联物件
+fern,729,fern,low,自动拆词；需校对未知片段: fern
+bear_hood,729,熊兜帽,medium,自动拆词组合，建议校对语序
+war_hammer,728,warhammer,low,"自动拆词；需校对未知片段: war, hammer"
+coffee_pot,728,coffeepot,low,"自动拆词；需校对未知片段: coffee, pot"
+holding_bra,728,拿着bra,medium,自动拆词；需校对未知片段: bra
+sauce,728,酱,medium,自动拆词组合，建议校对语序
+throat_microphone,728,throatmicrophone,low,"自动拆词；需校对未知片段: throat, microphone"
+detached_leggings,728,分离式leggings,medium,自动拆词；需校对未知片段: leggings
+shopping_cart,727,shoppingcart,low,"自动拆词；需校对未知片段: shopping, cart"
+half-erect,727,halferect,low,"自动拆词；需校对未知片段: half, erect"
+ticket,727,ticket,low,自动拆词；需校对未知片段: ticket
+paw_print_pattern,727,paw印花pattern,low,"自动拆词；需校对未知片段: paw, pattern"
+invisible,726,invisible,low,自动拆词；需校对未知片段: invisible
+congratulations,726,congratulations,low,自动拆词；需校对未知片段: congratulations
+star_wand,726,星星wand,medium,自动拆词；需校对未知片段: wand
+object_head,726,物体头,medium,自动拆词组合，建议校对语序
+yumi_(bow),725,yumi（蝴蝶结）,low,自动拆词；需校对未知片段: yumi
+m16,725,m16,low,自动拆词；需校对未知片段: m16
+on_scooter,725,在scooter,medium,自动拆词；需校对未知片段: scooter
+kanshou_&_bakuya_(fate),724,kanshou&bakuya（fate）,low,"自动拆词；需校对未知片段: kanshou, &, bakuya"
+chocolate_making,724,巧克力making,medium,自动拆词；需校对未知片段: making
+carousel,723,carousel,low,自动拆词；需校对未知片段: carousel
+wet_skirt,723,湿裙子,medium,自动拆词组合，建议校对语序
+body_switch,723,身体switch,medium,自动拆词；需校对未知片段: switch
+depressed,723,depressed,low,自动拆词；需校对未知片段: depressed
+multicolored_tail,723,多色尾巴,medium,自动拆词组合，建议校对语序
+holding_another's_foot,723,拿着他人的脚,medium,自动拆词组合，建议校对语序
+walker_(robot),723,walker（机器人）,low,自动拆词；需校对未知片段: walker
+gradient_wings,723,渐变翅膀,medium,自动拆词组合，建议校对语序
+down_jacket,723,变小夹克,medium,自动拆词组合，建议校对语序
+rabbit_on_head,723,兔子在头,medium,自动拆词组合，建议校对语序
+giant_male,723,giant男性,medium,自动拆词；需校对未知片段: giant
+meteor_shower,722,meteorshower,low,"自动拆词；需校对未知片段: meteor, shower"
+kissing_neck,722,亲吻脖子,medium,自动拆词组合，建议校对语序
+raspberry,721,raspberry,low,自动拆词；需校对未知片段: raspberry
+holding_scroll,721,拿着scroll,medium,自动拆词；需校对未知片段: scroll
+twintails_day,721,twintails日,medium,自动拆词；需校对未知片段: twintails
+rhine_lab_logo,721,rhinelab标志,low,"自动拆词；需校对未知片段: rhine, lab"
+pink_tank_top,720,粉色坦克上装,medium,自动拆词组合，建议校对语序
+kadomatsu,720,kadomatsu,low,自动拆词；需校对未知片段: kadomatsu
+microwave,720,microwave,low,自动拆词；需校对未知片段: microwave
+looking_at_hand,720,看着手,medium,自动拆词组合，建议校对语序
+yellow_one-piece_swimsuit,719,黄色一个件泳装,medium,自动拆词组合，建议校对语序
+white_bandeau,719,白色抹胸,medium,自动拆词组合，建议校对语序
+paint_can,719,paint罐,medium,自动拆词；需校对未知片段: paint
+musket,719,musket,low,自动拆词；需校对未知片段: musket
+monk,719,monk,low,自动拆词；需校对未知片段: monk
+shield_on_back,719,shield在背后,medium,自动拆词；需校对未知片段: shield
+facing_up,719,facing变大,medium,自动拆词；需校对未知片段: facing
+black_tube_top,718,黑色筒状上装,medium,自动拆词组合，建议校对语序
+white_pubic_hair,718,白色阴部头发,medium,自动拆词组合，建议校对语序
+scoop_neck,718,scoop脖子,medium,自动拆词；需校对未知片段: scoop
+female_goblin,718,女性goblin,medium,自动拆词；需校对未知片段: goblin
+purple_pupils,717,紫色瞳孔,medium,自动拆词组合，建议校对语序
+graduation,717,graduation,low,自动拆词；需校对未知片段: graduation
+covering_another's_eyes,717,遮住他人的眼睛,medium,自动拆词组合，建议校对语序
+ligne_claire,717,线条清线派,medium,自动拆词组合，建议校对语序
+accident,716,accident,low,自动拆词；需校对未知片段: accident
+handshake,716,handshake,low,自动拆词；需校对未知片段: handshake
+torn_wings,716,破损翅膀,medium,自动拆词组合，建议校对语序
+kono_lolicon_domome,716,konololicondomome,low,"自动拆词；需校对未知片段: kono, lolicon, domome"
+weights,716,weights,low,自动拆词；需校对未知片段: weights
+temari_ball,716,temari球,medium,自动拆词；需校对未知片段: temari
+red_wine,716,红色wine,medium,自动拆词；需校对未知片段: wine
+yellow_pantyhose,715,黄色连裤袜,medium,自动拆词组合，建议校对语序
+super_saiyan_4,715,supersaiyan4,low,"自动拆词；需校对未知片段: super, saiyan"
+wafer_stick,715,waferstick,low,"自动拆词；需校对未知片段: wafer, stick"
+condensation,715,condensation,low,自动拆词；需校对未知片段: condensation
+originium_arts_(arknights),715,originiumarts（arknights）,low,"自动拆词；需校对未知片段: originium, arts"
+sitting_sideways,714,坐着sideways,medium,自动拆词；需校对未知片段: sideways
+fading,714,fading,low,自动拆词；需校对未知片段: fading
+surrounded,714,surrounded,low,自动拆词；需校对未知片段: surrounded
+bandaged_fingers,714,绷带包扎手指,medium,自动拆词组合，建议校对语序
+ahoge_wag,714,呆毛wag,medium,自动拆词；需校对未知片段: wag
+bindi,713,bindi,low,自动拆词；需校对未知片段: bindi
+black_hood,712,黑色兜帽,medium,自动拆词组合，建议校对语序
+hand_on_ground,712,手在ground,medium,自动拆词；需校对未知片段: ground
+container,712,container,low,自动拆词；需校对未知片段: container
+glansjob,712,glansjob,low,自动拆词；需校对未知片段: glansjob
+black_veil,712,黑色veil,medium,自动拆词；需校对未知片段: veil
+child_carry,712,childcarry,low,"自动拆词；需校对未知片段: child, carry"
+ak-47,711,ak47,medium,自动拆词；需校对未知片段: ak
+head_on_head,711,头在头,medium,自动拆词组合，建议校对语序
+pitcher_(container),711,pitcher（container）,low,自动拆词；需校对未知片段: pitcher
+coin_purse,711,硬币purse,medium,自动拆词；需校对未知片段: purse
+leaf_background,711,叶子背景,medium,自动拆词组合，建议校对语序
+transparent_censoring,711,透明censoring,medium,自动拆词；需校对未知片段: censoring
+hakama_shorts,711,袴短裤,medium,自动拆词组合，建议校对语序
+moose_ears,711,moose耳朵,medium,自动拆词；需校对未知片段: moose
+josou_seme,710,josouseme,low,"自动拆词；需校对未知片段: josou, seme"
+stuffed_panda,710,填充panda,medium,自动拆词；需校对未知片段: panda
+police_badge,710,policebadge,low,"自动拆词；需校对未知片段: police, badge"
+translucent,710,translucent,low,自动拆词；需校对未知片段: translucent
+fishnet_bodysuit,710,网眼紧身衣,medium,自动拆词组合，建议校对语序
+cutting,710,cutting,low,自动拆词；需校对未知片段: cutting
+pointy_hat,710,pointy帽子,medium,自动拆词；需校对未知片段: pointy
+fur_jacket,710,毛皮夹克,medium,自动拆词组合，建议校对语序
+dollar_sign,709,dollarsign,low,"自动拆词；需校对未知片段: dollar, sign"
+curled_up,709,curled变大,medium,自动拆词；需校对未知片段: curled
+bandaid_on_neck,708,创可贴在脖子,medium,自动拆词组合，建议校对语序
+railroad_crossing,707,railroadcrossing,low,"自动拆词；需校对未知片段: railroad, crossing"
+black_vs_white,707,黑色vs白色,medium,自动拆词；需校对未知片段: vs
+circle_formation,706,circleformation,low,"自动拆词；需校对未知片段: circle, formation"
+holding_surfboard,706,拿着surfboard,medium,自动拆词；需校对未知片段: surfboard
+bridal_lingerie,706,新娘lingerie,medium,自动拆词；需校对未知片段: lingerie
+handjob_gesture,706,handjobgesture,low,"自动拆词；需校对未知片段: handjob, gesture"
+hat_belt,706,帽子腰带,medium,自动拆词组合，建议校对语序
+team_skull,706,team骷髅,medium,自动拆词；需校对未知片段: team
+overall_skirt,705,overall裙子,medium,自动拆词；需校对未知片段: overall
+bc_freedom_school_uniform,705,bcfreedom学校制服,low,"自动拆词；需校对未知片段: bc, freedom"
+hair_over_one_breast,704,头发覆在一个乳房,medium,自动拆词组合，建议校对语序
+arm_over_head,704,手臂覆在头,medium,自动拆词组合，建议校对语序
+red_star,704,红色星星,medium,自动拆词组合，建议校对语序
+sweater_pull,704,毛衣拉,medium,自动拆词组合，建议校对语序
+holding_map,704,拿着map,medium,自动拆词；需校对未知片段: map
+masked,704,masked,low,自动拆词；需校对未知片段: masked
+haneoka_school_uniform,704,haneoka学校制服,medium,自动拆词；需校对未知片段: haneoka
+cello,703,cello,low,自动拆词；需校对未知片段: cello
+disguise,703,disguise,low,自动拆词；需校对未知片段: disguise
+scalpel,703,scalpel,low,自动拆词；需校对未知片段: scalpel
+holographic_monitor,703,holographicmonitor,low,"自动拆词；需校对未知片段: holographic, monitor"
+knife_sheath,703,刀鞘,medium,自动拆词组合，建议校对语序
+rotary_phone,703,rotaryphone,low,"自动拆词；需校对未知片段: rotary, phone"
+pantyhose_under_swimsuit,702,连裤袜下泳装,medium,自动拆词组合，建议校对语序
+whip_sword,702,whip剑,medium,自动拆词；需校对未知片段: whip
+grabbing_another's_ear,702,抓住他人的耳朵,medium,自动拆词组合，建议校对语序
+wanted,701,wanted,low,自动拆词；需校对未知片段: wanted
+pawn_(chess),701,pawn（chess）,low,自动拆词；需校对未知片段: pawn
+print_swimsuit,700,印花泳装,medium,自动拆词组合，建议校对语序
+popsicle_stick,699,popsiclestick,low,"自动拆词；需校对未知片段: popsicle, stick"
+face_in_pillow,699,脸在枕头,medium,自动拆词组合，建议校对语序
+karate_gi,699,karategi,low,"自动拆词；需校对未知片段: karate, gi"
+unworn_goggles,699,未穿戴goggles,medium,自动拆词；需校对未知片段: goggles
+after_bathing,699,之后bathing,medium,自动拆词；需校对未知片段: bathing
+anti-aircraft,699,antiaircraft,low,"自动拆词；需校对未知片段: anti, aircraft"
+nipple_cutout,699,乳头开洞,medium,自动拆词组合，建议校对语序
+country_connection,699,country连接,medium,自动拆词；需校对未知片段: country
+starlight_academy_school_uniform,699,starlight学园学校制服,medium,自动拆词；需校对未知片段: starlight
+weapon_bag,698,武器包,medium,自动拆词组合，建议校对语序
+flailing,698,flailing,low,自动拆词；需校对未知片段: flailing
+sky_lantern,698,天空lantern,medium,自动拆词；需校对未知片段: lantern
+chessboard,697,chessboard,low,自动拆词；需校对未知片段: chessboard
+frontless_outfit,697,frontlessoutfit,low,"自动拆词；需校对未知片段: frontless, outfit"
+armored_leotard,697,armored连体衣,medium,自动拆词；需校对未知片段: armored
+travel_attendant,696,travelattendant,low,"自动拆词；需校对未知片段: travel, attendant"
+shoulder_plates,696,肩plates,medium,自动拆词；需校对未知片段: plates
+ribbed_thighhighs,695,罗纹长筒袜,medium,自动拆词组合，建议校对语序
+band,694,band,low,自动拆词；需校对未知片段: band
+forked_tail,694,forked尾巴,medium,自动拆词；需校对未知片段: forked
+lightning_bolt_hair_ornament,694,lightning螺栓头发饰品,medium,自动拆词；需校对未知片段: lightning
+undone_neck_ribbon,693,undone脖子丝带,medium,自动拆词；需校对未知片段: undone
+shoulder_guard,693,肩guard,medium,自动拆词；需校对未知片段: guard
+hedgehog_tail,693,hedgehog尾巴,medium,自动拆词；需校对未知片段: hedgehog
+digital_clock,692,digital时钟,medium,自动拆词；需校对未知片段: digital
+lop_rabbit_ears,692,lop兔子耳朵,medium,自动拆词；需校对未知片段: lop
+closet,692,closet,low,自动拆词；需校对未知片段: closet
+cassock,692,cassock,low,自动拆词；需校对未知片段: cassock
+metamoran_vest,692,metamoran背心,medium,自动拆词；需校对未知片段: metamoran
+normal_suit,692,normal套装,medium,自动拆词；需校对未知片段: normal
+checkered_legwear,692,棋盘格腿部穿着,medium,自动拆词组合，建议校对语序
+sparse_chest_hair,692,sparse胸部头发,medium,自动拆词；需校对未知片段: sparse
+see-through_swimsuit,691,透视泳装,medium,自动拆词组合，建议校对语序
+saury,691,saury,low,自动拆词；需校对未知片段: saury
+holding_necklace,690,拿着项链,medium,自动拆词组合，建议校对语序
+chakram,690,chakram,low,自动拆词；需校对未知片段: chakram
+panties_over_pantyhose,690,内裤覆在连裤袜,medium,自动拆词组合，建议校对语序
+orange_bra,689,橙色bra,medium,自动拆词；需校对未知片段: bra
+blood_on_bandages,689,血在bandages,medium,自动拆词；需校对未知片段: bandages
+pink_horns,689,粉色角,medium,自动拆词组合，建议校对语序
+meadow,688,meadow,low,自动拆词；需校对未知片段: meadow
+remembering,688,remembering,low,自动拆词；需校对未知片段: remembering
+saint_quartz_(fate),688,saintquartz（fate）,low,"自动拆词；需校对未知片段: saint, quartz"
+vertical_foregrip,687,竖向foregrip,medium,自动拆词；需校对未知片段: foregrip
+calligraphy,687,calligraphy,low,自动拆词；需校对未知片段: calligraphy
+adjusting_scarf,687,adjusting围巾,medium,自动拆词；需校对未知片段: adjusting
+scratching_cheek,687,scratching脸颊,medium,自动拆词；需校对未知片段: scratching
+layered_shirt,687,layered衬衫,medium,自动拆词；需校对未知片段: layered
+emoticon,686,emoticon,low,自动拆词；需校对未知片段: emoticon
+bird_on_arm,686,鸟在手臂,medium,自动拆词组合，建议校对语序
+pokemon_ears,686,pokemon耳朵,medium,自动拆词；需校对未知片段: pokemon
+paint_on_clothes,686,paint在服装,medium,自动拆词；需校对未知片段: paint
+scar_on_hand,686,伤疤在手,medium,自动拆词组合，建议校对语序
+blue_outline,684,蓝色outline,medium,自动拆词；需校对未知片段: outline
+green_feathers,684,绿色羽毛,medium,自动拆词组合，建议校对语序
+unworn_bikini,684,未穿戴比基尼,medium,自动拆词组合，建议校对语序
+pink_sports_bra,683,粉色运动bra,medium,自动拆词；需校对未知片段: bra
+tape_on_nipples,683,tape在乳头,medium,自动拆词；需校对未知片段: tape
+casting_spell,682,castingspell,low,"自动拆词；需校对未知片段: casting, spell"
+adjusting_buruma,682,adjustingburuma,low,"自动拆词；需校对未知片段: adjusting, buruma"
+playground,682,playground,low,自动拆词；需校对未知片段: playground
+rice_paddy,681,ricepaddy,low,"自动拆词；需校对未知片段: rice, paddy"
+noses_touching,681,nosestouching,low,"自动拆词；需校对未知片段: noses, touching"
+side-tie_shirt,681,侧边系带衬衫,medium,自动拆词组合，建议校对语序
+green_rose,680,绿色rose,medium,自动拆词；需校对未知片段: rose
+torn_coat,680,破损外套,medium,自动拆词组合，建议校对语序
+beach_mat,680,beachmat,low,"自动拆词；需校对未知片段: beach, mat"
+baton_(weapon),679,baton（武器）,low,自动拆词；需校对未知片段: baton
+ai_ai_gasa,679,相合伞,high,
+rash_guard,679,rashguard,low,"自动拆词；需校对未知片段: rash, guard"
+poke_ball_(legends),679,poke球（legends）,medium,自动拆词；需校对未知片段: poke
+ankle_bow,678,脚踝蝴蝶结,medium,自动拆词组合，建议校对语序
+covering_own_ears,678,遮住自己的耳朵,medium,自动拆词组合，建议校对语序
+bridle,678,bridle,low,自动拆词；需校对未知片段: bridle
+mtu_virus,678,mtuvirus,low,"自动拆词；需校对未知片段: mtu, virus"
+bird_boy,678,鸟男孩,medium,自动拆词组合，建议校对语序
+butterfly_tattoo,677,蝴蝶纹身,medium,自动拆词组合，建议校对语序
+bandaid_on_head,677,创可贴在头,medium,自动拆词组合，建议校对语序
+fur-trimmed_bikini,676,毛皮饰边比基尼,medium,自动拆词组合，建议校对语序
+implied_extra_ears,676,暗示extra耳朵,medium,自动拆词；需校对未知片段: extra
+amusement_park,676,amusementpark,low,"自动拆词；需校对未知片段: amusement, park"
+hat_tassel,676,帽子流苏,medium,自动拆词组合，建议校对语序
+crosshatching,675,crosshatching,low,自动拆词；需校对未知片段: crosshatching
+hand_over_face,675,手覆在脸,medium,自动拆词组合，建议校对语序
+hogtie,675,hogtie,low,自动拆词；需校对未知片段: hogtie
+coconut_tree,675,coconut树,medium,自动拆词；需校对未知片段: coconut
+argyle_cutout,675,菱格开洞,medium,自动拆词组合，建议校对语序
+cross-laced_skirt,675,十字蕾丝边裙子,medium,自动拆词组合，建议校对语序
+fruit_on_head,675,fruit在头,medium,自动拆词；需校对未知片段: fruit
+fruit_cup,675,fruit杯子,medium,自动拆词；需校对未知片段: fruit
+height,675,height,low,自动拆词；需校对未知片段: height
+starry_hair,675,starry头发,medium,自动拆词；需校对未知片段: starry
+sparkle_hair_ornament,675,sparkle头发饰品,medium,自动拆词；需校对未知片段: sparkle
+too_literal,674,tooliteral,low,"自动拆词；需校对未知片段: too, literal"
+suspenders_slip,674,suspendersslip,low,"自动拆词；需校对未知片段: suspenders, slip"
+cow_costume,673,cow服装,medium,自动拆词；需校对未知片段: cow
+fried_rice,673,friedrice,low,"自动拆词；需校对未知片段: fried, rice"
+drum_magazine,673,drummagazine,low,"自动拆词；需校对未知片段: drum, magazine"
+anti-aircraft_gun,673,antiaircraft枪,low,"自动拆词；需校对未知片段: anti, aircraft"
+pregnancy_test,673,pregnancytest,low,"自动拆词；需校对未知片段: pregnancy, test"
+penis_shadow,673,阴茎shadow,medium,自动拆词；需校对未知片段: shadow
+blood_on_ground,672,血在ground,medium,自动拆词；需校对未知片段: ground
+multicolored_leotard,672,多色连体衣,medium,自动拆词组合，建议校对语序
+white_garter_belt,672,白色吊袜带腰带,medium,自动拆词组合，建议校对语序
+holding_toothbrush,672,拿着toothbrush,medium,自动拆词；需校对未知片段: toothbrush
+toga,671,toga,low,自动拆词；需校对未知片段: toga
+red_carpet,670,红色carpet,medium,自动拆词；需校对未知片段: carpet
+holding_lipstick_tube,670,拿着lipstick筒状,medium,自动拆词；需校对未知片段: lipstick
+multi-strapped_bikini_top,670,multistrapped比基尼上装,low,"自动拆词；需校对未知片段: multi, strapped"
+mg42,669,mg42,low,自动拆词；需校对未知片段: mg42
+nipple-to-nipple,669,乳头乳头,medium,自动拆词组合，建议校对语序
+pushing_away,669,pushingaway,low,"自动拆词；需校对未知片段: pushing, away"
+spoken_expression,669,spokenexpression,low,"自动拆词；需校对未知片段: spoken, expression"
+ainu,669,ainu,low,自动拆词；需校对未知片段: ainu
+holding_with_tail,668,拿着尾巴,medium,自动拆词组合，建议校对语序
+white_wristband,668,白色wristband,medium,自动拆词；需校对未知片段: wristband
+long_ribbon,668,长丝带,medium,自动拆词组合，建议校对语序
+shogi,667,shogi,low,自动拆词；需校对未知片段: shogi
+green_fire,667,绿色fire,medium,自动拆词；需校对未知片段: fire
+facing_down,667,facing变小,medium,自动拆词；需校对未知片段: facing
+senbei,666,senbei,low,自动拆词；需校对未知片段: senbei
+dawn,666,dawn,low,自动拆词；需校对未知片段: dawn
+purple_robe,666,紫色长袍,medium,自动拆词组合，建议校对语序
+turtleneck_jacket,666,高领夹克,medium,自动拆词组合，建议校对语序
+rice_hat,665,rice帽子,medium,自动拆词；需校对未知片段: rice
+bacon,665,bacon,low,自动拆词；需校对未知片段: bacon
+washing_hair,665,washing头发,medium,自动拆词；需校对未知片段: washing
+dark_clouds,665,深色clouds,medium,自动拆词；需校对未知片段: clouds
+forced_smile,664,forcedsmile,low,"自动拆词；需校对未知片段: forced, smile"
+shared_earphones,664,共享earphones,medium,自动拆词；需校对未知片段: earphones
+banana_peel,664,bananapeel,low,"自动拆词；需校对未知片段: banana, peel"
+mole_on_arm,664,痣在手臂,medium,自动拆词组合，建议校对语序
+holding_mirror,664,拿着mirror,medium,自动拆词；需校对未知片段: mirror
+two-sided_cloak,664,两个双面斗篷,medium,自动拆词组合，建议校对语序
+refraction,663,refraction,low,自动拆词；需校对未知片段: refraction
+corsage,663,corsage,low,自动拆词；需校对未知片段: corsage
+black_outline,662,黑色outline,medium,自动拆词；需校对未知片段: outline
+anchor_earrings,662,anchor耳环,medium,自动拆词；需校对未知片段: anchor
+wrapped_candy,662,wrappedcandy,low,"自动拆词；需校对未知片段: wrapped, candy"
+gingham,661,gingham,low,自动拆词；需校对未知片段: gingham
+sweet_lolita,661,sweetlolita,low,"自动拆词；需校对未知片段: sweet, lolita"
+asymmetrical_sidelocks,661,asymmetricalsidelocks,low,"自动拆词；需校对未知片段: asymmetrical, sidelocks"
+lying_on_water,661,躺着在水,medium,自动拆词组合，建议校对语序
+side-tie_skirt,661,侧边系带裙子,medium,自动拆词组合，建议校对语序
+print_scarf,661,印花围巾,medium,自动拆词组合，建议校对语序
+green_collar,661,绿色衣领,medium,自动拆词组合，建议校对语序
+sweater_tucked_in,661,毛衣塞入在,medium,自动拆词组合，建议校对语序
+bc_freedom_(emblem),661,BC自由学园（徽章）,medium,作品专属徽章
+square_neckline,660,square领口,medium,自动拆词；需校对未知片段: square
+mini_witch_hat,659,迷你女巫帽子,medium,自动拆词组合，建议校对语序
+holding_key,659,拿着钥匙,medium,自动拆词组合，建议校对语序
+baking,658,烘焙,high,
+on_stool,658,在凳子,medium,自动拆词组合，建议校对语序
+oar,658,桨,medium,自动拆词组合，建议校对语序
+nipple_jewelry,658,乳头饰品,medium,自动拆词组合，建议校对语序
+holding_torch,658,拿着火把,medium,自动拆词组合，建议校对语序
+holding_plectrum,657,拿着拨片,medium,自动拆词组合，建议校对语序
+jug_(bottle),657,jug（瓶）,low,自动拆词；需校对未知片段: jug
+white_tube_top,657,白色筒状上装,medium,自动拆词组合，建议校对语序
+unworn_hair_ornament,656,未穿戴头发饰品,medium,自动拆词组合，建议校对语序

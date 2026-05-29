@@ -38,7 +38,10 @@ use illutag_core::library::{
     create_user_folder, delete_reference_board, delete_reference_board_folder, delete_user_folder,
     duplicate_reference_board_item, export_gallery_image_from_state, export_reference_board_item_from_state,
     import_reference_board_item_to_library, list_library_from_state,
-    list_image_auto_tags,
+    list_image_auto_tags, list_image_user_tags, add_image_user_custom_tag, remove_image_user_custom_tag,
+    add_image_user_supplement_tag, remove_image_user_supplement_tag,
+    list_tag_management_state, create_user_tag_folder, rename_user_tag_folder, delete_user_tag_folder,
+    assign_user_tag_to_folder, unassign_user_tag_from_folder, create_user_custom_tag,
     search_gallery_image_ids, start_startup_cleanup, startup_cleanup_status, suggest_known_auto_tags,
     move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
@@ -48,7 +51,7 @@ use illutag_core::library::{
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
-    AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, ThumbnailGenerationProgress,
+    AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
 use std::sync::{Arc, Mutex};
@@ -309,12 +312,113 @@ fn list_image_auto_tags_command(
 }
 
 #[tauri::command]
+fn list_image_user_tags_command(
+    image_id: String,
+    state: State<AppState>,
+) -> Result<ImageUserTagSummary, String> {
+    list_image_user_tags(image_id, &state)
+}
+
+#[tauri::command]
+fn add_image_user_custom_tag_command(
+    image_id: String,
+    tag_text: String,
+    state: State<AppState>,
+) -> Result<ImageUserTagSummary, String> {
+    add_image_user_custom_tag(image_id, tag_text, &state)
+}
+
+#[tauri::command]
+fn remove_image_user_custom_tag_command(
+    image_id: String,
+    tag_text: String,
+    state: State<AppState>,
+) -> Result<ImageUserTagSummary, String> {
+    remove_image_user_custom_tag(image_id, tag_text, &state)
+}
+
+#[tauri::command]
+fn add_image_user_supplement_tag_command(
+    image_id: String,
+    tag_en: String,
+    tag_zh: Option<String>,
+    state: State<AppState>,
+) -> Result<ImageUserTagSummary, String> {
+    add_image_user_supplement_tag(image_id, tag_en, tag_zh, &state)
+}
+
+#[tauri::command]
+fn remove_image_user_supplement_tag_command(
+    image_id: String,
+    tag_en: String,
+    state: State<AppState>,
+) -> Result<ImageUserTagSummary, String> {
+    remove_image_user_supplement_tag(image_id, tag_en, &state)
+}
+
+#[tauri::command]
+fn list_tag_management_state_command(state: State<AppState>) -> Result<TagManagementState, String> {
+    list_tag_management_state(&state)
+}
+
+#[tauri::command]
+fn create_user_tag_folder_command(
+    name: String,
+    state: State<AppState>,
+) -> Result<TagManagementState, String> {
+    create_user_tag_folder(name, &state)
+}
+
+#[tauri::command]
+fn create_user_custom_tag_command(
+    tag_text: String,
+    state: State<AppState>,
+) -> Result<TagManagementState, String> {
+    create_user_custom_tag(tag_text, &state)
+}
+
+#[tauri::command]
+fn rename_user_tag_folder_command(
+    folder_id: i64,
+    name: String,
+    state: State<AppState>,
+) -> Result<TagManagementState, String> {
+    rename_user_tag_folder(folder_id, name, &state)
+}
+
+#[tauri::command]
+fn delete_user_tag_folder_command(
+    folder_id: i64,
+    state: State<AppState>,
+) -> Result<TagManagementState, String> {
+    delete_user_tag_folder(folder_id, &state)
+}
+
+#[tauri::command]
+fn assign_user_tag_to_folder_command(
+    folder_id: i64,
+    tag_text: String,
+    state: State<AppState>,
+) -> Result<TagManagementState, String> {
+    assign_user_tag_to_folder(folder_id, tag_text, &state)
+}
+
+#[tauri::command]
+fn unassign_user_tag_from_folder_command(
+    tag_text: String,
+    state: State<AppState>,
+) -> Result<TagManagementState, String> {
+    unassign_user_tag_from_folder(tag_text, &state)
+}
+
+#[tauri::command]
 fn suggest_known_auto_tags_command(
     query: String,
     limit: Option<i64>,
+    include_user_custom: Option<bool>,
     state: State<AppState>,
 ) -> Result<Vec<KnownAutoTagSuggestion>, String> {
-    suggest_known_auto_tags(query, limit, &state)
+    suggest_known_auto_tags(query, limit, include_user_custom, &state)
 }
 
 #[tauri::command]
@@ -748,6 +852,18 @@ fn main() {
             stop_color_signature_generation_command,
             rebuild_color_signature_cache_command,
             list_image_auto_tags_command,
+            list_image_user_tags_command,
+            add_image_user_custom_tag_command,
+            remove_image_user_custom_tag_command,
+            add_image_user_supplement_tag_command,
+            remove_image_user_supplement_tag_command,
+            list_tag_management_state_command,
+            create_user_tag_folder_command,
+            create_user_custom_tag_command,
+            rename_user_tag_folder_command,
+            delete_user_tag_folder_command,
+            assign_user_tag_to_folder_command,
+            unassign_user_tag_from_folder_command,
             suggest_known_auto_tags_command,
             search_gallery_image_ids_command,
             search_gallery_image_ids_by_natural_language_command,

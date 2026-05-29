@@ -15,6 +15,7 @@ type KnownAutoTagSuggestion = {
   tagEn: string
   tagZh?: string | null
   imageCount: number
+  isUserCustom?: boolean
 }
 
 const props = defineProps<{
@@ -475,7 +476,12 @@ function onSearchWheel(event: WheelEvent) {
               @pointercancel="onSearchChipsPointerCancel"
               @lostpointercapture="onSearchChipsLostPointerCapture"
             >
-              <span v-for="tag in searchZhSelected" :key="tag.tagEn" class="gallery-search__chip">
+              <span
+                v-for="tag in searchZhSelected"
+                :key="tag.tagEn"
+                class="gallery-search__chip"
+                :class="{ 'is-user-custom': Boolean(tag.isUserCustom) }"
+              >
                 <span class="gallery-search__chip-text">{{ tag.tagZh || tag.tagEn }}</span>
                 <button
                   type="button"
@@ -502,11 +508,12 @@ function onSearchWheel(event: WheelEvent) {
               v-for="item in searchZhSuggestions"
               :key="item.tagEn"
               class="gallery-search__suggestion"
+              :class="{ 'is-user-custom': Boolean(item.isUserCustom) }"
               type="button"
               @mousedown.prevent="handlers.selectSearchZhSuggestion(item)"
             >
               <span>{{ item.tagZh || item.tagEn }}</span>
-              <small>{{ item.tagEn }} · {{ item.imageCount }}</small>
+              <small>{{ item.tagEn }} · {{ item.imageCount }}{{ item.isUserCustom ? ' · 自定义' : '' }}</small>
             </button>
           </div>
         </div>
