@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 type LibraryFolder = {
   path: string
 }
@@ -48,8 +48,8 @@ defineProps<{
   <section class="settings">
     <div class="settings__header">
       <div>
-        <h2>图库文件夹</h2>
-        <p>添加本地图片文件夹后，主页会按修改时间展示瀑布流。</p>
+        <h2>Tips</h2>
+        <p>推荐按从上往下的顺序进行生成缩略图、自然语言等工作</p>
       </div>
     </div>
 
@@ -68,7 +68,7 @@ defineProps<{
         type="checkbox"
         @change="handlers.setThemeMode(($event.target as HTMLInputElement).checked ? 'dark' : 'light')"
       />
-      <span>深色模式</span>
+      <span>深色模式（实验）</span>
     </label>
 
     <label class="setting-toggle">
@@ -77,7 +77,7 @@ defineProps<{
         type="checkbox"
         @change="handlers.setAutoFixRightSidebarOnPreview(($event.target as HTMLInputElement).checked)"
       />
-      <span>预览参考板时自动固定右侧栏</span>
+      <span>开启预览参考板时自动固定右侧栏</span>
     </label>
 
     <label class="setting-toggle">
@@ -86,7 +86,7 @@ defineProps<{
         type="checkbox"
         @change="handlers.setThumbnailCacheEnabled(($event.target as HTMLInputElement).checked)"
       />
-      <span>启用缩略图缓存（WebP 768）</span>
+      <span>启用缩略图缓存</span>
     </label>
 
     <label class="setting-toggle">

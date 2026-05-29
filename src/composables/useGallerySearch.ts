@@ -933,7 +933,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   async function suggestKnownAutoTagsForInput(
     query: string,
     limit = 30,
-    options?: { includeUserCustom?: boolean },
+    options?: { includeUserCustom?: boolean; includeDictionary?: boolean },
   ): Promise<KnownAutoTagSuggestion[]> {
     const keyword = query.trim()
     if (!keyword) return []
@@ -942,6 +942,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       query: keyword,
       limit,
       includeUserCustom: Boolean(options?.includeUserCustom),
+      includeDictionary: Boolean(options?.includeDictionary),
     })
     return rows
       .map((item) => ({
@@ -957,7 +958,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     const keyword = input.trim()
     if (!keyword) return null
     const keywordLower = keyword.toLowerCase()
-    const suggestions = await suggestKnownAutoTagsForInput(keyword, 60)
+    const suggestions = await suggestKnownAutoTagsForInput(keyword, 60, { includeDictionary: true })
     for (const suggestion of suggestions) {
       if (suggestion.tagEn.toLowerCase() === keywordLower) return suggestion
       if ((suggestion.tagZh ?? '').trim().toLowerCase() === keywordLower) return suggestion

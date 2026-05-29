@@ -2915,6 +2915,12 @@ button {
   cursor: pointer;
 }
 
+.image-detail-modal__dialog-option--dual {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 48%);
+  align-items: center;
+  gap: 10px;
+}
+
 .image-detail-modal__dialog-option:hover {
   border-color: #6f8298;
   background: #26313c;
@@ -2923,13 +2929,21 @@ button {
 .image-detail-modal__dialog-option-main {
   color: #e8eef7;
   font-size: 12px;
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .image-detail-modal__dialog-option-sub {
+  justify-self: end;
+  min-width: 0;
+  text-align: right;
   color: #95a6b8;
   font-size: 11px;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .image-detail-modal__dialog-empty {

@@ -41,7 +41,7 @@ use illutag_core::library::{
     list_image_auto_tags, list_image_user_tags, add_image_user_custom_tag, remove_image_user_custom_tag,
     add_image_user_supplement_tag, remove_image_user_supplement_tag,
     list_tag_management_state, create_user_tag_folder, rename_user_tag_folder, delete_user_tag_folder,
-    assign_user_tag_to_folder, unassign_user_tag_from_folder, create_user_custom_tag,
+    assign_user_tag_to_folder, unassign_user_tag_from_folder, create_user_custom_tag, delete_user_custom_tag,
     search_gallery_image_ids, start_startup_cleanup, startup_cleanup_status, suggest_known_auto_tags,
     move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
@@ -378,6 +378,14 @@ fn create_user_custom_tag_command(
 }
 
 #[tauri::command]
+fn delete_user_custom_tag_command(
+    tag_text: String,
+    state: State<AppState>,
+) -> Result<TagManagementState, String> {
+    delete_user_custom_tag(tag_text, &state)
+}
+
+#[tauri::command]
 fn rename_user_tag_folder_command(
     folder_id: i64,
     name: String,
@@ -416,9 +424,10 @@ fn suggest_known_auto_tags_command(
     query: String,
     limit: Option<i64>,
     include_user_custom: Option<bool>,
+    include_dictionary: Option<bool>,
     state: State<AppState>,
 ) -> Result<Vec<KnownAutoTagSuggestion>, String> {
-    suggest_known_auto_tags(query, limit, include_user_custom, &state)
+    suggest_known_auto_tags(query, limit, include_user_custom, include_dictionary, &state)
 }
 
 #[tauri::command]
@@ -860,6 +869,7 @@ fn main() {
             list_tag_management_state_command,
             create_user_tag_folder_command,
             create_user_custom_tag_command,
+            delete_user_custom_tag_command,
             rename_user_tag_folder_command,
             delete_user_tag_folder_command,
             assign_user_tag_to_folder_command,

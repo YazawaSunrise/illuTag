@@ -39,6 +39,7 @@ const COLOR_SIGNATURE_DIM: usize = COLOR_SIGNATURE_HUE_BINS + 8;
 const CLIP_IMAGE_SERVICE_IDLE_RELEASE_MS: i64 = 20 * 60 * 1000;
 const CLIP_IMAGE_SERVICE_IDLE_CHECK_INTERVAL_MS: u64 = 30_000;
 const USER_FOLDER_SOURCE_KIND_LIBRARY_DIR: &str = "library_dir";
+const TAG_DICTIONARY_SOURCE_SCHEMA_VERSION: &str = "csv-col2-col5-v1";
 
 pub struct AppState {
     pub database_path: PathBuf,
@@ -3102,17 +3103,23 @@ pub fn list_image_auto_tags(
     image_id: String,
     state: &AppState,
 ) -> Result<ImageAutoTagSummary, String> {
+    sync_tag_dictionary_from_source_if_changed(state)?;
     let conn = open_database(&state.database_path)?;
     let mut stmt = conn
         .prepare(
             "
-            SELECT category, tag_en, tag_zh, confidence
-            FROM image_auto_tags
+            SELECT
+              t.category,
+              t.tag_en,
+              COALESCE(NULLIF(d.tag_zh, ''), NULLIF(t.tag_zh, ''), t.tag_en) AS tag_zh,
+              t.confidence
+            FROM image_auto_tags t
+            LEFT JOIN tag_dictionary d ON d.tag_en = t.tag_en
             WHERE image_id = ?1
             ORDER BY
-              CASE category WHEN 'character' THEN 0 WHEN 'general' THEN 1 ELSE 2 END,
-              confidence DESC,
-              tag_en COLLATE NOCASE
+              CASE t.category WHEN 'character' THEN 0 WHEN 'general' THEN 1 ELSE 2 END,
+              t.confidence DESC,
+              t.tag_en COLLATE NOCASE
             ",
         )
         .map_err(|error| format!("Failed to load image auto tags: {error}"))?;
@@ -3202,7 +3209,7 @@ fn load_image_user_tag_summary(conn: &Connection, image_id: &str) -> Result<Imag
             "
             SELECT
               s.tag_en,
-              COALESCE(NULLIF(s.tag_zh, ''), d.tag_zh) AS tag_zh
+              COALESCE(NULLIF(d.tag_zh, ''), NULLIF(s.tag_zh, ''), s.tag_en) AS tag_zh
             FROM image_user_supplement_tags s
             LEFT JOIN tag_dictionary d ON d.tag_en = s.tag_en
             WHERE s.image_id = ?1
@@ -3229,6 +3236,7 @@ fn load_image_user_tag_summary(conn: &Connection, image_id: &str) -> Result<Imag
 }
 
 pub fn list_image_user_tags(image_id: String, state: &AppState) -> Result<ImageUserTagSummary, String> {
+    sync_tag_dictionary_from_source_if_changed(state)?;
     let conn = open_database(&state.database_path)?;
     load_image_user_tag_summary(&conn, &image_id)
 }
@@ -3460,6 +3468,35 @@ pub fn create_user_custom_tag(tag_text: String, state: &AppState) -> Result<TagM
     load_tag_management_state(&conn)
 }
 
+pub fn delete_user_custom_tag(tag_text: String, state: &AppState) -> Result<TagManagementState, String> {
+    let normalized_tag = tag_text.trim().to_string();
+    if normalized_tag.is_empty() {
+        return Err("Tag cannot be empty".to_string());
+    }
+    let mut conn = open_database(&state.database_path)?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to open user custom tag delete transaction: {error}"))?;
+    tx.execute(
+        "DELETE FROM image_user_custom_tags WHERE tag_text = ?1",
+        params![normalized_tag.clone()],
+    )
+    .map_err(|error| format!("Failed to delete image custom tag rows: {error}"))?;
+    tx.execute(
+        "DELETE FROM user_tag_folder_members WHERE tag_text = ?1",
+        params![normalized_tag.clone()],
+    )
+    .map_err(|error| format!("Failed to delete tag folder member rows: {error}"))?;
+    tx.execute(
+        "DELETE FROM user_custom_tags WHERE tag_text = ?1",
+        params![normalized_tag],
+    )
+    .map_err(|error| format!("Failed to delete user custom tag row: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("Failed to commit user custom tag delete transaction: {error}"))?;
+    load_tag_management_state(&conn)
+}
+
 pub fn rename_user_tag_folder(
     folder_id: i64,
     name: String,
@@ -3567,8 +3604,10 @@ pub fn suggest_known_auto_tags(
     query: String,
     limit: Option<i64>,
     include_user_custom: Option<bool>,
+    include_dictionary: Option<bool>,
     state: &AppState,
 ) -> Result<Vec<KnownAutoTagSuggestion>, String> {
+    sync_tag_dictionary_from_source_if_changed(state)?;
     let keyword = query.trim();
     if keyword.is_empty() {
         return Ok(Vec::new());
@@ -3579,6 +3618,7 @@ pub fn suggest_known_auto_tags(
     let like_prefix = format!("{}%", escape_like_pattern(&keyword_lower));
     let limit = limit.unwrap_or(20).clamp(1, 80);
     let include_user_custom = include_user_custom.unwrap_or(false);
+    let include_dictionary = include_dictionary.unwrap_or(false);
     let mut stmt = conn
         .prepare(
             "
@@ -3597,10 +3637,17 @@ pub fn suggest_known_auto_tags(
                 AND COALESCE(i.trashed, 0) = 0
               GROUP BY iuct.tag_text
             ),
+            dictionary_candidates AS (
+              SELECT
+                d.tag_en AS tag_en,
+                d.tag_zh AS tag_zh
+              FROM tag_dictionary d
+              WHERE ?6 = 1
+            ),
             candidates AS (
             SELECT
               k.tag_en AS tag_en,
-              COALESCE(NULLIF(k.tag_zh, ''), d.tag_zh) AS tag_zh,
+              COALESCE(NULLIF(d.tag_zh, ''), NULLIF(k.tag_zh, ''), k.tag_en) AS tag_zh,
               k.image_count AS image_count,
               0 AS is_user_custom
             FROM known_image_tags k
@@ -3616,6 +3663,13 @@ pub fn suggest_known_auto_tags(
             FROM custom_tag_candidates ct
             LEFT JOIN custom_tag_counts cc ON cc.tag_text = ct.tag_text
             WHERE ?5 = 1
+            UNION ALL
+            SELECT
+              dc.tag_en AS tag_en,
+              dc.tag_zh AS tag_zh,
+              0 AS image_count,
+              0 AS is_user_custom
+            FROM dictionary_candidates dc
             ),
             filtered AS (
               SELECT * FROM candidates
@@ -3658,7 +3712,8 @@ pub fn suggest_known_auto_tags(
                 like,
                 like_prefix,
                 limit,
-                if include_user_custom { 1 } else { 0 }
+                if include_user_custom { 1 } else { 0 },
+                if include_dictionary { 1 } else { 0 }
             ],
             |row| {
             Ok(KnownAutoTagSuggestion {
@@ -4969,6 +5024,12 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
           ON known_image_tags(model_name, tag_zh);
         CREATE INDEX IF NOT EXISTS idx_known_image_tags_model_en
           ON known_image_tags(model_name, tag_en);
+
+        CREATE TABLE IF NOT EXISTS app_meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS image_user_custom_tags (
           image_id TEXT NOT NULL,
@@ -8210,24 +8271,76 @@ fn upsert_thumbnail_record(
 }
 
 fn load_cn_tag_dictionary_map() -> Result<HashMap<String, String>, String> {
-    let dictionary_path = resolve_dictionary_xlsx_path()?;
+    let dictionary_path = resolve_dictionary_source_path()?;
     if !dictionary_path.is_file() {
         return Ok(HashMap::new());
     }
+    let exact_pairs = load_cn_tag_dictionary_pairs_from_source(&dictionary_path)?;
+    Ok(build_lookup_dictionary_map(&exact_pairs))
+}
 
-    let mut workbook = open_workbook_auto(&dictionary_path)
-        .map_err(|error| format!("Failed to open dictionary01.xlsx: {error}"))?;
+fn load_cn_tag_dictionary_pairs_from_source(path: &Path) -> Result<HashMap<String, String>, String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if extension == "csv" {
+        return load_cn_tag_dictionary_pairs_from_csv(path);
+    }
+    load_cn_tag_dictionary_pairs_from_xlsx(path)
+}
+
+fn load_cn_tag_dictionary_pairs_from_csv(path: &Path) -> Result<HashMap<String, String>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read dictionary CSV {}: {error}", path.display()))?;
+    let mut pairs = HashMap::<String, String>::new();
+    for (line_index, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let fields = parse_csv_line(trimmed);
+        let tag_en = fields
+            .get(1)
+            .map(|value| value.trim())
+            .unwrap_or("");
+        let tag_zh = fields
+            .get(4)
+            .map(|value| value.trim())
+            .unwrap_or("");
+        if tag_en.is_empty() || tag_zh.is_empty() {
+            continue;
+        }
+        if line_index == 0
+            && (tag_en.eq_ignore_ascii_case("tag")
+                || tag_en.eq_ignore_ascii_case("url")
+                || tag_en.eq_ignore_ascii_case("english")
+                || tag_en.eq_ignore_ascii_case("en")
+                || tag_zh.contains("翻译")
+                || tag_zh.contains("中文"))
+        {
+            continue;
+        }
+        pairs.insert(tag_en.to_string(), tag_zh.to_string());
+    }
+    Ok(pairs)
+}
+
+fn load_cn_tag_dictionary_pairs_from_xlsx(path: &Path) -> Result<HashMap<String, String>, String> {
+    let mut workbook = open_workbook_auto(path)
+        .map_err(|error| format!("Failed to open dictionary workbook {}: {error}", path.display()))?;
     let sheet_name = workbook
         .sheet_names()
         .first()
         .cloned()
-        .ok_or_else(|| "dictionary01.xlsx has no sheets".to_string())?;
+        .ok_or_else(|| "Dictionary workbook has no sheets".to_string())?;
     let range = workbook
         .worksheet_range(&sheet_name)
         .map_err(|error| format!("Failed to read dictionary sheet: {error}"))?;
 
     let mut rows = range.rows();
-    let header = rows.next().ok_or_else(|| "dictionary sheet is empty".to_string())?;
+    let header = rows.next().ok_or_else(|| "Dictionary sheet is empty".to_string())?;
     let header_names: Vec<String> = header
         .iter()
         .map(|cell| excel_cell_to_string(Some(cell)).unwrap_or_default().to_ascii_lowercase())
@@ -8242,13 +8355,12 @@ fn load_cn_tag_dictionary_map() -> Result<HashMap<String, String>, String> {
         .position(|name| name.contains("right_tag_cn") || name.ends_with("_cn") || name == "cn")
         .unwrap_or(3);
 
-    let mut map = HashMap::<String, String>::new();
-    let mut count = 0usize;
+    let mut pairs = HashMap::<String, String>::new();
     for row in rows {
         let tag_en = excel_cell_to_string(row.get(tag_idx)).unwrap_or_default();
         let tag_zh = excel_cell_to_string(row.get(cn_idx)).unwrap_or_default();
-        let tag_en = tag_en.trim().to_string();
-        let tag_zh = tag_zh.trim().to_string();
+        let tag_en = tag_en.trim();
+        let tag_zh = tag_zh.trim();
         if tag_en.is_empty() || tag_zh.is_empty() {
             continue;
         }
@@ -8259,15 +8371,48 @@ fn load_cn_tag_dictionary_map() -> Result<HashMap<String, String>, String> {
         {
             continue;
         }
-        map.insert(tag_en.clone(), tag_zh.clone());
-        map.insert(normalize_tag_key(&tag_en), tag_zh);
-        count += 1;
+        pairs.insert(tag_en.to_string(), tag_zh.to_string());
     }
-    if count == 0 {
-        return Ok(HashMap::new());
-    }
+    Ok(pairs)
+}
 
-    Ok(map)
+fn build_lookup_dictionary_map(pairs: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut map = HashMap::<String, String>::with_capacity(pairs.len() * 2);
+    for (tag_en, tag_zh) in pairs {
+        map.insert(tag_en.clone(), tag_zh.clone());
+        map.insert(normalize_tag_key(tag_en), tag_zh.clone());
+    }
+    map
+}
+
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::<String>::new();
+    let mut current = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_quotes = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if in_quotes {
+                    if matches!(chars.peek(), Some('"')) {
+                        current.push('"');
+                        let _ = chars.next();
+                    } else {
+                        in_quotes = false;
+                    }
+                } else {
+                    in_quotes = true;
+                }
+            }
+            ',' if !in_quotes => {
+                fields.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    fields.push(current.trim().to_string());
+    fields
 }
 
 fn excel_cell_to_string(cell: Option<&ExcelCell>) -> Option<String> {
@@ -8329,14 +8474,41 @@ fn lookup_cn_tag(dictionary: &HashMap<String, String>, tag_en: &str) -> Option<S
     dictionary.get(&normalized).cloned()
 }
 
-fn resolve_dictionary_xlsx_path() -> Result<PathBuf, String> {
+fn resolve_dictionary_source_path() -> Result<PathBuf, String> {
     let mut candidates = Vec::<PathBuf>::new();
     if let Ok(cwd) = env::current_dir() {
+        candidates.push(
+            cwd.join("wd-swinv2-tagger-v3")
+                .join("selected_tags_full_translation.csv"),
+        );
+        candidates.push(
+            cwd.join("..")
+                .join("wd-swinv2-tagger-v3")
+                .join("selected_tags_full_translation.csv"),
+        );
         candidates.push(cwd.join("wd-swinv2-tagger-v3").join("dictionary01.xlsx"));
         candidates.push(cwd.join("..").join("wd-swinv2-tagger-v3").join("dictionary01.xlsx"));
     }
     if let Ok(exe_path) = env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(
+                exe_dir
+                    .join("wd-swinv2-tagger-v3")
+                    .join("selected_tags_full_translation.csv"),
+            );
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("wd-swinv2-tagger-v3")
+                    .join("selected_tags_full_translation.csv"),
+            );
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("..")
+                    .join("wd-swinv2-tagger-v3")
+                    .join("selected_tags_full_translation.csv"),
+            );
             candidates.push(exe_dir.join("wd-swinv2-tagger-v3").join("dictionary01.xlsx"));
             candidates.push(
                 exe_dir
@@ -8359,7 +8531,98 @@ fn resolve_dictionary_xlsx_path() -> Result<PathBuf, String> {
             return Ok(candidate);
         }
     }
-    Ok(PathBuf::from("dictionary01.xlsx"))
+    Ok(PathBuf::from("selected_tags_full_translation.csv"))
+}
+
+fn ensure_app_meta_table(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "
+        CREATE TABLE IF NOT EXISTS app_meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+        ",
+        [],
+    )
+    .map_err(|error| format!("Failed to ensure app_meta table: {error}"))?;
+    Ok(())
+}
+
+fn read_app_meta_value(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT value FROM app_meta WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|error| format!("Failed to read app_meta ({key}): {error}"))
+}
+
+fn write_app_meta_value(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    let now = now_ms();
+    conn.execute(
+        "
+        INSERT INTO app_meta (key, value, updated_at)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+        ",
+        params![key, value, now],
+    )
+    .map_err(|error| format!("Failed to write app_meta ({key}): {error}"))?;
+    Ok(())
+}
+
+fn sync_tag_dictionary_from_source_if_changed(state: &AppState) -> Result<(), String> {
+    let source_path = resolve_dictionary_source_path()?;
+    if !source_path.is_file() {
+        return Ok(());
+    }
+    let metadata = fs::metadata(&source_path)
+        .map_err(|error| format!("Failed to read dictionary source metadata: {error}"))?;
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .map(system_time_ms)
+        .unwrap_or(0);
+    let signature = format!(
+        "{}|{}|{}|{}",
+        TAG_DICTIONARY_SOURCE_SCHEMA_VERSION,
+        source_path.to_string_lossy(),
+        modified_at,
+        metadata.len()
+    );
+
+    let mut conn = open_database(&state.database_path)?;
+    ensure_app_meta_table(&conn)?;
+    let last_signature = read_app_meta_value(&conn, "tag_dictionary_source_signature")?;
+    if last_signature.as_deref() == Some(signature.as_str()) {
+        return Ok(());
+    }
+
+    let exact_pairs = load_cn_tag_dictionary_pairs_from_source(&source_path)?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to open dictionary sync transaction: {error}"))?;
+    for (tag_en, tag_zh) in &exact_pairs {
+        tx.execute(
+            "
+            INSERT INTO tag_dictionary (tag_en, tag_zh, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(tag_en) DO UPDATE SET
+              tag_zh = excluded.tag_zh,
+              updated_at = excluded.updated_at
+            ",
+            params![tag_en, tag_zh, now_ms()],
+        )
+        .map_err(|error| format!("Failed to upsert tag dictionary from source: {error}"))?;
+    }
+    write_app_meta_value(&tx, "tag_dictionary_source_signature", &signature)?;
+    tx.commit()
+        .map_err(|error| format!("Failed to commit dictionary sync transaction: {error}"))?;
+    Ok(())
 }
 
 fn set_thumbnail_progress(

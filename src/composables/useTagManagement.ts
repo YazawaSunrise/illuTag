@@ -116,6 +116,21 @@ export function useTagManagement(options: UseTagManagementOptions) {
     }
   }
 
+  async function deleteTagManagerTag(tagText: string) {
+    const normalized = tagText.trim()
+    if (!normalized) return
+    try {
+      isTagManagerLoading.value = true
+      const { invoke } = await import('@tauri-apps/api/core')
+      const raw = await invoke<Record<string, unknown>>('delete_user_custom_tag_command', { tagText: normalized })
+      applyState(normalizeState(raw))
+    } catch (error) {
+      options.setErrorText(options.formatError(error))
+    } finally {
+      isTagManagerLoading.value = false
+    }
+  }
+
   async function assignTagToFolder(tagText: string, folderId: number | null = activeTagManagerFolderId.value) {
     if (!folderId) return
     const normalized = tagText.trim()
@@ -180,6 +195,7 @@ export function useTagManagement(options: UseTagManagementOptions) {
     reloadTagManagementState,
     createTagManagerFolder,
     createTagManagerTag,
+    deleteTagManagerTag,
     assignTagToFolder,
     unassignTag,
     deleteTagManagerFolder,

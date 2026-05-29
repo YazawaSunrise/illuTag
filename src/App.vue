@@ -490,10 +490,18 @@ const activeTagManagerFolder = computed(() =>
 
 const tagManagerDraggingTagText = ref<string | null>(null)
 const tagManagerDragOverFolderId = ref<number | null>(null)
+const tagManagerTagContextMenu = ref<{ tagText: string; x: number; y: number } | null>(null)
 
 const activeTagManagerFolderNameForHint = computed(() => activeTagManagerFolder.value?.name ?? '')
 
 const activeTagManagerFolderTags = computed(() => activeTagManagerFolder.value?.tags ?? [])
+const tagManagerTagContextMenuStyle = computed(() => {
+  if (!tagManagerTagContextMenu.value) return {}
+  return {
+    left: `${tagManagerTagContextMenu.value.x}px`,
+    top: `${tagManagerTagContextMenu.value.y}px`,
+  }
+})
 
 function startTagManagerTagDrag(tagText: string, event: DragEvent) {
   const normalized = tagText.trim()
@@ -508,6 +516,29 @@ function startTagManagerTagDrag(tagText: string, event: DragEvent) {
 function endTagManagerTagDrag() {
   tagManagerDraggingTagText.value = null
   tagManagerDragOverFolderId.value = null
+}
+
+function closeTagManagerTagContextMenu() {
+  tagManagerTagContextMenu.value = null
+}
+
+function openTagManagerTagContextMenu(tagText: string, event: MouseEvent) {
+  const normalized = tagText.trim()
+  if (!normalized) return
+  event.preventDefault()
+  event.stopPropagation()
+  tagManagerTagContextMenu.value = {
+    tagText: normalized,
+    x: event.clientX,
+    y: event.clientY,
+  }
+}
+
+async function deleteTagManagerTagFromContextMenu() {
+  const current = tagManagerTagContextMenu.value
+  if (!current) return
+  closeTagManagerTagContextMenu()
+  await deleteTagManagerTag(current.tagText)
 }
 
 function onTagManagerFolderDragOver(folderId: number, event: DragEvent) {
@@ -737,6 +768,7 @@ const {
   reloadTagManagementState,
   createTagManagerFolder,
   createTagManagerTag,
+  deleteTagManagerTag,
   assignTagToFolder,
   unassignTag,
   deleteTagManagerFolder,
@@ -769,6 +801,7 @@ onMounted(async () => {
   window.addEventListener('click', closeReferenceBoardCanvasMenu)
   window.addEventListener('click', closeImageDetailContextMenu)
   window.addEventListener('click', closeGalleryImageContextMenu)
+  window.addEventListener('click', closeTagManagerTagContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   void refreshBackgroundScanStatus()
   startBackgroundScanPolling()
@@ -803,6 +836,7 @@ onUnmounted(() => {
   window.removeEventListener('click', closeReferenceBoardCanvasMenu)
   window.removeEventListener('click', closeImageDetailContextMenu)
   window.removeEventListener('click', closeGalleryImageContextMenu)
+  window.removeEventListener('click', closeTagManagerTagContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
   closeImportLibraryFolderPicker(null)
   resetImageDetailUserTagEditor()
@@ -1039,6 +1073,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     closeImportLibraryFolderPicker(null)
     closeTagManager()
     endTagManagerTagDrag()
+    closeTagManagerTagContextMenu()
     closeImageDetail()
     closeGalleryImageContextMenu()
     cancelImageDrag()
@@ -1431,6 +1466,7 @@ function closeRightSidebarByHover() {
 
 function openSettings() {
   closeTagManager()
+  closeTagManagerTagContextMenu()
   viewMode.value = 'settings'
   sidebarHoverOpen.value = false
 }
@@ -1701,7 +1737,7 @@ async function refreshImageDetailSupplementSuggestionsNow() {
   imageDetailSupplementSuggestRequestToken.value = token
   imageDetailSupplementSuggestLoading.value = true
   try {
-    const rows = await suggestKnownAutoTagsForInput(keyword, 60)
+    const rows = await suggestKnownAutoTagsForInput(keyword, 60, { includeDictionary: true })
     if (token !== imageDetailSupplementSuggestRequestToken.value) return
     const existing = new Set(activeImageSupplementTags.value.map((item) => item.tagEn))
     imageDetailSupplementSuggestions.value = rows.filter((item) => !existing.has(item.tagEn))
@@ -2232,6 +2268,7 @@ function formatError(error: unknown) {
       @click="
         closeTagManager();
         endTagManagerTagDrag();
+        closeTagManagerTagContextMenu();
       "
     >
       <article class="tag-manager-modal" @click.stop>
@@ -2243,6 +2280,7 @@ function formatError(error: unknown) {
             @click="
               closeTagManager();
               endTagManagerTagDrag();
+              closeTagManagerTagContextMenu();
             "
           >
             ×
@@ -2304,6 +2342,7 @@ function formatError(error: unknown) {
                 draggable="true"
                 @dragstart="startTagManagerTagDrag(tag, $event)"
                 @dragend="endTagManagerTagDrag()"
+                @contextmenu.prevent="openTagManagerTagContextMenu(tag, $event)"
               >
                 <span class="gallery-search__chip-text">{{ tag }}</span>
               </span>
@@ -2329,6 +2368,7 @@ function formatError(error: unknown) {
                 draggable="true"
                 @dragstart="startTagManagerTagDrag(tag, $event)"
                 @dragend="endTagManagerTagDrag()"
+                @contextmenu.prevent="openTagManagerTagContextMenu(tag, $event)"
               >
                 <span class="gallery-search__chip-text">{{ tag }}</span>
                 <button type="button" class="gallery-search__chip-remove" @click.stop="unassignTag(tag)">×</button>
@@ -2337,6 +2377,15 @@ function formatError(error: unknown) {
             </div>
             <div v-if="isTagManagerLoading" class="tag-manager-modal__placeholder">处理中...</div>
           </section>
+        </div>
+        <div
+          v-if="tagManagerTagContextMenu"
+          class="context-menu"
+          :style="tagManagerTagContextMenuStyle"
+          @click.stop
+          @contextmenu.prevent
+        >
+          <button class="is-danger" type="button" @click="deleteTagManagerTagFromContextMenu()">删除标签</button>
         </div>
       </article>
     </div>
@@ -2611,7 +2660,7 @@ function formatError(error: unknown) {
                 v-for="item in imageDetailSupplementSuggestions"
                 :key="`supplement-pick:${item.tagEn}`"
                 type="button"
-                class="image-detail-modal__dialog-option"
+                class="image-detail-modal__dialog-option image-detail-modal__dialog-option--dual"
                 @click="addImageDetailSupplementTag(item)"
               >
                 <span class="image-detail-modal__dialog-option-main">{{ item.tagZh || item.tagEn }}</span>
