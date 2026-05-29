@@ -805,14 +805,35 @@ button {
   margin-right: 232px;
 }
 
-.workspace-fade-enter-active,
-.workspace-fade-leave-active {
-  transition: opacity 160ms ease;
+.workspace-view {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
 
-.workspace-fade-enter-from,
-.workspace-fade-leave-to {
+.workspace-switch-enter-active,
+.workspace-switch-leave-active {
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.workspace-switch-enter-from,
+.workspace-switch-leave-to {
   opacity: 0;
+  transform: translateY(8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-switch-enter-active,
+  .workspace-switch-leave-active {
+    transition: opacity 80ms linear;
+  }
+
+  .workspace-switch-enter-from,
+  .workspace-switch-leave-to {
+    transform: none;
+  }
 }
 
 .app-titlebar-hotspot {

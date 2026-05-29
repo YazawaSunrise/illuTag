@@ -68,6 +68,10 @@ const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPin
 const sidebarOpen = computed(() => sidebarPinnedEffective.value || sidebarHoverOpen.value)
 const rightSidebarOpen = computed(() => rightSidebarPinned.value || rightSidebarHoverOpen.value)
 const isTitlebarPinned = computed(() => !isWindowMaximized.value || isTitlebarHovered.value)
+const galleryScopeTransitionKey = computed(() => `gallery:${galleryScrollScopeKeyOf(activeUserFolderId.value)}`)
+const workspaceTransitionKey = computed(() =>
+  viewMode.value === 'gallery' ? galleryScopeTransitionKey.value : viewMode.value,
+)
 
 const activeReferenceBoard = computed(() =>
   library.value.referenceBoards.find((board) => board.id === activeReferenceBoardId.value) ?? null,
@@ -2196,89 +2200,93 @@ function formatError(error: unknown) {
         'is-right-sidebar-fixed': rightSidebarPinned,
       }"
     >
-      <SettingsView
-        v-if="viewMode === 'settings'"
-        :sidebar-pinned="sidebarPinned"
-        :auto-fix-right-sidebar-on-preview="autoFixRightSidebarOnPreview"
-        :thumbnail-cache-enabled="thumbnailCacheEnabled"
-        :is-thumbnail-generation-running="isThumbnailGenerationRunning"
-        :is-thumbnail-generation-paused="isThumbnailGenerationPaused"
-        :thumbnail-progress-text="thumbnailProgressText"
-        :thumbnail-progress-percent="thumbnailProgressPercent"
-        :thumbnail-recent-errors="thumbnailRecentErrors"
-        :is-atmosphere-generation-running="isAtmosphereGenerationRunning"
-        :is-atmosphere-generation-paused="isAtmosphereGenerationPaused"
-        :atmosphere-progress-text="atmosphereProgressText"
-        :atmosphere-progress-percent="atmosphereProgressPercent"
-        :atmosphere-recent-errors="atmosphereRecentErrors"
-        :is-color-signature-generation-running="isColorSignatureGenerationRunning"
-        :is-color-signature-generation-paused="isColorSignatureGenerationPaused"
-        :color-signature-progress-text="colorSignatureProgressText"
-        :color-signature-progress-percent="colorSignatureProgressPercent"
-        :color-signature-recent-errors="colorSignatureRecentErrors"
-        :auto-scan-on-startup="autoScanOnStartup"
-        :is-background-scan-running="isBackgroundScanRunning"
-        :is-background-scan-paused="isBackgroundScanPaused"
-        :scan-progress-text="scanProgressText"
-        :scan-recent-errors="scanRecentErrors"
-        :is-natural-language-scan-running="isNaturalLanguageScanRunning"
-        :is-natural-language-scan-paused="isNaturalLanguageScanPaused"
-        :natural-language-scan-progress-text="naturalLanguageScanProgressText"
-        :natural-language-scan-recent-errors="naturalLanguageScanRecentErrors"
-        :theme-mode="themeMode"
-        :folder-path-input="folderPathInput"
-        :is-picking-folder="isPickingFolder"
-        :is-adding-folder="isAddingFolder"
-        :is-loading="isLoading"
-        :error-text="errorText"
-        :folders="library.folders"
-        :handlers="settingsViewHandlers"
-      />
+      <Transition name="workspace-switch" mode="out-in">
+        <div :key="workspaceTransitionKey" class="workspace-view">
+          <SettingsView
+            v-if="viewMode === 'settings'"
+            :sidebar-pinned="sidebarPinned"
+            :auto-fix-right-sidebar-on-preview="autoFixRightSidebarOnPreview"
+            :thumbnail-cache-enabled="thumbnailCacheEnabled"
+            :is-thumbnail-generation-running="isThumbnailGenerationRunning"
+            :is-thumbnail-generation-paused="isThumbnailGenerationPaused"
+            :thumbnail-progress-text="thumbnailProgressText"
+            :thumbnail-progress-percent="thumbnailProgressPercent"
+            :thumbnail-recent-errors="thumbnailRecentErrors"
+            :is-atmosphere-generation-running="isAtmosphereGenerationRunning"
+            :is-atmosphere-generation-paused="isAtmosphereGenerationPaused"
+            :atmosphere-progress-text="atmosphereProgressText"
+            :atmosphere-progress-percent="atmosphereProgressPercent"
+            :atmosphere-recent-errors="atmosphereRecentErrors"
+            :is-color-signature-generation-running="isColorSignatureGenerationRunning"
+            :is-color-signature-generation-paused="isColorSignatureGenerationPaused"
+            :color-signature-progress-text="colorSignatureProgressText"
+            :color-signature-progress-percent="colorSignatureProgressPercent"
+            :color-signature-recent-errors="colorSignatureRecentErrors"
+            :auto-scan-on-startup="autoScanOnStartup"
+            :is-background-scan-running="isBackgroundScanRunning"
+            :is-background-scan-paused="isBackgroundScanPaused"
+            :scan-progress-text="scanProgressText"
+            :scan-recent-errors="scanRecentErrors"
+            :is-natural-language-scan-running="isNaturalLanguageScanRunning"
+            :is-natural-language-scan-paused="isNaturalLanguageScanPaused"
+            :natural-language-scan-progress-text="naturalLanguageScanProgressText"
+            :natural-language-scan-recent-errors="naturalLanguageScanRecentErrors"
+            :theme-mode="themeMode"
+            :folder-path-input="folderPathInput"
+            :is-picking-folder="isPickingFolder"
+            :is-adding-folder="isAddingFolder"
+            :is-loading="isLoading"
+            :error-text="errorText"
+            :folders="library.folders"
+            :handlers="settingsViewHandlers"
+          />
 
-      <ReferenceBoardView
-        v-else-if="viewMode === 'board'"
-        :active-reference-board="activeReferenceBoard"
-        :active-reference-board-items="activeReferenceBoardItems"
-        :board-pan="boardPan"
-        :board-scale="boardScale"
-        :board-canvas-bounds="activeBoardCanvasBounds"
-        :selected-reference-board-item-id="selectedReferenceBoardItemId"
-        :handlers="referenceBoardViewHandlers"
-      />
+          <ReferenceBoardView
+            v-else-if="viewMode === 'board'"
+            :active-reference-board="activeReferenceBoard"
+            :active-reference-board-items="activeReferenceBoardItems"
+            :board-pan="boardPan"
+            :board-scale="boardScale"
+            :board-canvas-bounds="activeBoardCanvasBounds"
+            :selected-reference-board-item-id="selectedReferenceBoardItemId"
+            :handlers="referenceBoardViewHandlers"
+          />
 
-      <GalleryView
-        v-else
-        :preview-drag-over-delete-zone="previewDragOverDeleteZone"
-        :visible-images="visibleImages"
-        :search-panel-style="searchPanelStyle"
-        :search-reveal-mode="searchRevealMode"
-        :is-search-focused="isSearchFocused"
-        :search-zh-input="searchZhInput"
-        :search-zh-selected="searchZhSelected"
-        :search-zh-suggestions="searchZhSuggestions"
-        :search-zh-open="searchZhOpen"
-        :search-en-query="searchEnQuery"
-        :search-file-name-query="searchFileNameQuery"
-        :search-natural-language-query="searchNaturalLanguageQuery"
-        :search-mode="searchMode"
-        :external-image-search-type="externalImageSearchType"
-        :external-image-query-url="externalImageQueryUrl"
-        :external-image-query-preview-url="externalImageQueryPreviewUrl"
-        :external-image-query-label="externalImageQueryLabel"
-        :search-confidence-min="searchConfidenceMin"
-        :search-confidence-max="searchConfidenceMax"
-        :search-running="searchRunning"
-        :search-error="searchError"
-        :is-loading="isLoading"
-        :show-unclassified-toggle="showGalleryUnclassifiedToggle"
-        :is-unclassified-only="isGalleryUnclassifiedOnly"
-        :favorite-image-ids="favoriteVisibleImageIds"
-        :layout-items="renderedLayoutItems"
-        :total-height="totalHeight"
-        :content-width="masonryContentWidth"
-        :drag-state="dragState ? { imageId: dragState.imageId, x: dragState.x, y: dragState.y } : null"
-        :handlers="galleryViewHandlers"
-      />
+          <GalleryView
+            v-else
+            :preview-drag-over-delete-zone="previewDragOverDeleteZone"
+            :visible-images="visibleImages"
+            :search-panel-style="searchPanelStyle"
+            :search-reveal-mode="searchRevealMode"
+            :is-search-focused="isSearchFocused"
+            :search-zh-input="searchZhInput"
+            :search-zh-selected="searchZhSelected"
+            :search-zh-suggestions="searchZhSuggestions"
+            :search-zh-open="searchZhOpen"
+            :search-en-query="searchEnQuery"
+            :search-file-name-query="searchFileNameQuery"
+            :search-natural-language-query="searchNaturalLanguageQuery"
+            :search-mode="searchMode"
+            :external-image-search-type="externalImageSearchType"
+            :external-image-query-url="externalImageQueryUrl"
+            :external-image-query-preview-url="externalImageQueryPreviewUrl"
+            :external-image-query-label="externalImageQueryLabel"
+            :search-confidence-min="searchConfidenceMin"
+            :search-confidence-max="searchConfidenceMax"
+            :search-running="searchRunning"
+            :search-error="searchError"
+            :is-loading="isLoading"
+            :show-unclassified-toggle="showGalleryUnclassifiedToggle"
+            :is-unclassified-only="isGalleryUnclassifiedOnly"
+            :favorite-image-ids="favoriteVisibleImageIds"
+            :layout-items="renderedLayoutItems"
+            :total-height="totalHeight"
+            :content-width="masonryContentWidth"
+            :drag-state="dragState ? { imageId: dragState.imageId, x: dragState.x, y: dragState.y } : null"
+            :handlers="galleryViewHandlers"
+          />
+        </div>
+      </Transition>
     </main>
 
     <AppOverlayLayer
