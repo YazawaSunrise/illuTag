@@ -6,6 +6,8 @@ type BoardItemLayout = {
   width: number
   height: number
   rotation: number
+  flipX: boolean
+  flipY: boolean
 }
 
 type BoardHistoryChange = {
@@ -50,6 +52,8 @@ type ReferenceBoardItemLike = {
   width: number
   height: number
   rotation: number
+  flipX: boolean
+  flipY: boolean
   zIndex: number
 }
 
@@ -144,6 +148,8 @@ export function useReferenceBoardHistory<TLibraryStore extends LibraryStoreLike>
       width: item.width,
       height: item.height,
       rotation: item.rotation,
+      flipX: item.flipX,
+      flipY: item.flipY,
     }
   }
 
@@ -154,7 +160,9 @@ export function useReferenceBoardHistory<TLibraryStore extends LibraryStoreLike>
       Math.abs(a.y - b.y) <= epsilon &&
       Math.abs(a.width - b.width) <= epsilon &&
       Math.abs(a.height - b.height) <= epsilon &&
-      Math.abs(a.rotation - b.rotation) <= epsilon
+      Math.abs(a.rotation - b.rotation) <= epsilon &&
+      a.flipX === b.flipX &&
+      a.flipY === b.flipY
     )
   }
 
@@ -210,6 +218,8 @@ export function useReferenceBoardHistory<TLibraryStore extends LibraryStoreLike>
         width: layout.width,
         height: layout.height,
         rotation: layout.rotation,
+        flipX: layout.flipX,
+        flipY: layout.flipY,
       })
     }
 
@@ -255,6 +265,8 @@ export function useReferenceBoardHistory<TLibraryStore extends LibraryStoreLike>
         width: deletedItem.layout.width,
         height: deletedItem.layout.height,
         rotation: deletedItem.layout.rotation,
+        flipX: deletedItem.layout.flipX,
+        flipY: deletedItem.layout.flipY,
         zIndex: deletedItem.zIndex,
       })
       const created = options.library.value.referenceBoardItems.find(

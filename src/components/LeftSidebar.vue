@@ -24,7 +24,7 @@ defineProps<{
   visible: boolean
   sidebarPinned: boolean
   viewMode: ViewMode
-  activeUserFolderId: number | 'all' | 'trash'
+  activeUserFolderId: number | 'all' | 'random' | 'trash'
   folderTree: FolderTreeItem[]
   folderDragOverId: number | null
   draggedFolderId: number | null
@@ -73,6 +73,15 @@ defineProps<{
           @click="handlers.showAllImages()"
         >
           全部
+        </button>
+
+        <button
+          class="sidebar__nav-button"
+          type="button"
+          :class="{ 'is-active': viewMode === 'gallery' && activeUserFolderId === 'random' }"
+          @click="handlers.showRandomImages()"
+        >
+          随机
         </button>
 
         <button

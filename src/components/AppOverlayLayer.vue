@@ -45,11 +45,21 @@ defineProps<{
       <button type="button" @click="handlers.copyReferenceBoardItemToClipboard(referenceBoardCanvasMenu.itemId)">
         复制
       </button>
-      <button v-if="handlers.canImportReferenceBoardItemToLibrary(referenceBoardCanvasMenu.itemId)" type="button" @click="handlers.importSelectedReferenceItemToLibrary(referenceBoardCanvasMenu.itemId)">
+      <button
+        v-if="handlers.canImportReferenceBoardItemToLibrary(referenceBoardCanvasMenu.itemId)"
+        type="button"
+        @click="handlers.importSelectedReferenceItemToLibrary(referenceBoardCanvasMenu.itemId)"
+      >
         加入图库
       </button>
       <button type="button" @click="handlers.exportReferenceBoardItem(referenceBoardCanvasMenu.itemId)">
         导出到本地
+      </button>
+      <button type="button" @click="handlers.flipReferenceBoardItemHorizontal(referenceBoardCanvasMenu.itemId)">
+        水平翻转
+      </button>
+      <button type="button" @click="handlers.flipReferenceBoardItemVertical(referenceBoardCanvasMenu.itemId)">
+        垂直翻转
       </button>
       <button class="is-danger" type="button" @click="handlers.removeReferenceBoardItem(referenceBoardCanvasMenu.itemId)">
         删除
@@ -82,7 +92,7 @@ defineProps<{
         :style="{ paddingLeft: `${12 + folder.depth * 14}px` }"
       >
         <span v-if="folder.hasChildren" class="folder-drop-panel__twist">
-          {{ folder.isExpanded ? '▼' : '▶' }}
+          {{ folder.isExpanded ? '▾' : '▸' }}
         </span>
         {{ folder.name }}
       </button>

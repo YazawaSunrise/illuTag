@@ -47,6 +47,8 @@ export type ReferenceBoardItem = {
   width: number
   height: number
   rotation: number
+  flipX: boolean
+  flipY: boolean
   zIndex: number
   createdAt: number
 }

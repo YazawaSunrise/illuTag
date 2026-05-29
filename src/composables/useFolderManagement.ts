@@ -63,7 +63,8 @@ const defaultFolderDragDelayMs = 160
 export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   options: UseFolderManagementOptions<TLibraryStore>,
 ) {
-  const activeUserFolderId = ref<number | 'all' | 'trash'>('all')
+  const activeUserFolderId = ref<number | 'all' | 'random' | 'trash'>('all')
+  const randomGalleryVisitSerial = ref(0)
   const unclassifiedOnlyParentFolderId = ref<number | null>(null)
   const newFolderName = ref('')
   const folderDraft = ref<FolderDraft | null>(null)
@@ -110,7 +111,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       return galleryImages.filter((image) => image.trashed)
     }
     const activeImages = galleryImages.filter((image) => !image.trashed)
-    if (activeUserFolderId.value === 'all') return activeImages
+    if (activeUserFolderId.value === 'all' || activeUserFolderId.value === 'random') return activeImages
 
     const scopeFolderIds = collectDescendantFolderIds(activeUserFolderId.value)
     const hasChildFolders = (folderGroups.value.get(activeUserFolderId.value) ?? []).length > 0
@@ -284,6 +285,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       }
       if (
         activeUserFolderId.value !== 'all' &&
+        activeUserFolderId.value !== 'random' &&
         activeUserFolderId.value !== 'trash' &&
         !options.library.value.userFolders.some((item) => item.id === activeUserFolderId.value)
       ) {
@@ -364,6 +366,14 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   function showAllImages() {
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'all'
+    unclassifiedOnlyParentFolderId.value = null
+    options.activeReferenceBoardId.value = null
+  }
+
+  function showRandomImages() {
+    options.viewMode.value = 'gallery'
+    activeUserFolderId.value = 'random'
+    randomGalleryVisitSerial.value += 1
     unclassifiedOnlyParentFolderId.value = null
     options.activeReferenceBoardId.value = null
   }
@@ -606,6 +616,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
 
   return {
     activeUserFolderId,
+    randomGalleryVisitSerial,
     unclassifiedOnlyParentFolderId,
     newFolderName,
     folderDraft,
@@ -641,6 +652,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     openFolderMenu,
     closeFolderContextMenu,
     showAllImages,
+    showRandomImages,
     showTrashImages,
     onUserFolderRowClick,
     toggleFolderUnclassifiedOnly,

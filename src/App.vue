@@ -208,6 +208,7 @@ const {
 
 const {
   activeUserFolderId,
+  randomGalleryVisitSerial,
   unclassifiedOnlyParentFolderId,
   newFolderName,
   folderDraft,
@@ -236,6 +237,7 @@ const {
   openFolderMenu,
   closeFolderContextMenu,
   showAllImages,
+  showRandomImages,
   showTrashImages,
   onUserFolderRowClick,
   toggleFolderUnclassifiedOnly,
@@ -428,6 +430,7 @@ const {
   library,
   folderScopedImages,
   activeUserFolderId,
+  randomGalleryVisitSerial,
   lastImageDragEndedAt,
   formatError,
   clamp,
@@ -1133,6 +1136,51 @@ async function exportReferenceBoardItem(itemId: number) {
   }
 }
 
+async function flipReferenceBoardItemHorizontal(itemId: number) {
+  await flipReferenceBoardItem(itemId, 'horizontal')
+}
+
+async function flipReferenceBoardItemVertical(itemId: number) {
+  await flipReferenceBoardItem(itemId, 'vertical')
+}
+
+async function flipReferenceBoardItem(itemId: number, direction: 'horizontal' | 'vertical') {
+  const item = library.value.referenceBoardItems.find((entry) => entry.id === itemId)
+  if (!item) return
+  const boardId = item.boardId
+  const beforeMap = collectBoardLayoutMap(boardId)
+  const selectionBefore = selectedReferenceBoardItemId.value
+
+  const nextFlipX = direction === 'horizontal' ? !item.flipX : item.flipX
+  const nextFlipY = direction === 'vertical' ? !item.flipY : item.flipY
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    library.value = await invoke<LibraryStore>('update_reference_board_item_layout_command', {
+      itemId: item.id,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+      rotation: item.rotation,
+      flipX: nextFlipX,
+      flipY: nextFlipY,
+    })
+    ensureBoardCanvasBoundsFor(boardId)
+    const afterMap = collectBoardLayoutMap(boardId)
+    pushBoardHistory({
+      kind: 'layout',
+      boardId,
+      changes: buildBoardHistoryChanges(beforeMap, afterMap),
+      selectionBefore,
+      selectionAfter: selectedReferenceBoardItemId.value,
+    })
+  } catch (error) {
+    errorText.value = formatError(error)
+  } finally {
+    closeReferenceBoardCanvasMenu()
+  }
+}
+
 function updateStatus() {
   const imageCount = library.value.images.length
   const folderCount = library.value.folders.length
@@ -1426,6 +1474,7 @@ const leftSidebarHandlers = {
   closeHover: closeSidebarByHover,
   closeByToggle: closeSidebarByToggle,
   showAllImages,
+  showRandomImages,
   showTrashImages,
   openFolderSectionMenu,
   openFolderMenu,
@@ -1557,6 +1606,8 @@ const overlayHandlers = {
   canImportReferenceBoardItemToLibrary,
   importSelectedReferenceItemToLibrary,
   exportReferenceBoardItem,
+  flipReferenceBoardItemHorizontal,
+  flipReferenceBoardItemVertical,
   removeReferenceBoardItem,
   pasteReferenceBoardContent,
   autoArrangeActiveReferenceBoard,
@@ -1582,8 +1633,9 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-function galleryScrollScopeKeyOf(folderId: number | 'all' | 'trash') {
+function galleryScrollScopeKeyOf(folderId: number | 'all' | 'random' | 'trash') {
   if (folderId === 'all') return 'all'
+  if (folderId === 'random') return 'random'
   if (folderId === 'trash') return 'trash'
   return `folder:${folderId}`
 }
@@ -1910,7 +1962,7 @@ function formatError(error: unknown) {
       @contextmenu.prevent
     >
       <button
-        v-if="activeUserFolderId === 'all'"
+        v-if="activeUserFolderId === 'all' || activeUserFolderId === 'random'"
         class="is-danger"
         type="button"
         @click="removeGalleryImageFromIndex(galleryImageContextMenu.imageId)"

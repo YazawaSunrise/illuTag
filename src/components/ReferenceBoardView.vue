@@ -13,6 +13,8 @@ type ReferenceBoardItem = {
   width: number
   height: number
   rotation: number
+  flipX: boolean
+  flipY: boolean
   zIndex: number
 }
 
@@ -70,7 +72,7 @@ defineProps<{
         :data-reference-board-item-id="item.id"
         :class="{ 'is-selected': selectedReferenceBoardItemId === item.id }"
         :style="{
-          transform: `translate3d(${item.x}px, ${item.y}px, 0) rotate(${item.rotation}deg)`,
+          transform: `translate3d(${item.x}px, ${item.y}px, 0) rotate(${item.rotation}deg) scale(${item.flipX ? -1 : 1}, ${item.flipY ? -1 : 1})`,
           width: `${item.width}px`,
           height: `${item.height}px`,
           zIndex: item.zIndex,

@@ -29,7 +29,8 @@ type LibraryStoreLike = {
 type UseGallerySearchOptions<TLibraryStore extends LibraryStoreLike> = {
   library: Ref<TLibraryStore>
   folderScopedImages: Ref<GalleryImage[]>
-  activeUserFolderId: Ref<number | 'all' | 'trash'>
+  activeUserFolderId: Ref<number | 'all' | 'random' | 'trash'>
+  randomGalleryVisitSerial: Ref<number>
   lastImageDragEndedAt: Ref<number>
   formatError: (error: unknown) => string
   clamp: (value: number, min: number, max: number) => number
@@ -83,6 +84,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
   const searchSuggestTimer = ref<number | null>(null)
   const searchExecuteTimer = ref<number | null>(null)
   const searchHideCommitTimer = ref<number | null>(null)
+  const randomScopedImageOrderIds = ref<string[] | null>(null)
 
   const hasSearchFilters = computed(
     () =>
@@ -106,6 +108,16 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       !hasSearchFilters.value || !searchResultImageIds.value
         ? scoped
         : scoped.filter((image) => searchResultImageIds.value?.has(image.id))
+    if (options.activeUserFolderId.value === 'random' && searchMode.value === 'text' && !hasSearchFilters.value) {
+      if (!randomScopedImageOrderIds.value || randomScopedImageOrderIds.value.length === 0) return filtered
+      const rank = new Map(randomScopedImageOrderIds.value.map((imageId, index) => [imageId, index]))
+      return filtered
+        .slice()
+        .sort(
+          (a, b) =>
+            (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+        )
+    }
     if (!naturalLanguageRankedImageIds.value) return filtered
     const rank = new Map(naturalLanguageRankedImageIds.value.map((imageId, index) => [imageId, index]))
     return filtered
@@ -178,12 +190,40 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     clearExternalImageQueryPreview()
   })
 
+  watch(
+    () => options.randomGalleryVisitSerial.value,
+    () => {
+      if (options.activeUserFolderId.value !== 'random') return
+      randomScopedImageOrderIds.value = shuffledImageIds(options.folderScopedImages.value.map((image) => image.id))
+    },
+  )
+
+  watch(
+    () => options.activeUserFolderId.value,
+    (nextFolderId, prevFolderId) => {
+      if (nextFolderId === 'random' && prevFolderId !== 'random') {
+        randomScopedImageOrderIds.value = shuffledImageIds(
+          options.folderScopedImages.value.map((image) => image.id),
+        )
+      }
+    },
+  )
+
   function clearExternalImageQueryPreview() {
     if (externalImageQueryObjectUrl.value) {
       URL.revokeObjectURL(externalImageQueryObjectUrl.value)
       externalImageQueryObjectUrl.value = null
     }
     externalImageQueryPreviewUrl.value = ''
+  }
+
+  function shuffledImageIds(ids: string[]) {
+    const next = [...ids]
+    for (let index = next.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1))
+      ;[next[index], next[swapIndex]] = [next[swapIndex], next[index]]
+    }
+    return next
   }
 
   function setSearchPointerInside(next: boolean) {

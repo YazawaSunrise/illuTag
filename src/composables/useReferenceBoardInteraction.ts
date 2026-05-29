@@ -12,6 +12,8 @@ type ReferenceBoardItem = {
   width: number
   height: number
   rotation: number
+  flipX: boolean
+  flipY: boolean
 }
 
 type LibraryStoreLike = {
@@ -46,6 +48,8 @@ type BoardItemLayout = {
   width: number
   height: number
   rotation: number
+  flipX: boolean
+  flipY: boolean
 }
 
 type UseReferenceBoardInteractionOptions<TLibraryStore extends LibraryStoreLike> = {
@@ -71,6 +75,8 @@ type UseReferenceBoardInteractionOptions<TLibraryStore extends LibraryStoreLike>
 export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreLike>(
   options: UseReferenceBoardInteractionOptions<TLibraryStore>,
 ) {
+  const boardScaleMin = 0.1
+  const boardScaleMax = 20
   const boardScale = ref(1)
   const boardPan = ref({ x: 80, y: 72 })
   const boardInteraction = ref<BoardItemInteraction | null>(null)
@@ -186,7 +192,11 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
     event.preventDefault()
 
     const viewport = getReferenceBoardViewportMetrics()
-    const nextScale = options.clamp(boardScale.value * (event.deltaY < 0 ? 1.08 : 0.92), 0.2, 4)
+    const nextScale = options.clamp(
+      boardScale.value * (event.deltaY < 0 ? 1.08 : 0.92),
+      boardScaleMin,
+      boardScaleMax,
+    )
     const worldPoint = worldPointFromClient(event.clientX, event.clientY)
     const baseLeft = viewport?.left ?? 0
     const baseTop = viewport?.top ?? 0
@@ -300,6 +310,8 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
       width: interaction.itemWidth,
       height: interaction.itemHeight,
       rotation: interaction.itemRotation,
+      flipX: item.flipX,
+      flipY: item.flipY,
     }
     const after = cloneBoardItemLayout(item)
     const selectionBefore = interaction.itemId
@@ -314,6 +326,8 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
         width: item.width,
         height: item.height,
         rotation: item.rotation,
+        flipX: item.flipX,
+        flipY: item.flipY,
       })
       options.ensureBoardCanvasBoundsFor(boardId)
       if (!boardLayoutEquals(before, after)) {
@@ -457,6 +471,8 @@ function cloneBoardItemLayout(item: ReferenceBoardItem): BoardItemLayout {
     width: item.width,
     height: item.height,
     rotation: item.rotation,
+    flipX: item.flipX,
+    flipY: item.flipY,
   }
 }
 
@@ -467,6 +483,8 @@ function boardLayoutEquals(a: BoardItemLayout, b: BoardItemLayout) {
     Math.abs(a.y - b.y) <= epsilon &&
     Math.abs(a.width - b.width) <= epsilon &&
     Math.abs(a.height - b.height) <= epsilon &&
-    Math.abs(a.rotation - b.rotation) <= epsilon
+    Math.abs(a.rotation - b.rotation) <= epsilon &&
+    a.flipX === b.flipX &&
+    a.flipY === b.flipY
   )
 }

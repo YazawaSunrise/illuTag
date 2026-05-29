@@ -457,11 +457,13 @@ fn restore_reference_board_item_command(
     width: f32,
     height: f32,
     rotation: f32,
+    flip_x: bool,
+    flip_y: bool,
     z_index: i64,
     state: State<AppState>,
 ) -> Result<LibraryStore, String> {
     restore_reference_board_item(
-        board_id, image_id, x, y, width, height, rotation, z_index, &state,
+        board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, &state,
     )
 }
 
@@ -569,9 +571,11 @@ fn update_reference_board_item_layout_command(
     width: f32,
     height: f32,
     rotation: f32,
+    flip_x: bool,
+    flip_y: bool,
     state: State<AppState>,
 ) -> Result<LibraryStore, String> {
-    update_reference_board_item_layout(item_id, x, y, width, height, rotation, &state)
+    update_reference_board_item_layout(item_id, x, y, width, height, rotation, flip_x, flip_y, &state)
 }
 
 #[tauri::command]

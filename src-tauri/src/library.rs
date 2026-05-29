@@ -204,6 +204,8 @@ pub struct ReferenceBoardItem {
     pub width: f32,
     pub height: f32,
     pub rotation: f32,
+    pub flip_x: bool,
+    pub flip_y: bool,
     pub z_index: i64,
     pub created_at: i64,
 }
@@ -3605,9 +3607,9 @@ pub fn add_image_to_reference_board(
     conn.execute(
         "
         INSERT OR IGNORE INTO reference_board_items (
-          board_id, image_id, x, y, width, height, rotation, z_index, created_at
+          board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 0, ?7, ?8)
         ",
         params![
             board_id,
@@ -3721,9 +3723,9 @@ pub fn paste_image_to_reference_board(
     tx.execute(
         "
         INSERT INTO reference_board_items (
-          board_id, image_id, x, y, width, height, rotation, z_index, created_at
+          board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 0, ?7, ?8)
         ",
         params![
             board_id,
@@ -3985,6 +3987,8 @@ pub fn update_reference_board_item_layout(
     width: f32,
     height: f32,
     rotation: f32,
+    flip_x: bool,
+    flip_y: bool,
     state: &AppState,
 ) -> Result<LibraryStore, String> {
     let mut library = state
@@ -3995,10 +3999,19 @@ pub fn update_reference_board_item_layout(
     conn.execute(
         "
         UPDATE reference_board_items
-        SET x = ?1, y = ?2, width = ?3, height = ?4, rotation = ?5
-        WHERE id = ?6
+        SET x = ?1, y = ?2, width = ?3, height = ?4, rotation = ?5, flip_x = ?6, flip_y = ?7
+        WHERE id = ?8
         ",
-        params![x, y, width.max(48.0), height.max(48.0), rotation, item_id],
+        params![
+            x,
+            y,
+            width.max(48.0),
+            height.max(48.0),
+            rotation,
+            if flip_x { 1 } else { 0 },
+            if flip_y { 1 } else { 0 },
+            item_id
+        ],
     )
     .map_err(|error| format!("保存参考图布局失败：{error}"))?;
 
@@ -4046,9 +4059,9 @@ pub fn duplicate_reference_board_item(
     conn.execute(
         "
         INSERT INTO reference_board_items (
-          board_id, image_id, x, y, width, height, rotation, z_index, created_at
+          board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         ",
         params![
             item.board_id,
@@ -4058,6 +4071,8 @@ pub fn duplicate_reference_board_item(
             item.width,
             item.height,
             item.rotation,
+            if item.flip_x { 1 } else { 0 },
+            if item.flip_y { 1 } else { 0 },
             next_index,
             now_ms(),
         ],
@@ -4077,6 +4092,8 @@ pub fn restore_reference_board_item(
     width: f32,
     height: f32,
     rotation: f32,
+    flip_x: bool,
+    flip_y: bool,
     z_index: i64,
     state: &AppState,
 ) -> Result<LibraryStore, String> {
@@ -4088,9 +4105,9 @@ pub fn restore_reference_board_item(
     conn.execute(
         "
         INSERT INTO reference_board_items (
-          board_id, image_id, x, y, width, height, rotation, z_index, created_at
+          board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         ",
         params![
             board_id,
@@ -4100,6 +4117,8 @@ pub fn restore_reference_board_item(
             width.max(48.0),
             height.max(48.0),
             rotation,
+            if flip_x { 1 } else { 0 },
+            if flip_y { 1 } else { 0 },
             z_index,
             now_ms(),
         ],
@@ -4531,6 +4550,8 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
           width REAL NOT NULL DEFAULT 220,
           height REAL NOT NULL DEFAULT 220,
           rotation REAL NOT NULL DEFAULT 0,
+          flip_x INTEGER NOT NULL DEFAULT 0,
+          flip_y INTEGER NOT NULL DEFAULT 0,
           z_index INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL,
           FOREIGN KEY(board_id) REFERENCES reference_boards(id) ON DELETE CASCADE,
@@ -4549,6 +4570,7 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
     ensure_user_folder_sort_order(conn)?;
     ensure_user_folder_source_metadata(conn)?;
     ensure_reference_board_items_allow_duplicates(conn)?;
+    ensure_reference_board_item_flip_columns(conn)?;
     ensure_known_image_tags_bootstrap(conn)?;
 
     Ok(())
@@ -4827,15 +4849,17 @@ fn ensure_reference_board_items_allow_duplicates(conn: &Connection) -> Result<()
           width REAL NOT NULL DEFAULT 220,
           height REAL NOT NULL DEFAULT 220,
           rotation REAL NOT NULL DEFAULT 0,
+          flip_x INTEGER NOT NULL DEFAULT 0,
+          flip_y INTEGER NOT NULL DEFAULT 0,
           z_index INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL,
           FOREIGN KEY(board_id) REFERENCES reference_boards(id) ON DELETE CASCADE,
           FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
         );
         INSERT INTO reference_board_items (
-          id, board_id, image_id, x, y, width, height, rotation, z_index, created_at
+          id, board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
         )
-        SELECT id, board_id, image_id, x, y, width, height, rotation, z_index, created_at
+        SELECT id, board_id, image_id, x, y, width, height, rotation, 0, 0, z_index, created_at
         FROM reference_board_items_old;
         DROP TABLE reference_board_items_old;
         CREATE INDEX IF NOT EXISTS idx_reference_board_items_board_id
@@ -4843,6 +4867,24 @@ fn ensure_reference_board_items_allow_duplicates(conn: &Connection) -> Result<()
         ",
     )
     .map_err(|error| format!("升级参考板图片表失败：{error}"))?;
+    Ok(())
+}
+
+fn ensure_reference_board_item_flip_columns(conn: &Connection) -> Result<(), String> {
+    if !table_has_column(conn, "reference_board_items", "flip_x")? {
+        conn.execute(
+            "ALTER TABLE reference_board_items ADD COLUMN flip_x INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|error| format!("Failed to add reference_board_items.flip_x: {error}"))?;
+    }
+    if !table_has_column(conn, "reference_board_items", "flip_y")? {
+        conn.execute(
+            "ALTER TABLE reference_board_items ADD COLUMN flip_y INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|error| format!("Failed to add reference_board_items.flip_y: {error}"))?;
+    }
     Ok(())
 }
 
@@ -5093,7 +5135,7 @@ fn load_reference_board_items(conn: &Connection) -> Result<Vec<ReferenceBoardIte
     let mut stmt = conn
         .prepare(
             "
-            SELECT id, board_id, image_id, x, y, width, height, rotation, z_index, created_at
+            SELECT id, board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
             FROM reference_board_items
             ORDER BY board_id, z_index, id
             ",
@@ -5111,8 +5153,10 @@ fn load_reference_board_items(conn: &Connection) -> Result<Vec<ReferenceBoardIte
                 width: row.get(5)?,
                 height: row.get(6)?,
                 rotation: row.get(7)?,
-                z_index: row.get(8)?,
-                created_at: row.get(9)?,
+                flip_x: row.get::<_, i64>(8)? != 0,
+                flip_y: row.get::<_, i64>(9)? != 0,
+                z_index: row.get(10)?,
+                created_at: row.get(11)?,
             })
         })
         .map_err(|error| format!("读取参考板图片失败：{error}"))?
@@ -5128,7 +5172,7 @@ fn load_reference_board_item(
 ) -> Result<ReferenceBoardItem, String> {
     conn.query_row(
         "
-        SELECT id, board_id, image_id, x, y, width, height, rotation, z_index, created_at
+        SELECT id, board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
         FROM reference_board_items
         WHERE id = ?1
         ",
@@ -5143,8 +5187,10 @@ fn load_reference_board_item(
                 width: row.get(5)?,
                 height: row.get(6)?,
                 rotation: row.get(7)?,
-                z_index: row.get(8)?,
-                created_at: row.get(9)?,
+                flip_x: row.get::<_, i64>(8)? != 0,
+                flip_y: row.get::<_, i64>(9)? != 0,
+                z_index: row.get(10)?,
+                created_at: row.get(11)?,
             })
         },
     )
@@ -5160,7 +5206,7 @@ fn load_reference_board_items_for_board(
     let mut stmt = conn
         .prepare(
             "
-            SELECT id, board_id, image_id, x, y, width, height, rotation, z_index, created_at
+            SELECT id, board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
             FROM reference_board_items
             WHERE board_id = ?1
             ORDER BY z_index, id
@@ -5178,8 +5224,10 @@ fn load_reference_board_items_for_board(
                 width: row.get(5)?,
                 height: row.get(6)?,
                 rotation: row.get(7)?,
-                z_index: row.get(8)?,
-                created_at: row.get(9)?,
+                flip_x: row.get::<_, i64>(8)? != 0,
+                flip_y: row.get::<_, i64>(9)? != 0,
+                z_index: row.get(10)?,
+                created_at: row.get(11)?,
             })
         })
         .map_err(|error| format!("读取参考板图片失败：{error}"))?
