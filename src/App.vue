@@ -208,6 +208,7 @@ const {
 
 const {
   activeUserFolderId,
+  unclassifiedOnlyParentFolderId,
   newFolderName,
   folderDraft,
   isComposingFolderName,
@@ -224,6 +225,7 @@ const {
   contextMenuStyle,
   folderDraftStyle,
   folderScopedImages,
+  parentFoldersWithUnclassifiedImages,
   deleteUserFolder,
   openCreateFolderDraft,
   closeCreateFolderDraft,
@@ -236,6 +238,7 @@ const {
   showAllImages,
   showTrashImages,
   onUserFolderRowClick,
+  toggleFolderUnclassifiedOnly,
   startUserFolderRename,
   setRenamingUserFolderName,
   startComposingUserFolderRename,
@@ -297,6 +300,22 @@ const {
   },
   formatError,
 })
+
+const showGalleryUnclassifiedToggle = computed(() => {
+  if (typeof activeUserFolderId.value !== 'number') return false
+  if (!folderHasChildren(activeUserFolderId.value)) return false
+  return parentFoldersWithUnclassifiedImages.value.has(activeUserFolderId.value)
+})
+
+const isGalleryUnclassifiedOnly = computed(() => {
+  if (typeof activeUserFolderId.value !== 'number') return false
+  return unclassifiedOnlyParentFolderId.value === activeUserFolderId.value
+})
+
+function toggleActiveFolderUnclassifiedOnly() {
+  if (typeof activeUserFolderId.value !== 'number') return
+  toggleFolderUnclassifiedOnly(activeUserFolderId.value)
+}
 
 const {
   imageDetailContextMenu,
@@ -1526,6 +1545,7 @@ const galleryViewHandlers = {
   selectExternalImageSearchFile,
   pasteExternalImageSearchFromClipboard,
   openSettings,
+  toggleActiveFolderUnclassifiedOnly,
   startImagePress,
   clearImagePress,
   openGalleryImageDetail,
@@ -1755,6 +1775,8 @@ function formatError(error: unknown) {
         :search-running="searchRunning"
         :search-error="searchError"
         :is-loading="isLoading"
+        :show-unclassified-toggle="showGalleryUnclassifiedToggle"
+        :is-unclassified-only="isGalleryUnclassifiedOnly"
         :layout-items="renderedLayoutItems"
         :total-height="totalHeight"
         :content-width="masonryContentWidth"

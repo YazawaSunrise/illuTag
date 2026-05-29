@@ -117,7 +117,7 @@ defineProps<{
                 class="folder-tree__item"
                 type="button"
               >
-                <span>{{ folder.name }}</span>
+                <span class="folder-tree__item-label">{{ folder.name }}</span>
               </button>
               <input
                 v-else

@@ -39,6 +39,8 @@ const props = defineProps<{
   searchRunning: boolean
   searchError: string
   isLoading: boolean
+  showUnclassifiedToggle: boolean
+  isUnclassifiedOnly: boolean
   layoutItems: GalleryLayoutItem[]
   totalHeight: number
   contentWidth: number
@@ -794,6 +796,12 @@ function onSearchWheel(event: WheelEvent) {
           </div>
         </div>
       </div>
+    </div>
+
+    <div v-if="showUnclassifiedToggle" class="gallery-unclassified-toggle-row">
+      <button type="button" class="gallery-unclassified-toggle" @click="handlers.toggleActiveFolderUnclassifiedOnly()">
+        {{ isUnclassifiedOnly ? '返回' : '有未归类的图片' }}
+      </button>
     </div>
 
     <div v-if="previewDragOverDeleteZone" class="gallery-delete-overlay" aria-hidden="true">

@@ -64,6 +64,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   options: UseFolderManagementOptions<TLibraryStore>,
 ) {
   const activeUserFolderId = ref<number | 'all' | 'trash'>('all')
+  const unclassifiedOnlyParentFolderId = ref<number | null>(null)
   const newFolderName = ref('')
   const folderDraft = ref<FolderDraft | null>(null)
   const isComposingFolderName = ref(false)
@@ -113,16 +114,62 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
 
     const scopeFolderIds = collectDescendantFolderIds(activeUserFolderId.value)
     const hasChildFolders = (folderGroups.value.get(activeUserFolderId.value) ?? []).length > 0
-    if (hasChildFolders) {
-      scopeFolderIds.delete(activeUserFolderId.value)
+    const isUnclassifiedOnlyParentView =
+      hasChildFolders && unclassifiedOnlyParentFolderId.value === activeUserFolderId.value
+    if (!isUnclassifiedOnlyParentView) {
+      const assignedIds = new Set(
+        options.library.value.imageFolders
+          .filter((assignment) => scopeFolderIds.has(assignment.folderId))
+          .map((assignment) => assignment.imageId),
+      )
+      return activeImages.filter((image) => assignedIds.has(image.id))
     }
 
-    const assignedIds = new Set(
-      options.library.value.imageFolders
-        .filter((assignment) => scopeFolderIds.has(assignment.folderId))
-        .map((assignment) => assignment.imageId),
+    const descendantFolderIds = new Set(scopeFolderIds)
+    descendantFolderIds.delete(activeUserFolderId.value)
+
+    const imageAssignedFolderIds = new Map<string, Set<number>>()
+    for (const assignment of options.library.value.imageFolders) {
+      const ids = imageAssignedFolderIds.get(assignment.imageId) ?? new Set<number>()
+      ids.add(assignment.folderId)
+      imageAssignedFolderIds.set(assignment.imageId, ids)
+    }
+
+    return activeImages.filter((image) => {
+      const assignedFolderIds = imageAssignedFolderIds.get(image.id)
+      if (!assignedFolderIds) return false
+      if (!assignedFolderIds.has(activeUserFolderId.value as number)) return false
+      for (const folderId of descendantFolderIds) {
+        if (assignedFolderIds.has(folderId)) return false
+      }
+      return true
+    })
+  })
+
+  const parentFoldersWithUnclassifiedImages = computed(() => {
+    const activeImageIds = new Set(
+      options.library.value.images
+        .filter((image) => image.source !== 'reference' && !image.trashed)
+        .map((image) => image.id),
     )
-    return activeImages.filter((image) => assignedIds.has(image.id))
+    const directImageCounts = new Map<number, number>()
+    for (const assignment of options.library.value.imageFolders) {
+      if (!activeImageIds.has(assignment.imageId)) continue
+      directImageCounts.set(
+        assignment.folderId,
+        (directImageCounts.get(assignment.folderId) ?? 0) + 1,
+      )
+    }
+
+    const result = new Set<number>()
+    for (const folder of options.library.value.userFolders) {
+      const hasChildren = (folderGroups.value.get(folder.id) ?? []).length > 0
+      if (!hasChildren) continue
+      if ((directImageCounts.get(folder.id) ?? 0) > 0) {
+        result.add(folder.id)
+      }
+    }
+    return result
   })
 
   const folderTree = computed<FolderTreeItem[]>(() => buildFolderTree(expandedFolderIds.value))
@@ -232,6 +279,9 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       const { invoke } = await import('@tauri-apps/api/core')
       options.library.value = await invoke<TLibraryStore>('delete_user_folder_command', { folderId })
       removeExpandedFolder(folderId)
+      if (unclassifiedOnlyParentFolderId.value === folderId) {
+        unclassifiedOnlyParentFolderId.value = null
+      }
       if (
         activeUserFolderId.value !== 'all' &&
         activeUserFolderId.value !== 'trash' &&
@@ -314,12 +364,14 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   function showAllImages() {
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'all'
+    unclassifiedOnlyParentFolderId.value = null
     options.activeReferenceBoardId.value = null
   }
 
   function showTrashImages() {
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'trash'
+    unclassifiedOnlyParentFolderId.value = null
     options.activeReferenceBoardId.value = null
   }
 
@@ -337,7 +389,24 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
 
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = folder.id
+    unclassifiedOnlyParentFolderId.value = null
     options.activeReferenceBoardId.value = null
+  }
+
+  function toggleFolderUnclassifiedOnly(folderId: number) {
+    if (!folderHasChildren(folderId)) return
+    if (!parentFoldersWithUnclassifiedImages.value.has(folderId)) {
+      if (unclassifiedOnlyParentFolderId.value === folderId) {
+        unclassifiedOnlyParentFolderId.value = null
+      }
+      return
+    }
+    options.viewMode.value = 'gallery'
+    activeUserFolderId.value = folderId
+    options.activeReferenceBoardId.value = null
+    expandFolder(folderId)
+    unclassifiedOnlyParentFolderId.value =
+      unclassifiedOnlyParentFolderId.value === folderId ? null : folderId
   }
 
   function startUserFolderRename(folderId: number) {
@@ -537,6 +606,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
 
   return {
     activeUserFolderId,
+    unclassifiedOnlyParentFolderId,
     newFolderName,
     folderDraft,
     isComposingFolderName,
@@ -553,6 +623,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     suppressNextFolderClick,
     folderGroups,
     folderScopedImages,
+    parentFoldersWithUnclassifiedImages,
     folderTree,
     dropFolderTree,
     contextMenuStyle,
@@ -572,6 +643,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     showAllImages,
     showTrashImages,
     onUserFolderRowClick,
+    toggleFolderUnclassifiedOnly,
     startUserFolderRename,
     setRenamingUserFolderName,
     startComposingUserFolderRename,

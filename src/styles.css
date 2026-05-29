@@ -495,8 +495,9 @@ button {
   padding: 7px 8px 7px 0;
 }
 
-.folder-tree__item span {
+.folder-tree__item-label {
   min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-align: left;
   text-overflow: ellipsis;
@@ -963,6 +964,28 @@ button {
   z-index: 6;
   top: 4px;
   animation: gallery-search-summon 360ms ease;
+}
+
+.gallery-unclassified-toggle-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: -2px 0 10px;
+}
+
+.gallery-unclassified-toggle {
+  border: 0;
+  padding: 0;
+  color: #78aeea;
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.gallery-unclassified-toggle:hover {
+  color: #a2c8ff;
 }
 
 @keyframes gallery-search-summon {
@@ -2888,6 +2911,14 @@ button {
 .app-shell.theme-light .gallery-search__lens-clear:hover {
   border-color: #9fb4ca;
   background: rgb(15 23 42 / 0.06);
+}
+
+.app-shell.theme-light .gallery-unclassified-toggle {
+  color: #366eac;
+}
+
+.app-shell.theme-light .gallery-unclassified-toggle:hover {
+  color: #4f86c3;
 }
 
 .app-shell.theme-light .gallery-search__mini-button {
