@@ -38,6 +38,7 @@ const COLOR_SIGNATURE_HUE_BINS: usize = 24;
 const COLOR_SIGNATURE_DIM: usize = COLOR_SIGNATURE_HUE_BINS + 8;
 const CLIP_IMAGE_SERVICE_IDLE_RELEASE_MS: i64 = 20 * 60 * 1000;
 const CLIP_IMAGE_SERVICE_IDLE_CHECK_INTERVAL_MS: u64 = 30_000;
+const USER_FOLDER_SOURCE_KIND_LIBRARY_DIR: &str = "library_dir";
 
 pub struct AppState {
     pub database_path: PathBuf,
@@ -590,9 +591,10 @@ pub fn add_gallery_folder(folder_path: String, state: &AppState) -> Result<Libra
     let existing_meta = load_existing_library_image_meta(&tx)?;
     let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths, &existing_meta);
 
-    for image in found {
-        upsert_image(&tx, folder_id, &image)?;
+    for image in &found {
+        upsert_image(&tx, folder_id, image)?;
     }
+    sync_user_folder_tree_for_library_directory(&tx, &folder_path, &found, scanned_at)?;
 
     tx.commit()
         .map_err(|error| format!("保存图库索引失败：{error}"))?;
@@ -620,7 +622,7 @@ pub fn remove_gallery_folder(
     let folder_id = tx
         .query_row(
             "SELECT id FROM folders WHERE path = ?1",
-            params![folder_path],
+            params![&folder_path],
             |row| row.get::<_, i64>(0),
         )
         .optional()
@@ -632,6 +634,7 @@ pub fn remove_gallery_folder(
             params![folder_id],
         )
         .map_err(|error| format!("删除图片索引失败：{error}"))?;
+        remove_synced_user_folder_tree_for_root(&tx, &folder_path)?;
         tx.execute("DELETE FROM folders WHERE id = ?1", params![folder_id])
             .map_err(|error| format!("删除图库文件夹失败：{error}"))?;
     }
@@ -643,6 +646,242 @@ pub fn remove_gallery_folder(
     *library = Some(store.clone());
     invalidate_all_similarity_caches(state);
     Ok(store)
+}
+
+fn sync_user_folder_tree_for_library_directory(
+    conn: &Connection,
+    root_folder_path: &str,
+    scanned_images: &[ScannedImage],
+    now: i64,
+) -> Result<(), String> {
+    if scanned_images.is_empty() && !Path::new(root_folder_path).is_dir() {
+        return Ok(());
+    }
+
+    let root_path = normalize_existing_or_stored_folder_path(root_folder_path);
+    let root_prefix = if root_path.ends_with(std::path::MAIN_SEPARATOR) {
+        root_path.clone()
+    } else {
+        format!("{root_path}{}", std::path::MAIN_SEPARATOR)
+    };
+    let mut directory_paths = collect_directory_tree_paths(&root_path)?;
+
+    for image in scanned_images {
+        let image_parent = Path::new(&image.path)
+            .parent()
+            .map(|path| normalize_existing_or_stored_folder_path(&path.to_string_lossy()))
+            .unwrap_or_else(|| root_path.clone());
+        if image_parent == root_path || image_parent.starts_with(&root_prefix)
+        {
+            directory_paths.insert(image_parent);
+        }
+    }
+
+    if directory_paths.is_empty() {
+        return Ok(());
+    }
+
+    let mut sorted_paths = directory_paths.into_iter().collect::<Vec<_>>();
+    sorted_paths.sort_by(|a, b| {
+        path_depth_for_sort(a)
+            .cmp(&path_depth_for_sort(b))
+            .then_with(|| a.cmp(b))
+    });
+
+    let mut folder_id_by_path = HashMap::<String, i64>::new();
+    for dir_path in sorted_paths {
+        let parent_id = if dir_path == root_path {
+            None
+        } else {
+            let parent_path = Path::new(&dir_path)
+                .parent()
+                .map(|path| normalize_existing_or_stored_folder_path(&path.to_string_lossy()));
+            parent_path.and_then(|path| folder_id_by_path.get(&path).copied())
+        };
+        let name = Path::new(&dir_path)
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| dir_path.clone());
+        let folder_id = upsert_synced_user_folder_for_path(conn, &dir_path, parent_id, &name, now)?;
+        folder_id_by_path.insert(dir_path, folder_id);
+    }
+
+    if scanned_images.is_empty() {
+        return Ok(());
+    }
+
+    for image in scanned_images {
+        remove_synced_folder_assignments_for_image(conn, &image.path)?;
+        let parent_path = Path::new(&image.path)
+            .parent()
+            .map(|path| normalize_existing_or_stored_folder_path(&path.to_string_lossy()))
+            .unwrap_or_else(|| root_path.clone());
+        let Some(target_folder_id) = folder_id_by_path.get(&parent_path).copied() else {
+            continue;
+        };
+        conn.execute(
+            "
+            INSERT OR IGNORE INTO image_user_folders (image_id, folder_id, assigned_at)
+            VALUES (?1, ?2, ?3)
+            ",
+            params![image.path, target_folder_id, now],
+        )
+        .map_err(|error| format!("Failed to sync image folder assignment: {error}"))?;
+    }
+
+    Ok(())
+}
+
+fn collect_directory_tree_paths(root_folder_path: &str) -> Result<HashSet<String>, String> {
+    let mut paths = HashSet::<String>::new();
+    let root = Path::new(root_folder_path);
+    let root_prefix = if root_folder_path.ends_with(std::path::MAIN_SEPARATOR) {
+        root_folder_path.to_string()
+    } else {
+        format!("{root_folder_path}{}", std::path::MAIN_SEPARATOR)
+    };
+    if !root.is_dir() {
+        return Ok(paths);
+    }
+
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        let path = normalize_existing_or_stored_folder_path(&entry.path().to_string_lossy());
+        if path == root_folder_path || path.starts_with(&root_prefix) {
+            paths.insert(path);
+        }
+    }
+
+    if paths.is_empty() {
+        paths.insert(root_folder_path.to_string());
+    }
+    Ok(paths)
+}
+
+fn path_depth_for_sort(path_text: &str) -> usize {
+    Path::new(path_text).components().count()
+}
+
+fn upsert_synced_user_folder_for_path(
+    conn: &Connection,
+    source_path: &str,
+    parent_id: Option<i64>,
+    name: &str,
+    now: i64,
+) -> Result<i64, String> {
+    if let Some(existing_id) = conn
+        .query_row(
+            "
+            SELECT id
+            FROM user_folders
+            WHERE source_kind = ?1 AND source_path = ?2
+            ",
+            params![USER_FOLDER_SOURCE_KIND_LIBRARY_DIR, source_path],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Failed to query synced user folder: {error}"))?
+    {
+        conn.execute(
+            "
+            UPDATE user_folders
+            SET parent_id = ?1, name = ?2, updated_at = ?3
+            WHERE id = ?4
+            ",
+            params![parent_id, name, now, existing_id],
+        )
+        .map_err(|error| format!("Failed to update synced user folder: {error}"))?;
+        return Ok(existing_id);
+    }
+
+    let sort_order = next_user_folder_sort_order(conn, parent_id)?;
+    conn.execute(
+        "
+        INSERT INTO user_folders (
+          parent_id, name, sort_order, source_kind, source_path, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+        ",
+        params![
+            parent_id,
+            name,
+            sort_order,
+            USER_FOLDER_SOURCE_KIND_LIBRARY_DIR,
+            source_path,
+            now,
+        ],
+    )
+    .map_err(|error| format!("Failed to create synced user folder: {error}"))?;
+
+    conn.query_row(
+        "SELECT id FROM user_folders WHERE source_path = ?1",
+        params![source_path],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(|error| format!("Failed to load synced user folder id: {error}"))
+}
+
+fn remove_synced_folder_assignments_for_image(conn: &Connection, image_id: &str) -> Result<(), String> {
+    conn.execute(
+        "
+        DELETE FROM image_user_folders
+        WHERE image_id = ?1
+          AND folder_id IN (
+            SELECT id FROM user_folders WHERE source_kind = ?2
+          )
+        ",
+        params![image_id, USER_FOLDER_SOURCE_KIND_LIBRARY_DIR],
+    )
+    .map_err(|error| format!("Failed to clear synced folder assignment: {error}"))?;
+    Ok(())
+}
+
+fn remove_synced_user_folder_tree_for_root(conn: &Connection, root_path: &str) -> Result<(), String> {
+    let root = normalize_existing_or_stored_folder_path(root_path);
+    let mut ids = Vec::<i64>::new();
+
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT id, source_path
+            FROM user_folders
+            WHERE source_kind = ?1
+              AND source_path IS NOT NULL
+            ",
+        )
+        .map_err(|error| format!("Failed to load synced folders for delete: {error}"))?;
+    let rows = stmt
+        .query_map(params![USER_FOLDER_SOURCE_KIND_LIBRARY_DIR], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Failed to load synced folders for delete: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load synced folders for delete: {error}"))?;
+    drop(stmt);
+
+    let prefix = if root.ends_with(std::path::MAIN_SEPARATOR) {
+        root.clone()
+    } else {
+        format!("{root}{}", std::path::MAIN_SEPARATOR)
+    };
+    for (id, path) in rows {
+        if path == root || path.starts_with(&prefix) {
+            ids.push(id);
+        }
+    }
+
+    for id in ids {
+        conn.execute("DELETE FROM user_folders WHERE id = ?1", params![id])
+            .map_err(|error| format!("Failed to delete synced user folder: {error}"))?;
+    }
+    Ok(())
 }
 
 pub fn remove_image_from_index(image_id: String, state: &AppState) -> Result<LibraryStore, String> {
@@ -4084,6 +4323,8 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
           parent_id INTEGER,
           name TEXT NOT NULL,
           sort_order INTEGER NOT NULL DEFAULT 0,
+          source_kind TEXT NOT NULL DEFAULT 'manual',
+          source_path TEXT,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           FOREIGN KEY(parent_id) REFERENCES user_folders(id) ON DELETE CASCADE
@@ -4306,6 +4547,7 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
     ensure_thumbnail_table(conn)?;
     ensure_clip_embedding_table(conn)?;
     ensure_user_folder_sort_order(conn)?;
+    ensure_user_folder_source_metadata(conn)?;
     ensure_reference_board_items_allow_duplicates(conn)?;
     ensure_known_image_tags_bootstrap(conn)?;
 
@@ -4623,6 +4865,36 @@ fn ensure_user_folder_sort_order(conn: &Connection) -> Result<(), String> {
         .map_err(|error| format!("升级文件夹排序字段失败：{error}"))?;
     }
 
+    Ok(())
+}
+
+fn ensure_user_folder_source_metadata(conn: &Connection) -> Result<(), String> {
+    if !table_has_column(conn, "user_folders", "source_kind")? {
+        conn.execute(
+            "ALTER TABLE user_folders ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'",
+            [],
+        )
+        .map_err(|error| format!("Failed to add user_folders.source_kind: {error}"))?;
+    }
+    if !table_has_column(conn, "user_folders", "source_path")? {
+        conn.execute(
+            "ALTER TABLE user_folders ADD COLUMN source_path TEXT",
+            [],
+        )
+        .map_err(|error| format!("Failed to add user_folders.source_path: {error}"))?;
+    }
+    conn.execute_batch(
+        "
+        UPDATE user_folders
+        SET source_kind = 'manual'
+        WHERE source_kind IS NULL OR TRIM(source_kind) = '';
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_folders_source_path
+          ON user_folders(source_path)
+          WHERE source_path IS NOT NULL;
+        ",
+    )
+    .map_err(|error| format!("Failed to finalize user folder source metadata: {error}"))?;
     Ok(())
 }
 
@@ -5244,10 +5516,10 @@ fn scan_all_folders_and_collect_new_images(
         let folder_id = upsert_folder(&conn, &folder_path, scanned_at)?;
         let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths, &existing_meta);
         let found_count = found.len() as i64;
-        for image in found {
+        for image in &found {
             let previous = existing_meta.get(&image.path).copied();
             let is_new = !known_paths.contains(&image.path);
-            upsert_image(&conn, folder_id, &image)?;
+            upsert_image(&conn, folder_id, image)?;
             existing_meta.insert(
                 image.path.clone(),
                 ExistingImageMeta {
@@ -5259,7 +5531,7 @@ fn scan_all_folders_and_collect_new_images(
             );
             if is_new {
                 known_paths.insert(image.path.clone());
-                new_image_ids.push(image.path);
+                new_image_ids.push(image.path.clone());
             } else if let Some(meta) = previous {
                 if meta.modified_at != image.modified_at
                     || meta.file_size != image.file_size
@@ -5274,6 +5546,7 @@ fn scan_all_folders_and_collect_new_images(
                 updated_images += 1;
             }
         }
+        sync_user_folder_tree_for_library_directory(&conn, &folder_path, &found, scanned_at)?;
         scanned_folders += 1;
         set_scan_progress_new_images(progress, new_image_ids.len() as i64);
         set_scan_progress_updated_images(progress, updated_images);
