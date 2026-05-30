@@ -4,6 +4,7 @@ type ThemeMode = 'light' | 'dark'
 
 type UseAppSettingsOptions = {
   sidebarPinnedStorageKey?: string
+  autoHideTitlebarInWindowModeStorageKey?: string
   rightSidebarPinnedStorageKey?: string
   autoFixRightSidebarOnPreviewStorageKey?: string
   themeModeStorageKey?: string
@@ -12,6 +13,7 @@ type UseAppSettingsOptions = {
 
 const defaultKeys = {
   sidebarPinned: 'illutag.sidebarPinned',
+  autoHideTitlebarInWindowMode: 'illutag.autoHideTitlebarInWindowMode',
   rightSidebarPinned: 'illutag.rightSidebarPinned',
   autoFixRightSidebarOnPreview: 'illutag.autoFixRightSidebarOnPreview',
   themeMode: 'illutag.themeMode',
@@ -20,6 +22,8 @@ const defaultKeys = {
 
 export function useAppSettings(options: UseAppSettingsOptions = {}) {
   const sidebarPinnedStorageKey = options.sidebarPinnedStorageKey ?? defaultKeys.sidebarPinned
+  const autoHideTitlebarInWindowModeStorageKey =
+    options.autoHideTitlebarInWindowModeStorageKey ?? defaultKeys.autoHideTitlebarInWindowMode
   const rightSidebarPinnedStorageKey =
     options.rightSidebarPinnedStorageKey ?? defaultKeys.rightSidebarPinned
   const autoFixRightSidebarOnPreviewStorageKey =
@@ -29,6 +33,7 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
     options.thumbnailCacheEnabledStorageKey ?? defaultKeys.thumbnailCacheEnabled
 
   const sidebarPinned = ref(false)
+  const autoHideTitlebarInWindowMode = ref(false)
   const rightSidebarPinned = ref(false)
   const autoFixRightSidebarOnPreview = ref(false)
   const themeMode = ref<ThemeMode>('light')
@@ -40,6 +45,8 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
 
   function initAppSettingsFromStorage() {
     sidebarPinned.value = localStorage.getItem(sidebarPinnedStorageKey) === 'true'
+    autoHideTitlebarInWindowMode.value =
+      localStorage.getItem(autoHideTitlebarInWindowModeStorageKey) === 'true'
     rightSidebarPinned.value = localStorage.getItem(rightSidebarPinnedStorageKey) === 'true'
     autoFixRightSidebarOnPreview.value =
       localStorage.getItem(autoFixRightSidebarOnPreviewStorageKey) === 'true'
@@ -51,6 +58,10 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
 
   function setSidebarPinned(value: boolean) {
     sidebarPinned.value = value
+  }
+
+  function setAutoHideTitlebarInWindowMode(value: boolean) {
+    autoHideTitlebarInWindowMode.value = value
   }
 
   function setRightSidebarPinned(value: boolean) {
@@ -73,6 +84,10 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
     localStorage.setItem(sidebarPinnedStorageKey, String(value))
   })
 
+  watch(autoHideTitlebarInWindowMode, (value) => {
+    localStorage.setItem(autoHideTitlebarInWindowModeStorageKey, String(value))
+  })
+
   watch(rightSidebarPinned, (value) => {
     localStorage.setItem(rightSidebarPinnedStorageKey, String(value))
   })
@@ -92,12 +107,14 @@ export function useAppSettings(options: UseAppSettingsOptions = {}) {
 
   return {
     sidebarPinned,
+    autoHideTitlebarInWindowMode,
     rightSidebarPinned,
     autoFixRightSidebarOnPreview,
     themeMode,
     thumbnailCacheEnabled,
     initAppSettingsFromStorage,
     setSidebarPinned,
+    setAutoHideTitlebarInWindowMode,
     setRightSidebarPinned,
     setAutoFixRightSidebarOnPreview,
     setThemeMode,

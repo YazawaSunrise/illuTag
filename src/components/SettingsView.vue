@@ -7,6 +7,7 @@ type ThemeMode = 'light' | 'dark'
 
 defineProps<{
   sidebarPinned: boolean
+  autoHideTitlebarInWindowMode: boolean
   autoFixRightSidebarOnPreview: boolean
   thumbnailCacheEnabled: boolean
   isThumbnailGenerationRunning: boolean
@@ -61,6 +62,15 @@ defineProps<{
         @change="handlers.setSidebarPinned(($event.target as HTMLInputElement).checked)"
       />
       <span>侧边栏常开</span>
+    </label>
+
+    <label class="setting-toggle">
+      <input
+        :checked="autoHideTitlebarInWindowMode"
+        type="checkbox"
+        @change="handlers.setAutoHideTitlebarInWindowMode(($event.target as HTMLInputElement).checked)"
+      />
+      <span>窗口模式下自动隐藏标题行</span>
     </label>
 
     <label class="setting-toggle">

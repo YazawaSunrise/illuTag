@@ -73,7 +73,12 @@ const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
 const sidebarOpen = computed(() => sidebarPinnedEffective.value || sidebarHoverOpen.value)
 const rightSidebarOpen = computed(() => rightSidebarPinned.value || rightSidebarHoverOpen.value)
-const isTitlebarPinned = computed(() => !isWindowMaximized.value || isTitlebarHovered.value)
+const isTitlebarPinned = computed(() => {
+  if (isWindowMaximized.value) {
+    return isTitlebarHovered.value
+  }
+  return autoHideTitlebarInWindowMode.value ? isTitlebarHovered.value : true
+})
 const galleryScopeTransitionKey = computed(() => `gallery:${galleryScrollScopeKeyOf(activeUserFolderId.value)}`)
 const workspaceTransitionKey = computed(() =>
   viewMode.value === 'gallery' ? galleryScopeTransitionKey.value : viewMode.value,
@@ -120,12 +125,14 @@ const searchPanelStyle = computed<Record<string, string>>(() => ({
 
 const {
   sidebarPinned,
+  autoHideTitlebarInWindowMode,
   rightSidebarPinned,
   autoFixRightSidebarOnPreview,
   themeMode,
   thumbnailCacheEnabled,
   initAppSettingsFromStorage,
   setSidebarPinned,
+  setAutoHideTitlebarInWindowMode,
   setRightSidebarPinned,
   setAutoFixRightSidebarOnPreview,
   setThemeMode,
@@ -502,6 +509,9 @@ type GalleryBatchActionItem = {
     | 'remove-from-folder'
     | 'assign-folder'
     | 'favorite'
+    | 'favorite-remove'
+    | 'restore-trash'
+    | 'system-trash'
     | 'trash'
   label: string
 }
@@ -573,6 +583,20 @@ const galleryBatchActionLabels = computed<GalleryBatchActionItem[]>(() => {
       { key: 'move-folder', label: '移动到其他文件夹' },
       { key: 'add-tags', label: '添加标签' },
       { key: 'remove-from-folder', label: '从文件夹中删除' },
+    ]
+  }
+  if (activeUserFolderId.value === 'trash') {
+    return [
+      { key: 'restore-trash', label: '还原' },
+      { key: 'system-trash', label: '移动到系统回收站' },
+    ]
+  }
+  if (activeUserFolderId.value === 'favorites') {
+    return [
+      { key: 'assign-folder', label: '归类到文件夹' },
+      { key: 'add-tags', label: '添加标签' },
+      { key: 'favorite-remove', label: '从我喜爱的中移除' },
+      { key: 'trash', label: '移动到回收站' },
     ]
   }
   return [
@@ -736,10 +760,38 @@ async function runBatchFavorite() {
   })
 }
 
+async function runBatchRemoveFavorite() {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await runBatchAction('从我喜爱的中移除', async (imageId) => {
+    library.value = await invoke<LibraryStore>('toggle_image_favorite_command', {
+      imageId,
+      favorite: false,
+    })
+  })
+}
+
 async function runBatchMoveToTrash() {
   const { invoke } = await import('@tauri-apps/api/core')
   await runBatchAction('移入回收站', async (imageId) => {
     library.value = await invoke<LibraryStore>('remove_image_from_index_command', {
+      imageId,
+    })
+  })
+}
+
+async function runBatchRestoreFromTrash() {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await runBatchAction('还原', async (imageId) => {
+    library.value = await invoke<LibraryStore>('restore_image_from_trash_command', {
+      imageId,
+    })
+  })
+}
+
+async function runBatchMoveToSystemTrash() {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await runBatchAction('移动到系统回收站', async (imageId) => {
+    library.value = await invoke<LibraryStore>('move_image_to_system_trash_command', {
       imageId,
     })
   })
@@ -1029,6 +1081,18 @@ function onGalleryBatchAction(actionKey: GalleryBatchActionItem['key']) {
   }
   if (actionKey === 'favorite') {
     void runBatchFavorite()
+    return
+  }
+  if (actionKey === 'favorite-remove') {
+    void runBatchRemoveFavorite()
+    return
+  }
+  if (actionKey === 'restore-trash') {
+    void runBatchRestoreFromTrash()
+    return
+  }
+  if (actionKey === 'system-trash') {
+    void runBatchMoveToSystemTrash()
     return
   }
   void runBatchMoveToTrash()
@@ -1393,6 +1457,7 @@ onMounted(async () => {
   window.addEventListener('click', closeImageDetailContextMenu)
   window.addEventListener('click', closeGalleryImageContextMenu)
   window.addEventListener('click', closeTagManagerTagContextMenu)
+  window.addEventListener('mouseout', onWindowMouseOut)
   window.addEventListener('keydown', handleGlobalKeydown)
   void refreshBackgroundScanStatus()
   void refreshWindowAlwaysOnTop()
@@ -1498,6 +1563,7 @@ onUnmounted(() => {
   window.removeEventListener('click', closeImageDetailContextMenu)
   window.removeEventListener('click', closeGalleryImageContextMenu)
   window.removeEventListener('click', closeTagManagerTagContextMenu)
+  window.removeEventListener('mouseout', onWindowMouseOut)
   window.removeEventListener('keydown', handleGlobalKeydown)
   closeImportLibraryFolderPicker(null)
   resetImageDetailUserTagEditor()
@@ -2136,15 +2202,25 @@ async function refreshWindowAlwaysOnTop() {
 }
 
 function showTitlebarByHotspot() {
-  if (isWindowMaximized.value) isTitlebarHovered.value = true
+  if (isWindowMaximized.value || autoHideTitlebarInWindowMode.value) {
+    isTitlebarHovered.value = true
+  }
 }
 
 function onTitlebarMouseEnter() {
-  if (isWindowMaximized.value) isTitlebarHovered.value = true
+  if (isWindowMaximized.value || autoHideTitlebarInWindowMode.value) {
+    isTitlebarHovered.value = true
+  }
 }
 
-function onTitlebarMouseLeave() {
-  if (isWindowMaximized.value) isTitlebarHovered.value = false
+function onTitlebarMouseLeave(event: MouseEvent) {
+  if (!(isWindowMaximized.value || autoHideTitlebarInWindowMode.value)) return
+  const nextTarget = event.relatedTarget
+  if (!nextTarget) {
+    // Keep titlebar visible when cursor leaves the app window entirely.
+    return
+  }
+  isTitlebarHovered.value = false
 }
 
 async function minimizeWindow() {
@@ -2284,6 +2360,12 @@ function isRightSidebarHoverSafeAreaActive() {
     return true
   }
   return false
+}
+
+function onWindowMouseOut(event: MouseEvent) {
+  if (event.relatedTarget) return
+  closeSidebarByHover()
+  closeRightSidebarByHover()
 }
 
 function openSettings() {
@@ -2877,6 +2959,7 @@ function closeSidebarByToggle() {
 
 const settingsViewHandlers = {
   setSidebarPinned,
+  setAutoHideTitlebarInWindowMode,
   setThemeMode,
   setAutoFixRightSidebarOnPreview,
   setThumbnailCacheEnabled,
@@ -3253,6 +3336,7 @@ function formatError(error: unknown) {
           <SettingsView
             v-if="viewMode === 'settings'"
             :sidebar-pinned="sidebarPinned"
+            :auto-hide-titlebar-in-window-mode="autoHideTitlebarInWindowMode"
             :auto-fix-right-sidebar-on-preview="autoFixRightSidebarOnPreview"
             :thumbnail-cache-enabled="thumbnailCacheEnabled"
             :is-thumbnail-generation-running="isThumbnailGenerationRunning"

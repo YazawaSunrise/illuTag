@@ -26,6 +26,9 @@ type GalleryBatchActionItem = {
     | 'remove-from-folder'
     | 'assign-folder'
     | 'favorite'
+    | 'favorite-remove'
+    | 'restore-trash'
+    | 'system-trash'
     | 'trash'
   label: string
 }
