@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
+import { Pushpin } from '@icon-park/vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import GalleryView from './components/GalleryView.vue'
 import AppOverlayLayer from './components/AppOverlayLayer.vue'
@@ -58,6 +59,7 @@ const errorText = ref('')
 const folderPathInput = ref('')
 const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
+const isWindowAlwaysOnTop = ref(false)
 const isTitlebarHovered = ref(false)
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const importLibraryFolderPickerItemId = ref<number | null>(null)
@@ -813,6 +815,7 @@ onMounted(async () => {
   window.addEventListener('click', closeTagManagerTagContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   void refreshBackgroundScanStatus()
+  void refreshWindowAlwaysOnTop()
   startBackgroundScanPolling()
   startThumbnailGenerationPolling()
   startAtmosphereGenerationPolling()
@@ -1424,6 +1427,15 @@ async function refreshWindowMaximized() {
   }
 }
 
+async function refreshWindowAlwaysOnTop() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    isWindowAlwaysOnTop.value = await invoke<boolean>('window_is_always_on_top_command')
+  } catch {
+    isWindowAlwaysOnTop.value = false
+  }
+}
+
 function showTitlebarByHotspot() {
   if (isWindowMaximized.value) isTitlebarHovered.value = true
 }
@@ -1440,6 +1452,13 @@ async function minimizeWindow() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('window_minimize_command')
+  } catch {}
+}
+
+async function toggleWindowAlwaysOnTop() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    isWindowAlwaysOnTop.value = await invoke<boolean>('window_toggle_always_on_top_command')
   } catch {}
 }
 
@@ -2133,6 +2152,21 @@ function formatError(error: unknown) {
         @dblclick="toggleWindowMaximize"
       />
       <div class="app-titlebar__right">
+        <button
+          class="app-titlebar__button app-titlebar__button--win app-titlebar__button--pin"
+          :class="{ 'is-active': isWindowAlwaysOnTop }"
+          type="button"
+          :aria-label="isWindowAlwaysOnTop ? '取消置顶' : '窗口置顶'"
+          @click="toggleWindowAlwaysOnTop"
+        >
+          <Pushpin
+            class="app-titlebar__button--pin-icon"
+            theme="outline"
+            :size="14"
+            :fill="['currentColor']"
+            aria-hidden="true"
+          />
+        </button>
         <button
           class="app-titlebar__button app-titlebar__button--win app-titlebar__button--minimize"
           type="button"

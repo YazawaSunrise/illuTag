@@ -954,6 +954,16 @@ button {
   box-sizing: border-box;
 }
 
+.app-titlebar__button--pin-icon {
+  display: block;
+  color: currentColor;
+}
+
+.app-titlebar__button--pin.is-active {
+  color: #82d5b8;
+  background: rgb(130 213 184 / 0.24);
+}
+
 .app-titlebar__button--minimize .app-titlebar__button-icon::before {
   left: 0;
   top: 7px;
@@ -3204,6 +3214,11 @@ button {
 
 .app-shell.theme-light .app-titlebar__button--close:hover {
   background: rgb(226 139 139 / 0.25);
+}
+
+.app-shell.theme-light .app-titlebar__button--pin.is-active {
+  color: #2c7a63;
+  background: rgb(130 213 184 / 0.24);
 }
 
 .app-shell.theme-light .sidebar.is-pinned {

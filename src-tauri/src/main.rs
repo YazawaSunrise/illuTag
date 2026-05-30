@@ -756,6 +756,27 @@ fn window_is_maximized_command(window: tauri::Window) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn window_toggle_always_on_top_command(window: tauri::Window) -> Result<bool, String> {
+    let always_on_top = window
+        .is_always_on_top()
+        .map_err(|error| format!("读取窗口置顶状态失败：{error}"))?;
+    let next = !always_on_top;
+    window
+        .set_always_on_top(next)
+        .map_err(|error| format!("更新窗口置顶状态失败：{error}"))?;
+    window
+        .is_always_on_top()
+        .map_err(|error| format!("验证窗口置顶状态失败：{error}"))
+}
+
+#[tauri::command]
+fn window_is_always_on_top_command(window: tauri::Window) -> Result<bool, String> {
+    window
+        .is_always_on_top()
+        .map_err(|error| format!("读取窗口置顶状态失败：{error}"))
+}
+
+#[tauri::command]
 fn window_close_command(window: tauri::Window) -> Result<(), String> {
     window
         .close()
@@ -913,6 +934,8 @@ fn main() {
             window_minimize_command,
             window_toggle_maximize_command,
             window_is_maximized_command,
+            window_toggle_always_on_top_command,
+            window_is_always_on_top_command,
             window_start_dragging_command,
             window_close_command
         ])
