@@ -2258,6 +2258,22 @@ async function startWindowDrag(event: PointerEvent) {
   } catch {}
 }
 
+function isTitlebarControlTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  return Boolean(target.closest('.app-titlebar__right, .app-titlebar__button'))
+}
+
+function onTitlebarPointerDown(event: PointerEvent) {
+  if (isTitlebarControlTarget(event.target)) return
+  void startWindowDrag(event)
+}
+
+function onTitlebarDoubleClick(event: MouseEvent) {
+  if (event.button !== 0) return
+  if (isTitlebarControlTarget(event.target)) return
+  void toggleWindowMaximize()
+}
+
 async function closeWindow() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -3219,6 +3235,8 @@ function formatError(error: unknown) {
       class="app-titlebar"
       @mouseenter="onTitlebarMouseEnter"
       @mouseleave="onTitlebarMouseLeave"
+      @pointerdown="onTitlebarPointerDown"
+      @dblclick="onTitlebarDoubleClick"
     >
       <div class="app-titlebar__left">
         <span class="app-titlebar__brand">illuTag</span>
@@ -3228,9 +3246,6 @@ function formatError(error: unknown) {
       </div>
       <div
         class="app-titlebar__drag"
-        data-tauri-drag-region
-        @pointerdown="startWindowDrag"
-        @dblclick="toggleWindowMaximize"
       />
       <div class="app-titlebar__right">
         <button
