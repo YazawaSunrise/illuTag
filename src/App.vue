@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { confirm as dialogConfirm, open, save } from '@tauri-apps/plugin-dialog'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import { FolderClose, FolderOpen, Pushpin } from '@icon-park/vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import GalleryView from './components/GalleryView.vue'
@@ -57,6 +57,8 @@ const isAddingFolder = ref(false)
 const statusText = ref('还没有添加图库文件夹')
 const errorText = ref('')
 const folderPathInput = ref('')
+const removeFolderConfirmPath = ref<string | null>(null)
+const systemTrashMoveErrorMessage = ref<string | null>(null)
 const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
 const isWindowAlwaysOnTop = ref(false)
@@ -1729,9 +1731,22 @@ async function removeFolder(folderPath: string) {
   }
 }
 
-async function removeFolderWithConfirm(folderPath: string) {
-  const confirmed = await dialogConfirm(`确认移除该文件夹索引？\n${folderPath}`)
-  if (!confirmed) return
+function openRemoveFolderConfirm(folderPath: string) {
+  removeFolderConfirmPath.value = folderPath
+}
+
+function closeRemoveFolderConfirm() {
+  removeFolderConfirmPath.value = null
+}
+
+function closeSystemTrashMoveErrorDialog() {
+  systemTrashMoveErrorMessage.value = null
+}
+
+async function confirmRemoveFolder() {
+  const folderPath = removeFolderConfirmPath.value
+  if (!folderPath) return
+  removeFolderConfirmPath.value = null
   await removeFolder(folderPath)
 }
 
@@ -2579,6 +2594,26 @@ async function restoreGalleryImageFromTrash(imageId: string) {
   }
 }
 
+async function moveGalleryImageToSystemTrash(imageId: string) {
+  systemTrashMoveErrorMessage.value = null
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    library.value = await invoke<LibraryStore>('move_image_to_system_trash_command', {
+      imageId,
+    })
+    if (activeImageDetailId.value === imageId) {
+      closeImageDetail()
+    }
+  } catch (error) {
+    const message = formatError(error)
+    errorText.value = message
+    systemTrashMoveErrorMessage.value = message
+  } finally {
+    imageDetailContextMenu.value = null
+    closeGalleryImageContextMenu()
+  }
+}
+
 async function toggleGalleryImageFavorite(imageId: string, favorite: boolean) {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -2876,7 +2911,7 @@ const settingsViewHandlers = {
   setFolderPathInput(value: string) {
     folderPathInput.value = value
   },
-  removeFolder: removeFolderWithConfirm,
+  removeFolder: openRemoveFolderConfirm,
 }
 
 const leftSidebarHandlers = {
@@ -3343,6 +3378,32 @@ function formatError(error: unknown) {
         </div>
         <div class="import-library-picker__actions">
           <button type="button" class="secondary-button" @click="closeImportLibraryFolderPicker(null)">取消</button>
+        </div>
+      </article>
+    </div>
+
+    <div v-if="removeFolderConfirmPath" class="image-detail-modal__dialog-layer" @click="closeRemoveFolderConfirm()">
+      <article class="image-detail-modal__dialog" @click.stop>
+        <h4>确认移除索引</h4>
+        <p class="image-detail-modal__dialog-text">该操作不会删除本地文件，仅移除该图库文件夹的索引。</p>
+        <p class="image-detail-modal__dialog-text">{{ removeFolderConfirmPath }}</p>
+        <div class="image-detail-modal__dialog-actions">
+          <button type="button" class="secondary-button" @click="closeRemoveFolderConfirm()">取消</button>
+          <button type="button" class="danger-button" @click="confirmRemoveFolder()">确认移除</button>
+        </div>
+      </article>
+    </div>
+
+    <div
+      v-if="systemTrashMoveErrorMessage"
+      class="image-detail-modal__dialog-layer"
+      @click="closeSystemTrashMoveErrorDialog()"
+    >
+      <article class="image-detail-modal__dialog" @click.stop>
+        <h4>移动到系统回收站失败</h4>
+        <p class="image-detail-modal__dialog-text">{{ systemTrashMoveErrorMessage }}</p>
+        <div class="image-detail-modal__dialog-actions">
+          <button type="button" class="primary-button" @click="closeSystemTrashMoveErrorDialog()">知道了</button>
         </div>
       </article>
     </div>
@@ -4100,13 +4161,18 @@ function formatError(error: unknown) {
       >
         移入回收站
       </button>
-      <button
-        v-else-if="activeUserFolderId === 'trash'"
-        type="button"
-        @click="restoreGalleryImageFromTrash(galleryImageContextMenu.imageId)"
-      >
-        还原
-      </button>
+      <template v-else-if="activeUserFolderId === 'trash'">
+        <button type="button" @click="restoreGalleryImageFromTrash(galleryImageContextMenu.imageId)">
+          还原
+        </button>
+        <button
+          class="is-danger"
+          type="button"
+          @click="moveGalleryImageToSystemTrash(galleryImageContextMenu.imageId)"
+        >
+          移动到系统回收站
+        </button>
+      </template>
       <button
         v-else
         class="is-danger"

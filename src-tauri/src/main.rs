@@ -47,6 +47,7 @@ use illutag_core::library::{
     move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
     restore_image_from_trash,
+    move_image_to_system_trash,
     toggle_image_favorite,
     restore_reference_board_item,
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
@@ -93,6 +94,14 @@ fn restore_image_from_trash_command(
     state: State<AppState>,
 ) -> Result<LibraryStore, String> {
     restore_image_from_trash(image_id, &state)
+}
+
+#[tauri::command]
+fn move_image_to_system_trash_command(
+    image_id: String,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    move_image_to_system_trash(image_id, &state)
 }
 
 #[tauri::command]
@@ -873,6 +882,7 @@ fn main() {
             remove_gallery_folder_command,
             remove_image_from_index_command,
             restore_image_from_trash_command,
+            move_image_to_system_trash_command,
             toggle_image_favorite_command,
             read_image_bytes_command,
             copy_image_to_system_clipboard_command,

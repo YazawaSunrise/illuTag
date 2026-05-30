@@ -981,6 +981,116 @@ pub fn restore_image_from_trash(image_id: String, state: &AppState) -> Result<Li
     Ok(store)
 }
 
+fn move_file_to_system_recycle_bin(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let normalized_path = normalize_windows_path_for_recycle_bin(path);
+        let move_result = trash::delete(&normalized_path);
+        if let Err(error) = move_result {
+            let error_text = error.to_string();
+            eprintln!(
+                "[system-trash] move failed path={} status={} stdout={} stderr={} error={}",
+                normalized_path.display(),
+                "N/A",
+                "",
+                "",
+                error_text
+            );
+            if is_permission_denied_error_text(&error_text) {
+                return Err("无权限，无法移入系统回收站。".to_string());
+            }
+            return Err(format!("移动到系统回收站失败：{error_text}"));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err("Moving file to system recycle bin is only supported on Windows".to_string())
+    }
+}
+
+fn normalize_windows_path_for_recycle_bin(path: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let raw = path.to_string_lossy();
+        if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = raw.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+        return path.to_path_buf();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        path.to_path_buf()
+    }
+}
+
+fn is_permission_denied_error_text(error_text: &str) -> bool {
+    let lower = error_text.to_lowercase();
+    lower.contains("permission denied")
+        || lower.contains("access is denied")
+        || lower.contains("operation not permitted")
+        || error_text.contains("拒绝访问")
+        || error_text.contains("无权限")
+}
+
+pub fn move_image_to_system_trash(image_id: String, state: &AppState) -> Result<LibraryStore, String> {
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+
+    let image_row = conn
+        .query_row(
+            "
+            SELECT path, source, COALESCE(trashed, 0)
+            FROM images
+            WHERE id = ?1
+            ",
+            params![image_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Failed to load image before recycle-bin move: {error}"))?;
+    let Some((path, source, trashed)) = image_row else {
+        return Err("Image not found".to_string());
+    };
+    if source != "library" {
+        return Err("Only library images can be moved to system recycle bin".to_string());
+    }
+    if trashed == 0 {
+        return Err("Image must be in app recycle bin before moving to system recycle bin".to_string());
+    }
+
+    let image_path = PathBuf::from(&path);
+    if !image_path.exists() {
+        return Err("源文件不存在，无法移入系统回收站。".to_string());
+    }
+    move_file_to_system_recycle_bin(&image_path)?;
+
+    conn.execute("DELETE FROM images WHERE id = ?1", params![image_id])
+        .map_err(|error| format!("Failed to remove image index after recycle-bin move: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    remove_signature_cache_entry(&state.atmosphere_signature_cache, &image_id)?;
+    remove_signature_cache_entry(&state.color_signature_cache, &image_id)?;
+    remove_clip_vector_cache_entry(&state.clip_vector_cache, &image_id)?;
+    Ok(store)
+}
+
 pub fn toggle_image_favorite(
     image_id: String,
     favorite: bool,
