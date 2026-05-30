@@ -2593,6 +2593,187 @@ button {
   box-shadow: 0 18px 42px rgb(0 0 0 / 0.4);
 }
 
+.folder-rule-editor-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(10 12 16 / 0.42);
+  backdrop-filter: blur(1px);
+}
+
+.folder-rule-editor {
+  display: grid;
+  width: min(760px, calc(100vw - 48px));
+  max-height: min(78vh, 780px);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  border: 1px solid #38424c;
+  border-radius: 12px;
+  background: #171c21;
+  box-shadow: 0 18px 42px rgb(0 0 0 / 0.4);
+}
+
+.folder-rule-editor__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #2f3a45;
+}
+
+.folder-rule-editor__header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #edf2f7;
+}
+
+.folder-rule-editor__close {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #c7d4e0;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.folder-rule-editor__close:hover {
+  background: rgb(67 82 96 / 0.28);
+}
+
+.folder-rule-editor__hint {
+  padding: 10px 16px 0;
+  color: #9eb0c3;
+  font-size: 12px;
+}
+
+.folder-rule-editor__body {
+  min-height: 0;
+  padding: 10px 16px 12px;
+  overflow: auto;
+}
+
+.folder-rule-editor__section {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.folder-rule-editor__section-title {
+  color: #a5b7ca;
+  font-size: 12px;
+}
+
+.folder-rule-editor__conditions {
+  display: grid;
+  gap: 8px;
+}
+
+.folder-rule-editor__condition-item {
+  display: grid;
+  gap: 6px;
+}
+
+.folder-rule-editor__condition-row {
+  display: grid;
+  grid-template-columns: 84px 128px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.folder-rule-editor__select,
+.folder-rule-editor__input {
+  min-height: 34px;
+  border: 1px solid #3a4958;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #0e1319;
+  color: #e8f0f8;
+  font: inherit;
+}
+
+.folder-rule-editor__select--keyword {
+  width: 100%;
+}
+
+.folder-rule-editor__suggestions {
+  border: 1px solid #33404d;
+  border-radius: 8px;
+  background: rgb(14 19 25 / 0.95);
+  max-height: 160px;
+  overflow: auto;
+  padding: 4px;
+  display: grid;
+  gap: 4px;
+}
+
+.folder-rule-editor__suggestion {
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #deebf8;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.folder-rule-editor__suggestion:hover {
+  border-color: #4f7aa4;
+  background: rgb(52 72 92 / 0.5);
+}
+
+.folder-rule-editor__suggestion small {
+  color: #99abc0;
+}
+
+.folder-rule-editor__placeholder {
+  margin: 4px 0;
+  padding: 2px 6px;
+  color: #95a8bc;
+  font-size: 12px;
+}
+
+.folder-rule-editor__remove {
+  min-height: 34px;
+  border: 1px solid #3a4958;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: rgb(44 57 70 / 0.35);
+  color: #dbe7f4;
+  cursor: pointer;
+}
+
+.folder-rule-editor__remove:hover:not(:disabled) {
+  border-color: #4f7aa4;
+  background: rgb(52 72 92 / 0.5);
+}
+
+.folder-rule-editor__remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.folder-rule-editor__add {
+  justify-self: start;
+}
+
+.folder-rule-editor__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid #2f3a45;
+}
+
 .batch-action-modal--tags {
   width: min(680px, calc(100vw - 48px));
 }
@@ -2704,6 +2885,10 @@ button {
 .batch-action-modal__existing-tags {
   display: grid;
   gap: 8px;
+}
+
+.batch-action-modal__existing-tags-picker {
+  margin: 0;
 }
 
 .batch-action-modal__existing-tags-list {
@@ -4346,6 +4531,75 @@ button {
 
 .app-shell.theme-light .batch-action-layer {
   background: rgb(34 44 57 / 0.22);
+}
+
+.app-shell.theme-light .folder-rule-editor-layer {
+  background: rgb(34 44 57 / 0.22);
+}
+
+.app-shell.theme-light .folder-rule-editor {
+  border-color: #cfd8e4;
+  background: #ffffff;
+  box-shadow: 0 16px 36px rgb(41 54 72 / 0.22);
+}
+
+.app-shell.theme-light .folder-rule-editor__header,
+.app-shell.theme-light .folder-rule-editor__footer {
+  border-color: #e2e8f0;
+}
+
+.app-shell.theme-light .folder-rule-editor__header h3 {
+  color: #1f2937;
+}
+
+.app-shell.theme-light .folder-rule-editor__close {
+  color: #475569;
+}
+
+.app-shell.theme-light .folder-rule-editor__close:hover {
+  background: rgb(71 85 105 / 0.12);
+}
+
+.app-shell.theme-light .folder-rule-editor__hint,
+.app-shell.theme-light .folder-rule-editor__section-title {
+  color: #627287;
+}
+
+.app-shell.theme-light .folder-rule-editor__select,
+.app-shell.theme-light .folder-rule-editor__input {
+  border-color: #c7d4e2;
+  color: #1f2937;
+  background: #ffffff;
+}
+
+.app-shell.theme-light .folder-rule-editor__suggestions {
+  border-color: #d6e0eb;
+  background: #ffffff;
+}
+
+.app-shell.theme-light .folder-rule-editor__suggestion {
+  color: #1f2937;
+}
+
+.app-shell.theme-light .folder-rule-editor__suggestion:hover {
+  border-color: #a9b9ca;
+  background: #eef4fb;
+}
+
+.app-shell.theme-light .folder-rule-editor__suggestion small,
+.app-shell.theme-light .folder-rule-editor__placeholder {
+  color: #627287;
+}
+
+.app-shell.theme-light .folder-rule-editor__remove {
+  border-color: #d6e0eb;
+  color: #1f2937;
+  background: #f8fbff;
+}
+
+.app-shell.theme-light .folder-rule-editor__remove:hover:not(:disabled) {
+  border-color: #a9b9ca;
+  background: #eef4fb;
 }
 
 .app-shell.theme-light .batch-action-modal {

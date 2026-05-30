@@ -534,6 +534,28 @@ const batchTagExpandedFolderIds = ref<number[]>([])
 const batchTagSuggestTimer = ref<number | null>(null)
 const batchTagSuggestLoading = ref(false)
 const batchTagSuggestToken = ref(0)
+type FolderRuleConditionDraft = {
+  id: number
+  logic: 'AND' | 'OR' | 'NOT'
+  source: 'danbooru' | 'custom' | 'filename'
+  keyword: string
+}
+type FolderRuleTagGroup = {
+  key: string
+  title: string
+  tags: string[]
+}
+const folderRuleEditor = ref<{
+  folderId: number
+  folderName: string
+  conditions: FolderRuleConditionDraft[]
+} | null>(null)
+const folderRuleSeed = ref(1)
+const folderRuleDanbooruActiveConditionId = ref<number | null>(null)
+const folderRuleDanbooruSuggestions = ref<KnownAutoTagSuggestion[]>([])
+const folderRuleDanbooruSuggestLoading = ref(false)
+const folderRuleDanbooruSuggestTimer = ref<number | null>(null)
+const folderRuleDanbooruSuggestToken = ref(0)
 const batchSelectedImageIds = computed(() => Array.from(new Set(galleryBatchSelectedImageIds.value)))
 const isGalleryBatchAllSelected = computed(() => {
   if (!isGalleryBatchMode.value) return false
@@ -557,6 +579,30 @@ const galleryBatchActionLabels = computed<GalleryBatchActionItem[]>(() => {
     { key: 'favorite', label: '归类到我喜爱的' },
     { key: 'trash', label: '移动到回收站' },
   ]
+})
+
+const folderRuleCustomTagGroups = computed<FolderRuleTagGroup[]>(() => {
+  const normalizeTags = (tags: string[]) =>
+    Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  const groups: FolderRuleTagGroup[] = []
+  for (const folder of tagManagerFolders.value) {
+    const tags = normalizeTags(folder.tags)
+    if (tags.length === 0) continue
+    groups.push({
+      key: `folder:${folder.id}`,
+      title: folder.name,
+      tags,
+    })
+  }
+  const unclassified = normalizeTags(tagManagerUnclassifiedTags.value)
+  if (unclassified.length > 0) {
+    groups.push({
+      key: 'unclassified',
+      title: '未分类标签',
+      tags: unclassified,
+    })
+  }
+  return groups
 })
 
 function clearGalleryBatchSelection() {
@@ -807,12 +853,13 @@ function queueBatchTagSuggestions() {
   }, 120)
 }
 
-function openBatchTagModal() {
+async function openBatchTagModal() {
   batchTagModalOpen.value = true
   batchTagDraft.value = ''
   batchTagSuggestions.value = []
   batchTagPending.value = []
   batchTagExpandedFolderIds.value = []
+  await reloadTagManagementState()
 }
 
 function isBatchPendingCustomTag(tagText: string) {
@@ -971,7 +1018,7 @@ function onGalleryBatchAction(actionKey: GalleryBatchActionItem['key']) {
     return
   }
   if (actionKey === 'add-tags') {
-    openBatchTagModal()
+    void openBatchTagModal()
     return
   }
   if (actionKey === 'remove-from-folder') {
@@ -1406,6 +1453,7 @@ onUnmounted(() => {
   clearTagManagerDragGhost()
   clearSidebarHoverCloseTimer()
   clearRightSidebarHoverCloseTimer()
+  closeFolderRuleDanbooruSuggestions()
   stopBackgroundScanPolling()
   stopThumbnailGenerationPolling()
   stopAtmosphereGenerationPolling()
@@ -2156,6 +2204,161 @@ function setComposingFolderName(value: boolean) {
   isComposingFolderName.value = value
 }
 
+function canEditFolderRule(folderId: number) {
+  const folder = folderTree.value.find((item) => item.id === folderId)
+  if (!folder) return false
+  return !folder.hasChildren
+}
+
+function clearFolderRuleDanbooruSuggestionTimer() {
+  if (folderRuleDanbooruSuggestTimer.value === null) return
+  window.clearTimeout(folderRuleDanbooruSuggestTimer.value)
+  folderRuleDanbooruSuggestTimer.value = null
+}
+
+function closeFolderRuleDanbooruSuggestions() {
+  clearFolderRuleDanbooruSuggestionTimer()
+  folderRuleDanbooruActiveConditionId.value = null
+  folderRuleDanbooruSuggestLoading.value = false
+  folderRuleDanbooruSuggestions.value = []
+}
+
+async function refreshFolderRuleDanbooruSuggestions(conditionId: number, keyword: string) {
+  const normalized = keyword.trim()
+  if (!normalized) {
+    folderRuleDanbooruSuggestions.value = []
+    folderRuleDanbooruSuggestLoading.value = false
+    return
+  }
+  const token = folderRuleDanbooruSuggestToken.value + 1
+  folderRuleDanbooruSuggestToken.value = token
+  folderRuleDanbooruSuggestLoading.value = true
+  try {
+    const rows = await suggestKnownAutoTagsForInput(normalized, 24, { includeDictionary: true })
+    if (token !== folderRuleDanbooruSuggestToken.value) return
+    if (folderRuleDanbooruActiveConditionId.value !== conditionId) return
+    folderRuleDanbooruSuggestions.value = rows
+  } catch (error) {
+    if (token !== folderRuleDanbooruSuggestToken.value) return
+    folderRuleDanbooruSuggestions.value = []
+    errorText.value = formatError(error)
+  } finally {
+    if (token === folderRuleDanbooruSuggestToken.value) {
+      folderRuleDanbooruSuggestLoading.value = false
+    }
+  }
+}
+
+function queueFolderRuleDanbooruSuggestions(conditionId: number, keyword: string) {
+  folderRuleDanbooruActiveConditionId.value = conditionId
+  clearFolderRuleDanbooruSuggestionTimer()
+  const normalized = keyword.trim()
+  if (!normalized) {
+    folderRuleDanbooruSuggestions.value = []
+    folderRuleDanbooruSuggestLoading.value = false
+    return
+  }
+  folderRuleDanbooruSuggestTimer.value = window.setTimeout(() => {
+    folderRuleDanbooruSuggestTimer.value = null
+    void refreshFolderRuleDanbooruSuggestions(conditionId, normalized)
+  }, 120)
+}
+
+function onFolderRuleConditionSourceChange(condition: FolderRuleConditionDraft) {
+  condition.keyword = ''
+  if (condition.source !== 'danbooru' && folderRuleDanbooruActiveConditionId.value === condition.id) {
+    closeFolderRuleDanbooruSuggestions()
+  }
+}
+
+function onFolderRuleDanbooruKeywordInput(condition: FolderRuleConditionDraft, value: string) {
+  condition.keyword = value.trim()
+  queueFolderRuleDanbooruSuggestions(condition.id, condition.keyword)
+}
+
+function focusFolderRuleDanbooruCondition(condition: FolderRuleConditionDraft) {
+  folderRuleDanbooruActiveConditionId.value = condition.id
+  queueFolderRuleDanbooruSuggestions(condition.id, condition.keyword)
+}
+
+function scheduleCloseFolderRuleDanbooruSuggestions() {
+  window.setTimeout(() => {
+    if (!folderRuleEditor.value) return
+    closeFolderRuleDanbooruSuggestions()
+  }, 120)
+}
+
+function selectFolderRuleDanbooruSuggestion(condition: FolderRuleConditionDraft, suggestion: KnownAutoTagSuggestion) {
+  condition.keyword = suggestion.tagEn
+  closeFolderRuleDanbooruSuggestions()
+}
+
+function addFolderRuleCondition() {
+  if (!folderRuleEditor.value) return
+  const id = folderRuleSeed.value++
+  folderRuleEditor.value = {
+    ...folderRuleEditor.value,
+    conditions: [
+      ...folderRuleEditor.value.conditions,
+      {
+        id,
+        logic: 'AND',
+        source: 'danbooru',
+        keyword: '',
+      },
+    ],
+  }
+}
+
+function removeFolderRuleCondition(conditionId: number) {
+  if (!folderRuleEditor.value) return
+  folderRuleEditor.value = {
+    ...folderRuleEditor.value,
+    conditions: folderRuleEditor.value.conditions.filter((item) => item.id !== conditionId),
+  }
+  if (folderRuleDanbooruActiveConditionId.value === conditionId) {
+    closeFolderRuleDanbooruSuggestions()
+  }
+}
+
+function closeFolderRuleEditor() {
+  closeFolderRuleDanbooruSuggestions()
+  folderRuleEditor.value = null
+}
+
+async function openFolderRuleEditor(folderId: number) {
+  if (!canEditFolderRule(folderId)) {
+    errorText.value = '仅最小层级文件夹支持编辑规则'
+    closeFolderContextMenu()
+    return
+  }
+  await reloadTagManagementState()
+  const folder = folderTree.value.find((item) => item.id === folderId)
+  if (!folder) return
+  const id = folderRuleSeed.value++
+  folderRuleEditor.value = {
+    folderId,
+    folderName: folder.name,
+    conditions: [
+      {
+        id,
+        logic: 'AND',
+        source: 'danbooru',
+        keyword: '',
+      },
+    ],
+  }
+  closeFolderContextMenu()
+}
+
+function saveFolderRuleDraft(applyNow: boolean) {
+  if (!folderRuleEditor.value) return
+  statusText.value = applyNow
+    ? `已保存规则并立即应用（UI 预览）：${folderRuleEditor.value.folderName}`
+    : `已保存规则（UI 预览）：${folderRuleEditor.value.folderName}`
+  closeFolderRuleEditor()
+}
+
 function openGalleryImageMenu(item: GalleryLayoutItem, event: MouseEvent) {
   openGalleryImageMenuState(item, event, closeReferenceBoardCanvasMenu)
 }
@@ -2554,6 +2757,8 @@ const leftSidebarHandlers = {
   endComposingUserFolderRename,
   openSettings,
   openCreateFolderDraft,
+  canEditFolderRule,
+  openFolderRuleEditor,
   deleteUserFolder,
   commitFolderDraft,
   setNewFolderName,
@@ -2992,6 +3197,114 @@ function formatError(error: unknown) {
         <div class="import-library-picker__actions">
           <button type="button" class="secondary-button" @click="closeImportLibraryFolderPicker(null)">取消</button>
         </div>
+      </article>
+    </div>
+
+    <div v-if="folderRuleEditor" class="folder-rule-editor-layer" @click="closeFolderRuleEditor()">
+      <article class="folder-rule-editor" @click.stop>
+        <header class="folder-rule-editor__header">
+          <h3>编辑规则 · {{ folderRuleEditor.folderName }}</h3>
+          <button type="button" class="folder-rule-editor__close" @click="closeFolderRuleEditor()">×</button>
+        </header>
+        <div class="folder-rule-editor__hint">为文件夹创建规则:满足条件的图片将自动加入这个文件夹</div>
+        <div class="folder-rule-editor__body">
+          <section class="folder-rule-editor__section">
+            <div class="folder-rule-editor__section-title">条件列表</div>
+            <div class="folder-rule-editor__conditions">
+              <div
+                v-for="condition in folderRuleEditor.conditions"
+                :key="`folder-rule:${condition.id}`"
+                class="folder-rule-editor__condition-item"
+              >
+                <div class="folder-rule-editor__condition-row">
+                  <select v-model="condition.logic" class="folder-rule-editor__select">
+                    <option value="AND">AND</option>
+                    <option value="OR">OR</option>
+                    <option value="NOT">NOT</option>
+                  </select>
+                  <select
+                    v-model="condition.source"
+                    class="folder-rule-editor__select"
+                    @change="onFolderRuleConditionSourceChange(condition)"
+                  >
+                    <option value="danbooru">自动标签</option>
+                    <option value="custom">自定义标签</option>
+                    <option value="filename">文件名</option>
+                  </select>
+                  <template v-if="condition.source === 'custom'">
+                    <select v-model="condition.keyword" class="folder-rule-editor__select folder-rule-editor__select--keyword">
+                      <option value="">选择已有自定义标签</option>
+                      <optgroup v-for="group in folderRuleCustomTagGroups" :key="`folder-rule-custom-group:${group.key}`" :label="group.title">
+                        <option
+                          v-for="tagText in group.tags"
+                          :key="`folder-rule-custom-tag:${group.key}:${tagText}`"
+                          :value="tagText"
+                        >
+                          {{ tagText }}
+                        </option>
+                      </optgroup>
+                    </select>
+                  </template>
+                  <input
+                    v-else
+                    :value="condition.keyword"
+                    class="folder-rule-editor__input"
+                    type="text"
+                    :placeholder="
+                      condition.source === 'filename'
+                        ? '输入文件名关键词'
+                        : '输入自动标签关键词（支持联想）'
+                    "
+                    @focus="condition.source === 'danbooru' ? focusFolderRuleDanbooruCondition(condition) : null"
+                    @blur="condition.source === 'danbooru' ? scheduleCloseFolderRuleDanbooruSuggestions() : null"
+                    @input="
+                      condition.source === 'danbooru'
+                        ? onFolderRuleDanbooruKeywordInput(condition, ($event.target as HTMLInputElement).value)
+                        : (condition.keyword = ($event.target as HTMLInputElement).value.trim())
+                    "
+                  />
+                  <button
+                    type="button"
+                    class="folder-rule-editor__remove"
+                    :disabled="folderRuleEditor.conditions.length <= 1"
+                    @click="removeFolderRuleCondition(condition.id)"
+                  >
+                    删除
+                  </button>
+                </div>
+                <div
+                  v-if="condition.source === 'danbooru' && folderRuleDanbooruActiveConditionId === condition.id"
+                  class="folder-rule-editor__suggestions"
+                >
+                  <button
+                    v-for="item in folderRuleDanbooruSuggestions"
+                    :key="`folder-rule-suggestion:${condition.id}:${item.tagEn}`"
+                    type="button"
+                    class="folder-rule-editor__suggestion"
+                    @mousedown.prevent="selectFolderRuleDanbooruSuggestion(condition, item)"
+                  >
+                    <span>{{ item.tagZh || item.tagEn }}</span>
+                    <small>{{ item.tagZh ? item.tagEn : '' }}</small>
+                  </button>
+                  <p v-if="folderRuleDanbooruSuggestLoading" class="folder-rule-editor__placeholder">搜索中...</p>
+                  <p
+                    v-else-if="condition.keyword && folderRuleDanbooruSuggestions.length === 0"
+                    class="folder-rule-editor__placeholder"
+                  >
+                    暂无匹配标签
+                  </p>
+                </div>
+              </div>
+            </div>
+            <button type="button" class="secondary-button folder-rule-editor__add" @click="addFolderRuleCondition()">
+              新增条件
+            </button>
+          </section>
+        </div>
+        <footer class="folder-rule-editor__footer">
+          <button type="button" class="secondary-button" @click="saveFolderRuleDraft(false)">保存规则</button>
+          <button type="button" class="primary-button" @click="saveFolderRuleDraft(true)">保存并立即应用</button>
+        </footer>
       </article>
     </div>
 

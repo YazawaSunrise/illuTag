@@ -243,6 +243,13 @@ defineProps<{
           <button type="button" @click="handlers.startUserFolderRename(folderContextMenu.folderId)">
             重命名
           </button>
+          <button
+            v-if="handlers.canEditFolderRule(folderContextMenu.folderId)"
+            type="button"
+            @click="handlers.openFolderRuleEditor(folderContextMenu.folderId)"
+          >
+            编辑规则
+          </button>
           <button class="is-danger" type="button" @click="handlers.deleteUserFolder(folderContextMenu.folderId)">
             删除文件夹
           </button>
