@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { open, save } from '@tauri-apps/plugin-dialog'
+import { confirm as dialogConfirm, open, save } from '@tauri-apps/plugin-dialog'
 import { FolderClose, FolderOpen, Pushpin } from '@icon-park/vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import GalleryView from './components/GalleryView.vue'
@@ -1659,6 +1659,7 @@ async function pickFolder() {
 
     if (typeof selected === 'string') {
       folderPathInput.value = selected
+      await addFolderByPath(selected)
     }
   } finally {
     isPickingFolder.value = false
@@ -1681,10 +1682,14 @@ async function pickExternalImageSearchFilePath() {
 }
 
 async function addFolder() {
+  await addFolderByPath(folderPathInput.value)
+}
+
+async function addFolderByPath(rawFolderPath: string) {
   if (isAddingFolder.value) return
   errorText.value = ''
-
-  if (folderPathInput.value.trim().length === 0) {
+  const normalizedPath = rawFolderPath.trim()
+  if (normalizedPath.length === 0) {
     errorText.value = '请输入图库文件夹路径'
     return
   }
@@ -1695,10 +1700,8 @@ async function addFolder() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     library.value = await invoke<LibraryStore>('add_gallery_folder_command', {
-      folderPath: folderPathInput.value.trim(),
+      folderPath: normalizedPath,
     })
-    viewMode.value = 'gallery'
-    activeUserFolderId.value = 'all'
     folderPathInput.value = ''
     updateStatus()
   } catch (error) {
@@ -1727,7 +1730,7 @@ async function removeFolder(folderPath: string) {
 }
 
 async function removeFolderWithConfirm(folderPath: string) {
-  const confirmed = window.confirm(`确认移除该文件夹索引？\n${folderPath}`)
+  const confirmed = await dialogConfirm(`确认移除该文件夹索引？\n${folderPath}`)
   if (!confirmed) return
   await removeFolder(folderPath)
 }

@@ -390,7 +390,7 @@ defineProps<{
       </ul>
     </div>
 
-    <form class="folder-form" @submit.prevent="handlers.addFolder()">
+    <form class="folder-form" @submit.prevent>
       <input
         :value="folderPathInput"
         class="folder-input"
@@ -399,16 +399,8 @@ defineProps<{
         autocomplete="off"
         @input="handlers.setFolderPathInput(($event.target as HTMLInputElement).value)"
       />
-      <button
-        class="secondary-button"
-        type="button"
-        :disabled="isPickingFolder || isAddingFolder"
-        @click="handlers.pickFolder()"
-      >
-        选择
-      </button>
-      <button class="primary-button" type="submit" :disabled="isPickingFolder || isAddingFolder">
-        添加图库文件夹
+      <button class="primary-button" type="button" :disabled="isPickingFolder || isAddingFolder" @click="handlers.pickFolder()">
+        选择并添加图库文件夹
       </button>
     </form>
 
