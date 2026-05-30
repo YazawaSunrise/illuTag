@@ -231,7 +231,6 @@ const {
   draggedFolderId,
   folderDragOverId,
   folderTree,
-  dropFolderTree,
   contextMenuStyle,
   folderDraftStyle,
   folderScopedImages,
@@ -510,6 +509,13 @@ const tagManagerTagContextMenuStyle = computed(() => {
     top: `${tagManagerTagContextMenu.value.y}px`,
   }
 })
+const tagManagerDragGhostEl = ref<HTMLElement | null>(null)
+
+function clearTagManagerDragGhost() {
+  if (!tagManagerDragGhostEl.value) return
+  tagManagerDragGhostEl.value.remove()
+  tagManagerDragGhostEl.value = null
+}
 
 function startTagManagerTagDrag(tagText: string, event: DragEvent) {
   const normalized = tagText.trim()
@@ -518,10 +524,22 @@ function startTagManagerTagDrag(tagText: string, event: DragEvent) {
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', normalized)
+
+    clearTagManagerDragGhost()
+    const ghost = document.createElement('span')
+    ghost.className = 'tag-manager-modal__tag-chip-ghost'
+    ghost.textContent = normalized
+    ghost.style.position = 'fixed'
+    ghost.style.left = '-9999px'
+    ghost.style.top = '-9999px'
+    document.body.appendChild(ghost)
+    tagManagerDragGhostEl.value = ghost
+    event.dataTransfer.setDragImage(ghost, Math.round(ghost.offsetWidth / 2), Math.round(ghost.offsetHeight / 2))
   }
 }
 
 function endTagManagerTagDrag() {
+  clearTagManagerDragGhost()
   tagManagerDraggingTagText.value = null
   tagManagerDragOverFolderId.value = null
 }
@@ -891,6 +909,7 @@ async function runStartupAutoScanPipeline() {
 }
 
 onUnmounted(() => {
+  clearTagManagerDragGhost()
   clearSidebarHoverCloseTimer()
   clearRightSidebarHoverCloseTimer()
   stopBackgroundScanPolling()
@@ -2420,7 +2439,6 @@ function formatError(error: unknown) {
       :reference-board-canvas-menu="referenceBoardCanvasMenu"
       :reference-board-canvas-menu-style="referenceBoardCanvasMenuStyle"
       :drag-state="dragState"
-      :drop-folder-tree="dropFolderTree"
       :handlers="overlayHandlers"
     />
 

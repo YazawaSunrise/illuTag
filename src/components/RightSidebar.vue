@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FolderClose, FolderOpen, Triangle } from '@icon-park/vue-next'
+import { FolderClose, FolderOpen, Notepad, Pin } from '@icon-park/vue-next'
 
 type ReferenceBoardRow =
   | { kind: 'folder'; id: number; name: string; hasBoards: boolean; isExpanded: boolean }
@@ -106,17 +106,28 @@ function onBoardClick(boardId: number) {
       @mouseleave="handlers.closeHover($event)"
     >
       <div class="right-sidebar__header">
-        <div>
-          <div class="right-sidebar__title">参考板</div>
+        <div class="right-sidebar__section-title">
+          <Notepad class="sidebar__section-icon" theme="outline" :size="14" :stroke-width="3" :fill="['currentColor']" />
+          <span class="sidebar__section-label">参考板</span>
         </div>
-        <label class="right-sidebar__pin" title="右侧栏常开">
-          <input
-            :checked="rightSidebarPinned"
-            type="checkbox"
-            @change="handlers.setRightSidebarPinned(($event.target as HTMLInputElement).checked)"
+        <button
+          class="right-sidebar__pin"
+          :class="{ 'is-active': rightSidebarPinned }"
+          type="button"
+          :aria-pressed="rightSidebarPinned"
+          :aria-label="rightSidebarPinned ? '取消固定右侧栏' : '固定右侧栏'"
+          :title="rightSidebarPinned ? '取消固定' : '固定右侧栏'"
+          @click="handlers.setRightSidebarPinned(!rightSidebarPinned)"
+        >
+          <Pin
+            class="right-sidebar__pin-icon"
+            theme="outline"
+            :size="14"
+            :stroke-width="3"
+            :fill="['currentColor']"
+            aria-hidden="true"
           />
-          <span>固定</span>
-        </label>
+        </button>
       </div>
 
       <div v-if="referenceBoardPreviewBlocks.length > 0" class="reference-board-preview">
@@ -221,21 +232,6 @@ function onBoardClick(boardId: number) {
             @click="handlers.onReferenceBoardFolderRowClick(row.id)"
             @dblclick.stop="handlers.startReferenceBoardFolderRename(row.id)"
           >
-            <button
-              class="board-folder-row__twist"
-              type="button"
-              :class="{ 'is-hidden': !row.hasBoards, 'is-expanded': row.isExpanded }"
-              :aria-label="row.isExpanded ? '收起参考板文件夹' : '展开参考板文件夹'"
-              @click.stop="handlers.toggleReferenceBoardFolderExpanded(row.id)"
-            >
-              <Triangle
-                class="board-folder-row__twist-icon"
-                theme="filled"
-                :size="9"
-                :fill="['currentColor']"
-                aria-hidden="true"
-              />
-            </button>
             <div class="board-folder-row__content">
               <component
                 :is="row.isExpanded ? FolderOpen : FolderClose"

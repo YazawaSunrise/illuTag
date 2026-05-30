@@ -85,7 +85,7 @@ button {
   width: var(--left-sidebar-width);
   height: calc(100vh - 16px);
   flex-direction: column;
-  padding: 16px 14px;
+  padding: 10px 14px;
   border: 1px solid #2a3037;
   border-radius: 14px;
   background: #171b20;
@@ -113,12 +113,20 @@ button {
   width: var(--right-sidebar-width);
   height: calc(100vh - 16px);
   flex-direction: column;
-  padding: 16px 14px;
+  padding: 10px 14px;
   border: 1px solid #2a3037;
   border-radius: 14px;
   background: #171b20;
   box-shadow: -12px 0 28px rgb(0 0 0 / 0.28);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.right-sidebar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .sidebar-slide-right-enter-active,
@@ -160,7 +168,7 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 36px;
+  min-height: 30px;
 }
 
 .right-sidebar__title {
@@ -168,19 +176,46 @@ button {
   font-weight: 700;
 }
 
-.right-sidebar__pin {
-  display: flex;
+.right-sidebar__section-title {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #aeb9c5;
+  padding: 0 4px;
+  color: #98a5b3;
   font-size: 12px;
-  cursor: pointer;
+  line-height: 1.4;
 }
 
-.right-sidebar__pin input {
-  width: 14px;
-  height: 14px;
-  accent-color: #82d5b8;
+.right-sidebar__pin {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #343c45;
+  border-radius: 6px;
+  color: #aeb9c5;
+  background: #20262d;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.right-sidebar__pin:hover {
+  border-color: #82d5b8;
+}
+
+.right-sidebar__pin.is-active {
+  border-color: #82d5b8;
+  color: #d9f6e9;
+  background: rgb(130 213 184 / 0.24);
+}
+
+.right-sidebar__pin-icon {
+  display: block;
+  color: currentColor;
 }
 
 .right-sidebar__preview-exit {
@@ -358,8 +393,15 @@ button {
   flex: 1;
   flex-direction: column;
   gap: 8px;
-  padding: 18px 0;
+  padding: 8px 0;
   overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.sidebar__body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .sidebar__toggle,
@@ -534,6 +576,7 @@ button {
   color: currentColor;
   pointer-events: none;
   margin-right: 6px;
+  transform: translateY(1.5px);
 }
 
 .folder-tree__twist-icon,
@@ -618,15 +661,14 @@ button {
 
 .board-section {
   display: flex;
-  flex: 1;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 5px;
   margin-top: 8px;
   padding-top: 12px;
-  padding-right: 8px;
+  padding-right: 0;
   border-top: 1px solid #2a3037;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: visible;
 }
 
 .board-section__empty {
@@ -2685,10 +2727,26 @@ button {
 
 .tag-manager-modal__tag-chip {
   cursor: grab;
+  user-select: none;
 }
 
 .tag-manager-modal__tag-chip:active {
   cursor: grabbing;
+}
+
+.tag-manager-modal__tag-chip-ghost {
+  display: inline-flex;
+  align-items: center;
+  max-width: 320px;
+  padding: 2px 8px;
+  border: 1px solid #4c5b6b;
+  border-radius: 999px;
+  color: #d6dee7;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  background: #24303c;
+  pointer-events: none;
 }
 
 .image-detail-layer {
@@ -3334,6 +3392,7 @@ button {
 .app-shell.theme-light .settings__header p,
 .app-shell.theme-light .empty-panel p,
 .app-shell.theme-light .sidebar-gallery-section__title,
+.app-shell.theme-light .right-sidebar__section-title,
 .app-shell.theme-light .folder-section__title,
 .app-shell.theme-light .sidebar-tag-manager__title,
 .app-shell.theme-light .board-section__empty,
@@ -3493,6 +3552,7 @@ button {
 .app-shell.theme-light .sidebar__settings-button,
 .app-shell.theme-light .sidebar__nav-button,
 .app-shell.theme-light .secondary-button,
+.app-shell.theme-light .right-sidebar__pin,
 .app-shell.theme-light .right-sidebar__preview-exit {
   border-color: #cbd5e1;
   color: #1f2937;
@@ -3508,10 +3568,17 @@ button {
 .app-shell.theme-light .sidebar__nav-button:hover,
 .app-shell.theme-light .sidebar__settings-button:hover,
 .app-shell.theme-light .sidebar__toggle:hover,
+.app-shell.theme-light .right-sidebar__pin:hover,
 .app-shell.theme-light .secondary-button:hover,
 .app-shell.theme-light .right-sidebar__preview-exit:hover {
   border-color: #82d5b8;
   background: #f3f6fb;
+}
+
+.app-shell.theme-light .right-sidebar__pin.is-active {
+  border-color: #82d5b8;
+  color: #2b6f5a;
+  background: rgb(130 213 184 / 0.24);
 }
 
 .app-shell.theme-light .primary-button {
@@ -4069,6 +4136,12 @@ button {
 .app-shell.theme-light .tag-manager-modal__section-title,
 .app-shell.theme-light .tag-manager-modal__placeholder {
   color: #627287;
+}
+
+.app-shell.theme-light .tag-manager-modal__tag-chip-ghost {
+  border-color: #cad5e3;
+  color: #1f2937;
+  background: #ffffff;
 }
 
 .app-shell.theme-light .tag-manager-modal__create-input {

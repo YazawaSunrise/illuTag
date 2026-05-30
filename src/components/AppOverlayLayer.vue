@@ -1,12 +1,4 @@
 <script setup lang="ts">
-type FolderTreeItem = {
-  id: number
-  depth: number
-  hasChildren: boolean
-  isExpanded: boolean
-  name: string
-}
-
 type ReferenceBoardCanvasMenu =
   | { kind: 'item'; itemId: number; x: number; y: number }
   | { kind: 'canvas'; x: number; y: number; worldX: number; worldY: number }
@@ -17,9 +9,6 @@ type DragState = {
   thumbnailUrl: string
   x: number
   y: number
-  panelX: number
-  panelY: number
-  overFolderId: number | null
   overBoardId: number | null
   overRightSidebar: boolean
 }
@@ -28,7 +17,6 @@ defineProps<{
   referenceBoardCanvasMenu: ReferenceBoardCanvasMenu
   referenceBoardCanvasMenuStyle: Record<string, string | undefined>
   dragState: DragState | null
-  dropFolderTree: FolderTreeItem[]
   handlers: Record<string, (...args: any[]) => any>
 }>()
 </script>
@@ -74,31 +62,6 @@ defineProps<{
   </div>
 
   <template v-if="dragState">
-    <div
-      v-if="!dragState.overRightSidebar"
-      class="folder-drop-panel"
-      :style="{ left: `${dragState.panelX}px`, top: `${dragState.panelY}px` }"
-    >
-      <div class="folder-drop-panel__title">放入文件夹</div>
-      <button
-        v-for="folder in dropFolderTree"
-        :key="folder.id"
-        :data-folder-id="folder.id"
-        type="button"
-        :class="{
-          'is-drop-target': dragState.overFolderId === folder.id,
-          'is-folder-parent': folder.hasChildren,
-        }"
-        :style="{ paddingLeft: `${12 + folder.depth * 14}px` }"
-      >
-        <span v-if="folder.hasChildren" class="folder-drop-panel__twist">
-          {{ folder.isExpanded ? '▾' : '▸' }}
-        </span>
-        {{ folder.name }}
-      </button>
-      <div v-if="dropFolderTree.length === 0" class="folder-drop-panel__empty">先在左侧栏创建文件夹</div>
-    </div>
-
     <div class="image-drag-preview" :style="{ left: `${dragState.x}px`, top: `${dragState.y}px` }">
       <img :src="dragState.thumbnailUrl" alt="" draggable="false" />
       <span v-if="dragState.overBoardId !== null" class="image-drag-preview__copy-icon">+</span>

@@ -147,6 +147,7 @@ function onFavoriteClick(item: GalleryLayoutItem) {
   transition:
     color 160ms ease,
     filter 160ms ease;
+    transform: translateY(0.9px)translateX(-0.6px);
 }
 
 .masonry__favorite.is-active .masonry__favorite-icon {

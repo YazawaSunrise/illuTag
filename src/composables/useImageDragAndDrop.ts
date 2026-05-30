@@ -66,8 +66,8 @@ export function useImageDragAndDrop<TLibraryStore extends LibraryStoreLike>(
     }
   }
 
-  function isPointInsideFolderDropPanel(x: number, y: number) {
-    return Boolean(document.elementFromPoint(x, y)?.closest('.folder-drop-panel'))
+  function isPointInsideLeftSidebarArea(x: number, y: number) {
+    return Boolean(document.elementFromPoint(x, y)?.closest('.sidebar'))
   }
 
   function clearImagePress() {
@@ -133,13 +133,14 @@ export function useImageDragAndDrop<TLibraryStore extends LibraryStoreLike>(
     const overBoardId = options.referenceBoardIdFromPoint(event.clientX, event.clientY)
     const overBoardFolderId = options.referenceBoardFolderIdFromPoint(event.clientX, event.clientY)
     const overRightSidebar = options.isPointInsideRightSidebarArea(event.clientX, event.clientY)
+    const overLeftSidebar = isPointInsideLeftSidebarArea(event.clientX, event.clientY)
     dragState.value.overFolderId = overFolderId
     dragState.value.overBoardId = overBoardId
     dragState.value.overRightSidebar = overRightSidebar
 
     if (overFolderCandidateId !== null) {
       options.dragExpandedFolderIds.value = options.expandedDropFolderIdsFor(overFolderCandidateId)
-    } else if (!isPointInsideFolderDropPanel(event.clientX, event.clientY)) {
+    } else if (!overLeftSidebar) {
       options.dragExpandedFolderIds.value = new Set()
     }
 

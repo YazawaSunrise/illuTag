@@ -9,7 +9,6 @@ import {
   SettingTwo,
   ShuffleOne,
   Tag,
-  Triangle,
   WaterfallsV,
 } from '@icon-park/vue-next'
 
@@ -62,24 +61,6 @@ defineProps<{
       :class="{ 'is-pinned': sidebarPinned }"
       @mouseleave="handlers.closeHover($event)"
     >
-      <div class="sidebar__header">
-        <div class="sidebar__brand">
-          <span class="sidebar__mark">iT</span>
-          <span>illuTag</span>
-        </div>
-        <button
-          v-if="false"
-          class="sidebar__toggle"
-          type="button"
-          aria-label="隐藏侧边栏"
-          @click="handlers.closeByToggle()"
-        >
-          <span />
-          <span />
-          <span />
-        </button>
-      </div>
-
       <div class="sidebar__body">
         <div class="sidebar-gallery-section__title">
           <WaterfallsV class="sidebar__section-icon" theme="outline" :size="14" :stroke-width="3" :fill="['currentColor']" />
@@ -163,6 +144,7 @@ defineProps<{
               :key="folder.id"
               class="folder-tree__row"
               :data-sidebar-folder-id="folder.id"
+              :data-folder-id="folder.id"
               :class="{
                 'is-active': activeUserFolderId === folder.id,
                 'is-drag-over': folderDragOverId === folder.id,
@@ -174,24 +156,17 @@ defineProps<{
               @click="handlers.onUserFolderRowClick(folder)"
               @dblclick.stop="handlers.startUserFolderRename(folder.id)"
             >
-              <button
-                class="folder-tree__twist"
-                type="button"
-                :class="{ 'is-hidden': !folder.hasChildren, 'is-expanded': folder.isExpanded }"
-                :aria-label="folder.isExpanded ? '收起文件夹' : '展开文件夹'"
-                @click.stop="handlers.toggleFolderExpanded(folder.id)"
-              >
-                <Triangle
-                  class="folder-tree__twist-icon"
-                  theme="filled"
-                  :size="9"
-                  :fill="['currentColor']"
-                  aria-hidden="true"
-                />
-              </button>
               <div class="folder-tree__content">
                 <component
-                  :is="folder.isExpanded ? FolderOpen : FolderClose"
+                  :is="
+                    folder.hasChildren
+                      ? folder.isExpanded
+                        ? FolderOpen
+                        : FolderClose
+                      : viewMode === 'gallery' && activeUserFolderId === folder.id
+                        ? FolderOpen
+                        : FolderClose
+                  "
                   class="folder-tree__folder-icon"
                   theme="outline"
                   :size="16"

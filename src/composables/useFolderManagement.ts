@@ -156,27 +156,51 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
         .filter((image) => image.source !== 'reference' && !image.trashed)
         .map((image) => image.id),
     )
-    const directImageCounts = new Map<number, number>()
+
+    const imageAssignedFolderIds = new Map<string, Set<number>>()
     for (const assignment of options.library.value.imageFolders) {
       if (!activeImageIds.has(assignment.imageId)) continue
-      directImageCounts.set(
-        assignment.folderId,
-        (directImageCounts.get(assignment.folderId) ?? 0) + 1,
-      )
+      const ids = imageAssignedFolderIds.get(assignment.imageId) ?? new Set<number>()
+      ids.add(assignment.folderId)
+      imageAssignedFolderIds.set(assignment.imageId, ids)
     }
 
     const result = new Set<number>()
     for (const folder of options.library.value.userFolders) {
       const hasChildren = (folderGroups.value.get(folder.id) ?? []).length > 0
       if (!hasChildren) continue
-      if ((directImageCounts.get(folder.id) ?? 0) > 0) {
-        result.add(folder.id)
+
+      const scopeFolderIds = collectDescendantFolderIds(folder.id)
+      scopeFolderIds.delete(folder.id)
+
+      let hasUnclassified = false
+      for (const assignedFolderIds of imageAssignedFolderIds.values()) {
+        if (!assignedFolderIds.has(folder.id)) continue
+        let hasDescendantAssignment = false
+        for (const descendantId of scopeFolderIds) {
+          if (assignedFolderIds.has(descendantId)) {
+            hasDescendantAssignment = true
+            break
+          }
+        }
+        if (!hasDescendantAssignment) {
+          hasUnclassified = true
+          break
+        }
       }
+
+      if (hasUnclassified) result.add(folder.id)
     }
     return result
   })
 
-  const folderTree = computed<FolderTreeItem[]>(() => buildFolderTree(expandedFolderIds.value))
+  const folderTree = computed<FolderTreeItem[]>(() => {
+    const mergedExpandedIds = new Set<number>(expandedFolderIds.value)
+    for (const folderId of dragExpandedFolderIds.value) {
+      mergedExpandedIds.add(folderId)
+    }
+    return buildFolderTree(mergedExpandedIds)
+  })
   const dropFolderTree = computed<FolderTreeItem[]>(() => buildFolderTree(dragExpandedFolderIds.value))
 
   const contextMenuStyle = computed(() => {
@@ -595,6 +619,10 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
 
   function folderIdFromPoint(x: number, y: number) {
     const element = document.elementFromPoint(x, y)
+    const sidebarFolderElement = element?.closest<HTMLElement>('[data-sidebar-folder-id]')
+    const sidebarFolderId = sidebarFolderElement?.dataset.sidebarFolderId
+    if (sidebarFolderId) return Number(sidebarFolderId)
+
     const folderElement = element?.closest<HTMLElement>('[data-folder-id]')
     const folderId = folderElement?.dataset.folderId
     return folderId ? Number(folderId) : null
