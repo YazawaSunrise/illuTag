@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Like } from '@icon-park/vue-next'
+import { Check, Like } from '@icon-park/vue-next'
 import type { GalleryLayoutItem } from '../types/gallery'
 
 const props = defineProps<{
   items: GalleryLayoutItem[]
   favoriteImageIds?: string[]
+  batchMode?: boolean
+  batchSelectedImageIds?: string[]
   totalHeight: number
   contentWidth?: number
   activeDragImageId?: string | null
@@ -13,6 +15,7 @@ const props = defineProps<{
 
 const dragImageId = computed(() => props.activeDragImageId ?? null)
 const favoriteImageIdSet = computed(() => new Set(props.favoriteImageIds ?? []))
+const batchSelectedImageIdSet = computed(() => new Set(props.batchSelectedImageIds ?? []))
 const animatingFavoriteImageId = ref<string | null>(null)
 let favoriteAnimationTimer: number | null = null
 
@@ -59,7 +62,11 @@ function onFavoriteClick(item: GalleryLayoutItem) {
       class="masonry__item"
       :data-gallery-image-id="item.id"
       type="button"
-      :class="{ 'is-being-sorted': dragImageId === item.id }"
+      :class="{
+        'is-being-sorted': dragImageId === item.id,
+        'is-batch-mode': Boolean(batchMode),
+        'is-batch-selected': batchSelectedImageIdSet.has(item.id),
+      }"
       :style="{
         transform: `translate3d(${item.x}px, ${item.y}px, 0)`,
         width: `${item.width}px`,
@@ -71,7 +78,19 @@ function onFavoriteClick(item: GalleryLayoutItem) {
       @contextmenu="$emit('imageContextMenu', item, $event)"
     >
       <img :src="item.thumbnailUrl" alt="" draggable="false" />
+      <span v-if="batchMode && batchSelectedImageIdSet.has(item.id)" class="masonry__batch-check" aria-hidden="true">
+        <Check
+          class="masonry__batch-check-icon"
+          theme="outline"
+          :size="14"
+          :stroke-width="3"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          :fill="['currentColor']"
+        />
+      </span>
       <button
+        v-if="!batchMode"
         class="masonry__favorite"
         type="button"
         :class="{
@@ -175,13 +194,52 @@ function onFavoriteClick(item: GalleryLayoutItem) {
   height: 100%;
   object-fit: cover;
   user-select: none;
-  transition: filter 120ms ease, opacity 120ms ease;
+  transition:
+    filter 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
 }
 
 .masonry__item:hover img,
 .masonry__item.is-being-sorted img {
   opacity: 0.8;
   filter: brightness(0.84);
+}
+
+.masonry__item.is-batch-selected {
+  box-shadow:
+    0 0 0 4px rgb(118 197 255 / 0.96),
+    inset 0 0 14px rgb(92 184 255 / 0.22),
+    0 0 18px rgb(70 164 243 / 0.5),
+    0 10px 24px rgb(10 13 16 / 0.42);
+}
+
+.masonry__item.is-batch-selected img {
+  opacity: 0.86;
+  filter: brightness(0.94);
+  transform: scale(0.965);
+}
+
+.masonry__batch-check {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 3;
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: #3f93ff;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.2),
+    0 0 12px rgb(64 145 255 / 0.62);
+  pointer-events: none;
+}
+
+.masonry__batch-check-icon {
+  color: #fff;
 }
 
 @keyframes masonry-favorite-pop {

@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Pushpin } from '@icon-park/vue-next'
+import { FolderClose, FolderOpen, Pushpin } from '@icon-park/vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import GalleryView from './components/GalleryView.vue'
 import AppOverlayLayer from './components/AppOverlayLayer.vue'
@@ -490,6 +490,500 @@ const imageDetailSupplementSuggestRequestToken = ref(0)
 const favoriteVisibleImageIds = computed(() =>
   visibleImages.value.filter((image) => image.isFavorite).map((image) => image.id),
 )
+const isGalleryBatchMode = ref(false)
+const galleryBatchSelectedImageIds = ref<string[]>([])
+type GalleryBatchActionItem = {
+  key:
+    | 'copy-folder'
+    | 'move-folder'
+    | 'add-tags'
+    | 'remove-from-folder'
+    | 'assign-folder'
+    | 'favorite'
+    | 'trash'
+  label: string
+}
+type PendingBatchTag =
+  | {
+      id: string
+      kind: 'custom'
+      tagText: string
+      label: string
+      subLabel?: string
+    }
+  | {
+      id: string
+      kind: 'supplement'
+      tagEn: string
+      tagZh: string | null
+      label: string
+      subLabel: string
+    }
+const batchFolderPickerModal = ref<null | { mode: 'copy' | 'move' | 'assign'; title: string; confirmLabel: string }>(null)
+const batchFolderPickerTargetId = ref<number | null>(null)
+const batchTagModalOpen = ref(false)
+const batchTagDraft = ref('')
+const batchTagSuggestions = ref<KnownAutoTagSuggestion[]>([])
+const batchTagPending = ref<PendingBatchTag[]>([])
+const batchTagCustomConflict = ref<{
+  input: string
+  tagEn: string
+  tagZh: string | null
+} | null>(null)
+const batchTagExpandedFolderIds = ref<number[]>([])
+const batchTagSuggestTimer = ref<number | null>(null)
+const batchTagSuggestLoading = ref(false)
+const batchTagSuggestToken = ref(0)
+const batchSelectedImageIds = computed(() => Array.from(new Set(galleryBatchSelectedImageIds.value)))
+const isGalleryBatchAllSelected = computed(() => {
+  if (!isGalleryBatchMode.value) return false
+  const visibleIds = visibleImages.value.map((image) => image.id)
+  if (visibleIds.length === 0) return false
+  const selected = new Set(galleryBatchSelectedImageIds.value)
+  return visibleIds.every((id) => selected.has(id))
+})
+const galleryBatchActionLabels = computed<GalleryBatchActionItem[]>(() => {
+  if (typeof activeUserFolderId.value === 'number') {
+    return [
+      { key: 'copy-folder', label: '复制到其他文件夹' },
+      { key: 'move-folder', label: '移动到其他文件夹' },
+      { key: 'add-tags', label: '添加标签' },
+      { key: 'remove-from-folder', label: '从文件夹中删除' },
+    ]
+  }
+  return [
+    { key: 'assign-folder', label: '归类到文件夹' },
+    { key: 'add-tags', label: '添加标签' },
+    { key: 'favorite', label: '归类到我喜爱的' },
+    { key: 'trash', label: '移动到回收站' },
+  ]
+})
+
+function clearGalleryBatchSelection() {
+  galleryBatchSelectedImageIds.value = []
+}
+
+function closeBatchFolderPickerModal() {
+  batchFolderPickerModal.value = null
+  batchFolderPickerTargetId.value = null
+}
+
+function closeBatchTagModal() {
+  batchTagModalOpen.value = false
+  batchTagDraft.value = ''
+  batchTagSuggestions.value = []
+  batchTagPending.value = []
+  batchTagCustomConflict.value = null
+  batchTagExpandedFolderIds.value = []
+  batchTagSuggestLoading.value = false
+  if (batchTagSuggestTimer.value !== null) {
+    window.clearTimeout(batchTagSuggestTimer.value)
+    batchTagSuggestTimer.value = null
+  }
+}
+
+function enterGalleryBatchMode(seedImageId?: string) {
+  isGalleryBatchMode.value = true
+  if (seedImageId) {
+    galleryBatchSelectedImageIds.value = [seedImageId]
+    return
+  }
+  clearGalleryBatchSelection()
+}
+
+function exitGalleryBatchMode() {
+  closeBatchFolderPickerModal()
+  closeBatchTagModal()
+  isGalleryBatchMode.value = false
+  clearGalleryBatchSelection()
+}
+
+function toggleGalleryBatchImageSelection(imageId: string) {
+  if (!isGalleryBatchMode.value) return
+  const next = new Set(galleryBatchSelectedImageIds.value)
+  if (next.has(imageId)) {
+    next.delete(imageId)
+  } else {
+    next.add(imageId)
+  }
+  galleryBatchSelectedImageIds.value = [...next]
+}
+
+function appendGalleryBatchImageSelection(imageIds: string[]) {
+  if (!isGalleryBatchMode.value || imageIds.length === 0) return
+  const next = new Set(galleryBatchSelectedImageIds.value)
+  for (const imageId of imageIds) {
+    next.add(imageId)
+  }
+  galleryBatchSelectedImageIds.value = [...next]
+}
+
+function selectAllGalleryBatchImages() {
+  if (!isGalleryBatchMode.value) return
+  galleryBatchSelectedImageIds.value = visibleImages.value.map((image) => image.id)
+}
+
+function toggleSelectAllGalleryBatchImages() {
+  if (!isGalleryBatchMode.value) return
+  if (isGalleryBatchAllSelected.value) {
+    clearGalleryBatchSelection()
+    return
+  }
+  selectAllGalleryBatchImages()
+}
+
+async function runBatchAction(
+  actionName: string,
+  action: (imageId: string) => Promise<void>,
+  options?: { clearSelection?: boolean; exitBatchMode?: boolean },
+) {
+  const imageIds = batchSelectedImageIds.value
+  if (imageIds.length === 0) {
+    errorText.value = '请先选择图片'
+    return
+  }
+  isLoading.value = true
+  let succeeded = 0
+  let failed = 0
+  let firstError = ''
+  try {
+    for (const imageId of imageIds) {
+      try {
+        await action(imageId)
+        succeeded += 1
+      } catch (error) {
+        failed += 1
+        if (!firstError) {
+          firstError = formatError(error)
+        }
+      }
+    }
+  } finally {
+    isLoading.value = false
+  }
+
+  if (failed > 0) {
+    errorText.value = `${actionName}：成功 ${succeeded}，失败 ${failed}${firstError ? `，原因：${firstError}` : ''}`
+  } else {
+    errorText.value = ''
+    statusText.value = `${actionName}完成：${succeeded} 张`
+  }
+
+  if (succeeded > 0 && options?.clearSelection !== false) {
+    clearGalleryBatchSelection()
+  }
+
+  if (succeeded + failed > 0 && (options?.exitBatchMode ?? true)) {
+    exitGalleryBatchMode()
+  }
+}
+
+async function runBatchFavorite() {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await runBatchAction('加入我喜爱的', async (imageId) => {
+    library.value = await invoke<LibraryStore>('toggle_image_favorite_command', {
+      imageId,
+      favorite: true,
+    })
+  })
+}
+
+async function runBatchMoveToTrash() {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await runBatchAction('移入回收站', async (imageId) => {
+    library.value = await invoke<LibraryStore>('remove_image_from_index_command', {
+      imageId,
+    })
+  })
+}
+
+async function runBatchRemoveFromCurrentFolder() {
+  if (typeof activeUserFolderId.value !== 'number') return
+  const folderId = activeUserFolderId.value
+  const { invoke } = await import('@tauri-apps/api/core')
+  await runBatchAction('从文件夹中移除', async (imageId) => {
+    library.value = await invoke<LibraryStore>('remove_image_from_user_folder_command', {
+      imageId,
+      folderId,
+    })
+  })
+}
+
+function openBatchFolderPicker(mode: 'copy' | 'move' | 'assign') {
+  batchFolderPickerTargetId.value = null
+  if (mode === 'copy') {
+    batchFolderPickerModal.value = { mode, title: '复制到文件夹', confirmLabel: '复制' }
+    return
+  }
+  if (mode === 'move') {
+    batchFolderPickerModal.value = { mode, title: '移动到文件夹', confirmLabel: '移动' }
+    return
+  }
+  batchFolderPickerModal.value = { mode, title: '归类到文件夹', confirmLabel: '归类' }
+}
+
+function onBatchFolderRowClick(folder: { id: number; hasChildren: boolean; isExpanded: boolean }) {
+  batchFolderPickerTargetId.value = folder.id
+  if (!folder.hasChildren) return
+  toggleFolderExpanded(folder.id)
+}
+
+function isBatchFolderTargetSelected(folderId: number) {
+  return batchFolderPickerTargetId.value === folderId
+}
+
+async function confirmBatchFolderAction() {
+  const modal = batchFolderPickerModal.value
+  const targetFolderId = batchFolderPickerTargetId.value
+  if (!modal || targetFolderId === null) return
+  if (modal.mode !== 'assign' && typeof activeUserFolderId.value === 'number' && activeUserFolderId.value === targetFolderId) {
+    errorText.value = '目标文件夹不能与当前文件夹相同'
+    return
+  }
+
+  if (modal.mode === 'copy') {
+    await runBatchAction('复制到文件夹', async (imageId) => {
+      await assignImageToFolder(imageId, targetFolderId)
+    })
+    closeBatchFolderPickerModal()
+    return
+  }
+
+  if (modal.mode === 'move') {
+    const fromFolderId = typeof activeUserFolderId.value === 'number' ? activeUserFolderId.value : null
+    const { invoke } = await import('@tauri-apps/api/core')
+    await runBatchAction('移动到文件夹', async (imageId) => {
+      await assignImageToFolder(imageId, targetFolderId)
+      if (fromFolderId !== null && fromFolderId !== targetFolderId) {
+        library.value = await invoke<LibraryStore>('remove_image_from_user_folder_command', {
+          imageId,
+          folderId: fromFolderId,
+        })
+      }
+    })
+    closeBatchFolderPickerModal()
+    return
+  }
+
+  await runBatchAction('归类到文件夹', async (imageId) => {
+    await assignImageToFolder(imageId, targetFolderId)
+  })
+  closeBatchFolderPickerModal()
+}
+
+async function refreshBatchTagSuggestionsNow() {
+  const keyword = batchTagDraft.value.trim()
+  if (!batchTagModalOpen.value || !keyword) {
+    batchTagSuggestions.value = []
+    batchTagSuggestLoading.value = false
+    return
+  }
+  const token = batchTagSuggestToken.value + 1
+  batchTagSuggestToken.value = token
+  batchTagSuggestLoading.value = true
+  try {
+    const rows = await suggestKnownAutoTagsForInput(keyword, 30, { includeDictionary: true })
+    if (token !== batchTagSuggestToken.value) return
+    batchTagSuggestions.value = rows
+  } catch (error) {
+    if (token !== batchTagSuggestToken.value) return
+    batchTagSuggestions.value = []
+    errorText.value = formatError(error)
+  } finally {
+    if (token === batchTagSuggestToken.value) {
+      batchTagSuggestLoading.value = false
+    }
+  }
+}
+
+function queueBatchTagSuggestions() {
+  if (batchTagSuggestTimer.value !== null) {
+    window.clearTimeout(batchTagSuggestTimer.value)
+    batchTagSuggestTimer.value = null
+  }
+  batchTagSuggestTimer.value = window.setTimeout(() => {
+    batchTagSuggestTimer.value = null
+    void refreshBatchTagSuggestionsNow()
+  }, 120)
+}
+
+function openBatchTagModal() {
+  batchTagModalOpen.value = true
+  batchTagDraft.value = ''
+  batchTagSuggestions.value = []
+  batchTagPending.value = []
+  batchTagExpandedFolderIds.value = []
+}
+
+function isBatchPendingCustomTag(tagText: string) {
+  const normalized = tagText.trim()
+  if (!normalized) return false
+  return batchTagPending.value.some((tag) => tag.kind === 'custom' && tag.tagText === normalized)
+}
+
+function isBatchPendingSupplementTag(tagEn: string) {
+  const normalized = tagEn.trim().toLowerCase()
+  if (!normalized) return false
+  return batchTagPending.value.some((tag) => tag.kind === 'supplement' && tag.tagEn.toLowerCase() === normalized)
+}
+
+function addPendingCustomTag(tagText: string) {
+  const normalized = tagText.trim()
+  if (!normalized || isBatchPendingCustomTag(normalized)) return
+  batchTagPending.value = [
+    ...batchTagPending.value,
+    {
+      id: `custom:${normalized}`,
+      kind: 'custom',
+      tagText: normalized,
+      label: normalized,
+    },
+  ]
+}
+
+function addPendingSupplementTag(tagEn: string, tagZh?: string | null) {
+  const normalizedEn = tagEn.trim()
+  if (!normalizedEn || isBatchPendingSupplementTag(normalizedEn)) return
+  const normalizedZh = (tagZh ?? '').trim()
+  batchTagPending.value = [
+    ...batchTagPending.value,
+    {
+      id: `supplement:${normalizedEn.toLowerCase()}`,
+      kind: 'supplement',
+      tagEn: normalizedEn,
+      tagZh: normalizedZh || null,
+      label: normalizedZh || normalizedEn,
+      subLabel: normalizedZh ? normalizedEn : '',
+    },
+  ]
+}
+
+function removePendingBatchTag(tagId: string) {
+  batchTagPending.value = batchTagPending.value.filter((tag) => tag.id !== tagId)
+}
+
+async function addPendingCustomTagFromDraft() {
+  const tagText = batchTagDraft.value.trim()
+  if (!tagText) return
+  try {
+    const match = await findExactKnownAutoTag(tagText)
+    if (match) {
+      batchTagCustomConflict.value = {
+        input: tagText,
+        tagEn: match.tagEn,
+        tagZh: match.tagZh ?? null,
+      }
+      return
+    }
+    addPendingCustomTag(tagText)
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function addPendingSupplementTagFromDraft() {
+  const keyword = batchTagDraft.value.trim()
+  if (!keyword) return
+  try {
+    const match = await findExactKnownAutoTag(keyword)
+    if (!match) {
+      errorText.value = '未找到对应自动标签，请从候选列表选择'
+      return
+    }
+    addPendingSupplementTag(match.tagEn, match.tagZh ?? null)
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+function addPendingSupplementTagBySuggestion(suggestion: KnownAutoTagSuggestion) {
+  addPendingSupplementTag(suggestion.tagEn, suggestion.tagZh ?? null)
+}
+
+function addPendingExistingTag(tagText: string) {
+  addPendingCustomTag(tagText)
+}
+
+function isBatchTagFolderExpanded(folderId: number) {
+  return batchTagExpandedFolderIds.value.includes(folderId)
+}
+
+function toggleBatchTagFolderExpanded(folderId: number) {
+  if (isBatchTagFolderExpanded(folderId)) {
+    batchTagExpandedFolderIds.value = batchTagExpandedFolderIds.value.filter((id) => id !== folderId)
+    return
+  }
+  batchTagExpandedFolderIds.value = [...batchTagExpandedFolderIds.value, folderId]
+}
+
+function resolveBatchCustomTagConflict(action: 'supplement' | 'custom') {
+  const conflict = batchTagCustomConflict.value
+  if (!conflict) return
+  if (action === 'supplement') {
+    addPendingSupplementTag(conflict.tagEn, conflict.tagZh)
+  } else {
+    const input = conflict.input.trim()
+    if (input) {
+      const suffix = '（自定义）'
+      const customText = input.endsWith(suffix) ? input : `${input}${suffix}`
+      addPendingCustomTag(customText)
+    }
+  }
+  batchTagCustomConflict.value = null
+}
+
+function isExistingTagPending(tagText: string) {
+  return isBatchPendingCustomTag(tagText)
+}
+
+async function applyBatchPendingTags() {
+  const pending = batchTagPending.value
+  if (pending.length === 0) {
+    errorText.value = '请先加入要添加的标签'
+    return
+  }
+  await runBatchAction('批量添加标签', async (imageId) => {
+    for (const tag of pending) {
+      if (tag.kind === 'custom') {
+        await addImageUserCustomTag(imageId, tag.tagText)
+      } else {
+        await addImageUserSupplementTag(imageId, tag.tagEn, tag.tagZh)
+      }
+    }
+  })
+}
+
+function onGalleryBatchAction(actionKey: GalleryBatchActionItem['key']) {
+  if (batchSelectedImageIds.value.length === 0) {
+    errorText.value = '请先选择图片'
+    return
+  }
+  if (actionKey === 'copy-folder') {
+    openBatchFolderPicker('copy')
+    return
+  }
+  if (actionKey === 'move-folder') {
+    openBatchFolderPicker('move')
+    return
+  }
+  if (actionKey === 'assign-folder') {
+    openBatchFolderPicker('assign')
+    return
+  }
+  if (actionKey === 'add-tags') {
+    openBatchTagModal()
+    return
+  }
+  if (actionKey === 'remove-from-folder') {
+    void runBatchRemoveFromCurrentFolder()
+    return
+  }
+  if (actionKey === 'favorite') {
+    void runBatchFavorite()
+    return
+  }
+  void runBatchMoveToTrash()
+}
 
 const activeTagManagerFolder = computed(() =>
   tagManagerFolders.value.find((folder) => folder.id === activeTagManagerFolderId.value) ?? null,
@@ -1008,9 +1502,21 @@ watch([visibleImages, sidebarPinned], async () => {
   updateViewportSize()
 })
 
+watch(batchTagDraft, () => {
+  if (!batchTagModalOpen.value) return
+  queueBatchTagSuggestions()
+})
+
 watch(
   [viewMode, activeUserFolderId],
   async ([nextViewMode, nextFolderId], [prevViewMode, prevFolderId]) => {
+    if (
+      isGalleryBatchMode.value &&
+      (prevViewMode !== nextViewMode || prevFolderId !== nextFolderId || nextViewMode !== 'gallery')
+    ) {
+      exitGalleryBatchMode()
+    }
+
     if (nextViewMode === 'gallery' && prevFolderId !== nextFolderId) {
       clearAllSearchInputs()
     }
@@ -1654,6 +2160,19 @@ function openGalleryImageMenu(item: GalleryLayoutItem, event: MouseEvent) {
   openGalleryImageMenuState(item, event, closeReferenceBoardCanvasMenu)
 }
 
+function openGalleryImageDetailFromGallery(item: GalleryLayoutItem) {
+  if (galleryImageContextMenu.value) {
+    closeGalleryImageContextMenu()
+    return
+  }
+  openGalleryImageDetail(item)
+}
+
+function openGalleryBatchModeFromContextMenu(imageId: string) {
+  enterGalleryBatchMode(imageId)
+  closeGalleryImageContextMenu()
+}
+
 function openImageDetailMenu(event: MouseEvent) {
   openImageDetailMenuState(event, Boolean(activeImageDetail.value), closeReferenceBoardCanvasMenu)
 }
@@ -2144,8 +2663,13 @@ const galleryViewHandlers = {
   startImagePress,
   clearImagePress,
   toggleGalleryImageFavorite,
-  openGalleryImageDetail,
+  openGalleryImageDetail: openGalleryImageDetailFromGallery,
   openGalleryImageMenu,
+  exitGalleryBatchMode,
+  toggleSelectAllGalleryBatchImages,
+  onGalleryBatchAction,
+  toggleGalleryBatchImageSelection,
+  appendGalleryBatchImageSelection,
 }
 
 const overlayHandlers = {
@@ -2417,6 +2941,10 @@ function formatError(error: unknown) {
             :show-unclassified-toggle="showGalleryUnclassifiedToggle"
             :is-unclassified-only="isGalleryUnclassifiedOnly"
             :favorite-image-ids="favoriteVisibleImageIds"
+            :is-batch-mode="isGalleryBatchMode"
+            :is-batch-all-selected="isGalleryBatchAllSelected"
+            :batch-selected-image-ids="galleryBatchSelectedImageIds"
+            :batch-action-labels="galleryBatchActionLabels"
             :layout-items="renderedLayoutItems"
             :total-height="totalHeight"
             :content-width="masonryContentWidth"
@@ -2463,6 +2991,195 @@ function formatError(error: unknown) {
         </div>
         <div class="import-library-picker__actions">
           <button type="button" class="secondary-button" @click="closeImportLibraryFolderPicker(null)">取消</button>
+        </div>
+      </article>
+    </div>
+
+    <div v-if="batchFolderPickerModal" class="batch-action-layer">
+      <article class="batch-action-modal" @click.stop>
+        <header class="batch-action-modal__header">
+          <h3>{{ batchFolderPickerModal.title }}</h3>
+          <button type="button" class="batch-action-modal__close" @click="closeBatchFolderPickerModal()">×</button>
+        </header>
+        <div class="batch-action-modal__body">
+          <div class="batch-action-modal__hint">已选 {{ batchSelectedImageIds.length }} 张图片</div>
+          <div class="batch-action-modal__folder-list">
+            <div
+              v-for="folder in folderTree"
+              :key="`batch-folder:${folder.id}`"
+              class="folder-tree__row"
+              :class="{ 'is-active': isBatchFolderTargetSelected(folder.id) }"
+              :style="{ paddingLeft: `${8 + folder.depth * 16}px` }"
+              @click="onBatchFolderRowClick(folder)"
+            >
+              <div class="folder-tree__content">
+                <component
+                  :is="
+                    folder.hasChildren ? (folder.isExpanded ? FolderOpen : FolderClose) : isBatchFolderTargetSelected(folder.id) ? FolderOpen : FolderClose
+                  "
+                  class="folder-tree__folder-icon"
+                  theme="outline"
+                  :size="16"
+                  :stroke-width="3"
+                  :fill="['currentColor']"
+                  aria-hidden="true"
+                />
+                <button class="folder-tree__item" type="button">
+                  <span class="folder-tree__item-label">{{ folder.name }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <footer class="batch-action-modal__footer">
+          <button type="button" class="secondary-button" @click="closeBatchFolderPickerModal()">取消</button>
+          <button
+            type="button"
+            class="primary-button"
+            :disabled="batchFolderPickerTargetId === null"
+            @click="confirmBatchFolderAction()"
+          >
+            {{ batchFolderPickerModal.confirmLabel }}
+          </button>
+        </footer>
+      </article>
+    </div>
+
+    <div v-if="batchTagModalOpen" class="batch-action-layer">
+      <article class="batch-action-modal batch-action-modal--tags" @click.stop>
+        <header class="batch-action-modal__header">
+          <h3>批量添加标签</h3>
+          <button type="button" class="batch-action-modal__close" @click="closeBatchTagModal()">×</button>
+        </header>
+        <div class="batch-action-modal__body">
+          <div class="batch-action-modal__hint">已选 {{ batchSelectedImageIds.length }} 张图片</div>
+          <div class="batch-action-modal__pending">
+            <div class="batch-action-modal__pending-title">待添加标签</div>
+            <div class="batch-action-modal__pending-list">
+              <span
+                v-for="tag in batchTagPending"
+                :key="`batch-pending-tag:${tag.id}`"
+                class="gallery-search__chip batch-action-modal__pending-chip"
+              >
+                <span class="gallery-search__chip-text">{{ tag.label }}</span>
+                <small v-if="tag.subLabel" class="batch-action-modal__pending-sub">{{ tag.subLabel }}</small>
+                <button type="button" class="gallery-search__chip-remove" @click.stop="removePendingBatchTag(tag.id)">×</button>
+              </span>
+              <p v-if="batchTagPending.length === 0" class="batch-action-modal__placeholder">暂未添加标签</p>
+            </div>
+          </div>
+          <input
+            v-model.trim="batchTagDraft"
+            class="batch-action-modal__input"
+            type="text"
+            placeholder="创建一个新标签或搜索自动标签"
+            autocomplete="off"
+            @keydown.enter.prevent="void addPendingCustomTagFromDraft()"
+          />
+          <div class="batch-action-modal__tag-actions">
+            <button type="button" class="secondary-button" :disabled="!batchTagDraft" @click="void addPendingCustomTagFromDraft()">
+              创建标签
+            </button>
+          </div>
+          <div class="batch-action-modal__existing-tags">
+            <div class="batch-action-modal__pending-title">已有标签</div>
+            <section class="image-detail-modal__existing-tags-picker batch-action-modal__existing-tags-picker">
+              <div
+                v-if="tagManagerFolders.length > 0 || tagManagerUnclassifiedTags.length > 0"
+                class="image-detail-modal__existing-folder-list"
+              >
+                <div
+                  v-for="folder in tagManagerFolders"
+                  :key="`batch-custom-folder:${folder.id}`"
+                  class="image-detail-modal__existing-folder"
+                >
+                  <button
+                    type="button"
+                    class="image-detail-modal__existing-folder-toggle"
+                    @click="toggleBatchTagFolderExpanded(folder.id)"
+                  >
+                    <span class="image-detail-modal__existing-folder-caret">
+                      {{ isBatchTagFolderExpanded(folder.id) ? '▾' : '▸' }}
+                    </span>
+                    <span class="image-detail-modal__existing-folder-name">{{ folder.name }}</span>
+                    <small>{{ folder.tags.length }}</small>
+                  </button>
+                  <div v-if="isBatchTagFolderExpanded(folder.id)" class="image-detail-modal__existing-tag-list">
+                    <button
+                      v-for="tagText in folder.tags"
+                      :key="`batch-custom-folder-tag:${folder.id}:${tagText}`"
+                      type="button"
+                      class="gallery-search__chip image-detail-modal__existing-tag-chip"
+                      :class="{ 'is-selected': isExistingTagPending(tagText) }"
+                      @click="addPendingExistingTag(tagText)"
+                    >
+                      <span class="gallery-search__chip-text">{{ tagText }}</span>
+                    </button>
+                    <p v-if="folder.tags.length === 0" class="image-detail-modal__dialog-empty">该文件夹暂无标签</p>
+                  </div>
+                </div>
+                <div v-if="tagManagerUnclassifiedTags.length > 0" class="image-detail-modal__existing-folder">
+                  <button
+                    type="button"
+                    class="image-detail-modal__existing-folder-toggle"
+                    @click="toggleBatchTagFolderExpanded(-1)"
+                  >
+                    <span class="image-detail-modal__existing-folder-caret">
+                      {{ isBatchTagFolderExpanded(-1) ? '▾' : '▸' }}
+                    </span>
+                    <span class="image-detail-modal__existing-folder-name">未分类标签</span>
+                    <small>{{ tagManagerUnclassifiedTags.length }}</small>
+                  </button>
+                  <div v-if="isBatchTagFolderExpanded(-1)" class="image-detail-modal__existing-tag-list">
+                    <button
+                      v-for="tagText in tagManagerUnclassifiedTags"
+                      :key="`batch-custom-unclassified-tag:${tagText}`"
+                      type="button"
+                      class="gallery-search__chip image-detail-modal__existing-tag-chip"
+                      :class="{ 'is-selected': isExistingTagPending(tagText) }"
+                      @click="addPendingExistingTag(tagText)"
+                    >
+                      <span class="gallery-search__chip-text">{{ tagText }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <p v-else class="image-detail-modal__dialog-empty">暂无可选标签</p>
+            </section>
+          </div>
+          <div class="batch-action-modal__tag-list">
+            <button
+              v-for="item in batchTagSuggestions"
+              :key="`batch-tag-suggestion:${item.tagEn}`"
+              type="button"
+              class="batch-action-modal__tag-option"
+              @click="addPendingSupplementTagBySuggestion(item)"
+            >
+              <span class="batch-action-modal__tag-main">{{ item.tagZh || item.tagEn }}</span>
+              <small class="batch-action-modal__tag-sub">{{ item.tagZh ? item.tagEn : '' }}</small>
+            </button>
+            <p v-if="batchTagSuggestLoading" class="batch-action-modal__placeholder">搜索中...</p>
+            <p v-else-if="batchTagDraft && batchTagSuggestions.length === 0" class="batch-action-modal__placeholder">暂无匹配标签</p>
+          </div>
+          <div class="batch-action-modal__tag-actions">
+            <button type="button" class="secondary-button" @click="closeBatchTagModal()">取消</button>
+            <button type="button" class="primary-button" :disabled="batchTagPending.length === 0" @click="applyBatchPendingTags()">
+              添加以上标签
+            </button>
+          </div>
+        </div>
+        <div v-if="batchTagCustomConflict" class="image-detail-modal__dialog-layer batch-action-modal__conflict-layer" @click.stop>
+          <article class="image-detail-modal__dialog" @click.stop>
+            <h4>标签已存在</h4>
+            <p class="image-detail-modal__dialog-text">
+              已有此自动标签（{{ batchTagCustomConflict.tagZh || batchTagCustomConflict.tagEn }}），进行补充还是新建用户自定义标签？
+            </p>
+            <div class="image-detail-modal__dialog-actions">
+              <button type="button" class="secondary-button" @click="batchTagCustomConflict = null">取消</button>
+              <button type="button" class="secondary-button" @click="resolveBatchCustomTagConflict('supplement')">补充</button>
+              <button type="button" class="primary-button" @click="resolveBatchCustomTagConflict('custom')">自定义</button>
+            </div>
+          </article>
         </div>
       </article>
     </div>
@@ -2905,6 +3622,7 @@ function formatError(error: unknown) {
       @click.stop
       @contextmenu.prevent
     >
+      <button type="button" @click="openGalleryBatchModeFromContextMenu(galleryImageContextMenu.imageId)">批量操作</button>
       <button
         v-if="
           activeUserFolderId === 'all' ||

@@ -18,6 +18,18 @@ type KnownAutoTagSuggestion = {
   isUserCustom?: boolean
 }
 
+type GalleryBatchActionItem = {
+  key:
+    | 'copy-folder'
+    | 'move-folder'
+    | 'add-tags'
+    | 'remove-from-folder'
+    | 'assign-folder'
+    | 'favorite'
+    | 'trash'
+  label: string
+}
+
 const props = defineProps<{
   previewDragOverDeleteZone: boolean
   visibleImages: Array<{ id: string }>
@@ -44,6 +56,10 @@ const props = defineProps<{
   showUnclassifiedToggle: boolean
   isUnclassifiedOnly: boolean
   favoriteImageIds: string[]
+  isBatchMode: boolean
+  isBatchAllSelected: boolean
+  batchSelectedImageIds: string[]
+  batchActionLabels: GalleryBatchActionItem[]
   layoutItems: GalleryLayoutItem[]
   totalHeight: number
   contentWidth: number
@@ -68,6 +84,14 @@ const searchChipsDragState = ref<{
 const imageSearchDragDepth = ref(0)
 const imageSearchDragActive = ref(false)
 const internalImageSearchDragActive = ref(false)
+const batchSweepState = ref<{
+  pointerId: number
+  startClientX: number
+  startClientY: number
+  moved: boolean
+  lastPaintedImageId: string | null
+} | null>(null)
+const suppressBatchImageClickOnce = ref(false)
 
 function clearSearchHideTimer() {
   if (searchHideTimer.value !== null) {
@@ -138,6 +162,7 @@ onBeforeUnmount(() => {
   props.handlers.setGalleryElement(null)
   props.handlers.setSearchPointerInside(false)
   props.handlers.setSearchFocus(false)
+  clearBatchSweep()
 })
 
 function trackPointerPosition(event: PointerEvent) {
@@ -234,12 +259,99 @@ function dismissSearchFocus() {
 }
 
 function onGalleryPointerDownCapture(event: PointerEvent) {
-  if (!props.isSearchFocused) return
+  if (props.isSearchFocused && !isTargetInsideSearch(event.target)) {
+    dismissSearchFocus()
+    suppressOutsideClickOnce.value = true
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
+  startBatchSweep(event)
+}
+
+function clearBatchSweep() {
+  const section = gallerySectionEl.value
+  const state = batchSweepState.value
+  if (section && state && section.hasPointerCapture(state.pointerId)) {
+    section.releasePointerCapture(state.pointerId)
+  }
+  batchSweepState.value = null
+}
+
+function isTargetInsideBatchActions(target: EventTarget | null) {
+  return target instanceof HTMLElement && Boolean(target.closest('.gallery-batch-actions'))
+}
+
+function imageIdFromPoint(clientX: number, clientY: number) {
+  const node = document.elementFromPoint(clientX, clientY) as HTMLElement | null
+  const item = node?.closest('.masonry__item') as HTMLElement | null
+  if (!item) return null
+  const imageId = item.dataset.galleryImageId
+  return imageId && imageId.length > 0 ? imageId : null
+}
+
+function toggleBatchSelectionAtPoint(clientX: number, clientY: number) {
+  const imageId = imageIdFromPoint(clientX, clientY)
+  if (!imageId) return false
+  props.handlers.toggleGalleryBatchImageSelection(imageId)
+  return true
+}
+
+function paintBatchSelectionAtPoint(clientX: number, clientY: number) {
+  const state = batchSweepState.value
+  if (!state) return
+  const imageId = imageIdFromPoint(clientX, clientY)
+  if (!imageId || state.lastPaintedImageId === imageId) return
+  state.lastPaintedImageId = imageId
+  props.handlers.appendGalleryBatchImageSelection([imageId])
+}
+
+function startBatchSweep(event: PointerEvent) {
+  if (!props.isBatchMode || event.button !== 0) return
   if (isTargetInsideSearch(event.target)) return
-  dismissSearchFocus()
-  suppressOutsideClickOnce.value = true
+  if (isTargetInsideBatchActions(event.target)) return
+  const section = gallerySectionEl.value
+  if (!section) return
+  batchSweepState.value = {
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    moved: false,
+    lastPaintedImageId: null,
+  }
+  section.setPointerCapture(event.pointerId)
+}
+
+function onGalleryPointerMoveCapture(event: PointerEvent) {
+  const state = batchSweepState.value
+  if (!state || state.pointerId !== event.pointerId) return
+  if (!state.moved) {
+    const dx = Math.abs(event.clientX - state.startClientX)
+    const dy = Math.abs(event.clientY - state.startClientY)
+    state.moved = dx > 4 || dy > 4
+  }
+  if (state.moved) {
+    paintBatchSelectionAtPoint(event.clientX, event.clientY)
+  }
   event.preventDefault()
   event.stopPropagation()
+}
+
+function onGalleryPointerUpCapture(event: PointerEvent) {
+  const state = batchSweepState.value
+  if (!state || state.pointerId !== event.pointerId) return
+  if (state.moved) {
+    suppressBatchImageClickOnce.value = true
+  } else {
+    suppressBatchImageClickOnce.value = toggleBatchSelectionAtPoint(event.clientX, event.clientY)
+  }
+  clearBatchSweep()
+}
+
+function onGalleryPointerCancelCapture(event: PointerEvent) {
+  const state = batchSweepState.value
+  if (!state || state.pointerId !== event.pointerId) return
+  clearBatchSweep()
 }
 
 function onGalleryClickCapture(event: MouseEvent) {
@@ -258,6 +370,36 @@ function onGalleryWheelCapture(event: WheelEvent) {
   if (isTargetInsideSearch(event.target)) return
   dismissSearchFocus()
   suppressOutsideClickOnce.value = false
+}
+
+function onMasonryImagePointerDown(item: GalleryLayoutItem, event: PointerEvent) {
+  if (props.isBatchMode) return
+  props.handlers.startImagePress(item, event)
+}
+
+function onMasonryImagePointerUp() {
+  if (props.isBatchMode) return
+  props.handlers.clearImagePress()
+}
+
+function onMasonryImageClick(item: GalleryLayoutItem) {
+  if (props.isBatchMode) {
+    if (suppressBatchImageClickOnce.value) {
+      suppressBatchImageClickOnce.value = false
+      return
+    }
+    props.handlers.toggleGalleryBatchImageSelection(item.id)
+    return
+  }
+  props.handlers.openGalleryImageDetail(item)
+}
+
+function onMasonryImageContextMenu(item: GalleryLayoutItem, event: MouseEvent) {
+  if (props.isBatchMode) {
+    event.preventDefault()
+    return
+  }
+  props.handlers.openGalleryImageMenu(item, event)
 }
 
 function onSearchPointerDown() {
@@ -399,6 +541,15 @@ watch(
   { immediate: true, deep: true },
 )
 
+watch(
+  () => props.isBatchMode,
+  (enabled) => {
+    if (enabled) return
+    suppressBatchImageClickOnce.value = false
+    clearBatchSweep()
+  },
+)
+
 function canScrollContainer(container: HTMLElement, deltaY: number) {
   if (container.scrollHeight <= container.clientHeight + 1) return false
   if (deltaY < 0) return container.scrollTop > 0
@@ -434,6 +585,9 @@ function onSearchWheel(event: WheelEvent) {
     class="gallery-page"
     :class="{ 'is-preview-delete-target': previewDragOverDeleteZone }"
     @pointerdown.capture="onGalleryPointerDownCapture($event)"
+    @pointermove.capture="onGalleryPointerMoveCapture($event)"
+    @pointerup.capture="onGalleryPointerUpCapture($event)"
+    @pointercancel.capture="onGalleryPointerCancelCapture($event)"
     @click.capture="onGalleryClickCapture($event)"
     @wheel.capture="onGalleryWheelCapture($event)"
     @dragover="handlers.onGalleryPreviewBoardItemDragOver($event)"
@@ -845,14 +999,40 @@ function onSearchWheel(event: WheelEvent) {
       v-else
       :items="layoutItems"
       :favorite-image-ids="favoriteImageIds"
+      :batch-mode="isBatchMode"
+      :batch-selected-image-ids="batchSelectedImageIds"
       :total-height="totalHeight"
       :content-width="contentWidth"
       :active-drag-image-id="dragState?.imageId ?? null"
-      @image-pointer-down="handlers.startImagePress"
-      @image-pointer-up="handlers.clearImagePress"
+      @image-pointer-down="onMasonryImagePointerDown"
+      @image-pointer-up="onMasonryImagePointerUp"
       @image-favorite-toggle="handlers.toggleGalleryImageFavorite"
-      @image-click="handlers.openGalleryImageDetail"
-      @image-context-menu="handlers.openGalleryImageMenu"
+      @image-click="onMasonryImageClick"
+      @image-context-menu="onMasonryImageContextMenu"
     />
+
+    <div v-if="isBatchMode" class="gallery-batch-actions" @click.stop @pointerdown.stop>
+      <span class="gallery-batch-actions__count">已选 {{ batchSelectedImageIds.length }}</span>
+      <button type="button" class="gallery-batch-actions__item" @click="handlers.toggleSelectAllGalleryBatchImages()">
+        {{ isBatchAllSelected ? '取消全选' : '全选' }}
+      </button>
+      <button
+        v-for="action in batchActionLabels"
+        :key="action.key"
+        type="button"
+        class="gallery-batch-actions__item"
+        @click="handlers.onGalleryBatchAction(action.key)"
+      >
+        {{ action.label }}
+      </button>
+      <button
+        type="button"
+        class="gallery-batch-actions__cancel"
+        aria-label="取消批量操作"
+        @click="handlers.exitGalleryBatchMode()"
+      >
+        ×
+      </button>
+    </div>
   </section>
 </template>
