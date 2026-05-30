@@ -64,6 +64,7 @@ const isTitlebarHovered = ref(false)
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const importLibraryFolderPickerItemId = ref<number | null>(null)
 const importLibraryFolderPickerResolve = ref<((folderId: number | null) => void) | null>(null)
+const sidebarHoverCloseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
 const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
@@ -889,6 +890,7 @@ async function runStartupAutoScanPipeline() {
 }
 
 onUnmounted(() => {
+  clearSidebarHoverCloseTimer()
   stopBackgroundScanPolling()
   stopThumbnailGenerationPolling()
   stopAtmosphereGenerationPolling()
@@ -1515,6 +1517,7 @@ async function closeWindow() {
 }
 
 function openSidebarByHover() {
+  clearSidebarHoverCloseTimer()
   if (isSettingsView.value) return
   if (!sidebarPinned.value) sidebarHoverOpen.value = true
 }
@@ -1524,17 +1527,40 @@ function openRightSidebarByHover() {
 }
 
 function closeSidebarByHover() {
-  if (
-    !sidebarPinnedEffective.value &&
-    !folderDraft.value &&
-    !isComposingFolderName.value &&
-    renamingUserFolderId.value === null &&
-    !isComposingUserFolderRename.value &&
-    draggedFolderId.value === null
-  ) {
-    sidebarHoverOpen.value = false
-    closeFolderContextMenu()
+  clearSidebarHoverCloseTimer()
+  sidebarHoverCloseTimer.value = window.setTimeout(() => {
+    sidebarHoverCloseTimer.value = null
+    if (
+      !sidebarPinnedEffective.value &&
+      !folderDraft.value &&
+      !isComposingFolderName.value &&
+      renamingUserFolderId.value === null &&
+      !isComposingUserFolderRename.value &&
+      draggedFolderId.value === null &&
+      !isSidebarHoverSafeAreaActive()
+    ) {
+      sidebarHoverOpen.value = false
+      closeFolderContextMenu()
+    }
+  }, 90)
+}
+
+function clearSidebarHoverCloseTimer() {
+  if (sidebarHoverCloseTimer.value === null) return
+  window.clearTimeout(sidebarHoverCloseTimer.value)
+  sidebarHoverCloseTimer.value = null
+}
+
+function isSidebarHoverSafeAreaActive() {
+  const sidebar = document.querySelector('.sidebar')
+  if (sidebar instanceof HTMLElement && sidebar.matches(':hover')) {
+    return true
   }
+  const hotspot = document.querySelector('.sidebar-hotspot')
+  if (hotspot instanceof HTMLElement && hotspot.matches(':hover')) {
+    return true
+  }
+  return false
 }
 
 function closeRightSidebarByHover() {

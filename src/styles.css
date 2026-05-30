@@ -25,6 +25,9 @@ button {
 
 .app-shell {
   --app-titlebar-offset: 38px;
+  --left-sidebar-gap: 10px;
+  --left-sidebar-width: 232px;
+  --left-sidebar-shell-width: calc(var(--left-sidebar-width) + var(--left-sidebar-gap));
   display: flex;
   height: 100vh;
   overflow: hidden;
@@ -73,16 +76,18 @@ button {
 .sidebar {
   position: fixed;
   z-index: 5;
-  left: 0;
-  top: 0;
+  left: var(--left-sidebar-gap);
+  top: 8px;
   display: flex;
-  width: 232px;
-  height: 100vh;
+  width: var(--left-sidebar-width);
+  height: calc(100vh - 16px);
   flex-direction: column;
   padding: 16px 14px;
-  border-right: 1px solid #2a3037;
+  border: 1px solid #2a3037;
+  border-radius: 14px;
   background: #171b20;
   box-shadow: 12px 0 28px rgb(0 0 0 / 0.28);
+  overflow: hidden;
 }
 
 .sidebar-slide-left-enter-active,
@@ -126,8 +131,8 @@ button {
 .sidebar.is-pinned {
   position: relative;
   z-index: 2;
-  flex: 0 0 232px;
-  box-shadow: none;
+  flex: 0 0 var(--left-sidebar-shell-width);
+  box-shadow: 12px 0 28px rgb(0 0 0 / 0.18);
 }
 
 .right-sidebar.is-pinned {
@@ -770,15 +775,14 @@ button {
   height: 100vh;
 }
 
-.app-shell.is-titlebar-pinned .sidebar:not(.is-pinned),
-.app-shell.is-titlebar-pinned .right-sidebar {
-  top: 0;
-  height: 100vh;
+.app-shell.is-titlebar-pinned .sidebar:not(.is-pinned) {
+  top: 8px;
+  height: calc(100vh - 16px);
 }
 
 .app-shell.is-titlebar-pinned .sidebar.is-pinned {
-  height: 100vh;
-  margin-top: 0;
+  margin-top: 8px;
+  height: calc(100vh - 16px);
 }
 
 .app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar-hotspot,
@@ -787,15 +791,19 @@ button {
   height: calc(100vh - var(--app-titlebar-offset));
 }
 
-.app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar:not(.is-pinned),
 .app-shell:not(.is-window-maximized).is-titlebar-pinned .right-sidebar {
   top: var(--app-titlebar-offset);
   height: calc(100vh - var(--app-titlebar-offset));
 }
 
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar:not(.is-pinned) {
+  top: calc(var(--app-titlebar-offset) + 8px);
+  height: calc(100vh - var(--app-titlebar-offset) - 16px);
+}
+
 .app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar.is-pinned {
-  margin-top: var(--app-titlebar-offset);
-  height: calc(100vh - var(--app-titlebar-offset));
+  margin-top: calc(var(--app-titlebar-offset) + 8px);
+  height: calc(100vh - var(--app-titlebar-offset) - 16px);
 }
 
 .workspace.is-reference-preview-active {
@@ -3261,7 +3269,7 @@ button {
 }
 
 .app-shell.theme-light .sidebar.is-pinned {
-  box-shadow: none;
+  box-shadow: 0 10px 28px rgb(19 33 51 / 0.12);
 }
 
 .app-shell.theme-light .sidebar__brand,
@@ -4026,7 +4034,7 @@ button {
   .sidebar,
   .sidebar.is-pinned {
     width: 190px;
-    flex-basis: 190px;
+    flex-basis: calc(190px + var(--left-sidebar-gap));
   }
 
   .settings__header,
