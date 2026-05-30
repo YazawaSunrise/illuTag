@@ -910,31 +910,99 @@ button {
 .app-titlebar__button {
   min-height: 26px;
   padding: 4px 8px;
-  border: 1px solid #3a434d;
-  border-radius: 6px;
+  border: 0;
+  border-radius: 999px;
   color: #dfe7ef;
   font-size: 12px;
-  background: #222931;
+  background: transparent;
   cursor: pointer;
 }
 
 .app-titlebar__button:hover {
-  border-color: #82d5b8;
+  background: rgb(130 213 184 / 0.18);
 }
 
 .app-titlebar__button:active {
   transform: translateY(1px);
+  background: rgb(130 213 184 / 0.26);
 }
 
 .app-titlebar__button--win {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
   min-width: 28px;
-  padding: 3px 0;
+  min-height: 28px;
+  padding: 0;
   line-height: 1;
 }
 
+.app-titlebar__button-icon {
+  position: relative;
+  display: block;
+  width: 12px;
+  height: 12px;
+  color: currentColor;
+  pointer-events: none;
+}
+
+.app-titlebar__button-icon::before,
+.app-titlebar__button-icon::after {
+  content: '';
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.app-titlebar__button--minimize .app-titlebar__button-icon::before {
+  left: 0;
+  top: 7px;
+  width: 12px;
+  border-top: 1.6px solid currentColor;
+}
+
+.app-titlebar__button--maximize .app-titlebar__button-icon::before {
+  inset: 1px;
+  border: 1.6px solid currentColor;
+}
+
+.app-titlebar__button--restore .app-titlebar__button-icon::before {
+  left: 1px;
+  top: 3px;
+  width: 8px;
+  height: 8px;
+  border: 1.6px solid currentColor;
+}
+
+.app-titlebar__button--restore .app-titlebar__button-icon::after {
+  left: 4px;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  border: 1.6px solid currentColor;
+  background: transparent;
+}
+
+.app-titlebar__button--close .app-titlebar__button-icon::before,
+.app-titlebar__button--close .app-titlebar__button-icon::after {
+  left: 5px;
+  top: 0.2px;
+  width: 1.6px;
+  height: 12px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.app-titlebar__button--close .app-titlebar__button-icon::before {
+  transform: rotate(45deg);
+}
+
+.app-titlebar__button--close .app-titlebar__button-icon::after {
+  transform: rotate(-45deg);
+}
+
 .app-titlebar__button--close:hover {
-  border-color: #f38f8f;
-  background: #3a2525;
+  background: rgb(243 143 143 / 0.26);
 }
 
 .gallery-page {
@@ -3126,18 +3194,16 @@ button {
 }
 
 .app-shell.theme-light .app-titlebar__button {
-  border-color: #cfd7e1;
   color: #1f2937;
-  background: #ffffff;
+  background: transparent;
 }
 
 .app-shell.theme-light .app-titlebar__button:hover {
-  border-color: #7ca0bf;
+  background: rgb(124 160 191 / 0.2);
 }
 
 .app-shell.theme-light .app-titlebar__button--close:hover {
-  border-color: #e28b8b;
-  background: #ffe8e8;
+  background: rgb(226 139 139 / 0.25);
 }
 
 .app-shell.theme-light .sidebar.is-pinned {

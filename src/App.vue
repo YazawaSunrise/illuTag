@@ -2133,14 +2133,30 @@ function formatError(error: unknown) {
         @dblclick="toggleWindowMaximize"
       />
       <div class="app-titlebar__right">
-        <button class="app-titlebar__button app-titlebar__button--win" type="button" @click="minimizeWindow">
-          —
+        <button
+          class="app-titlebar__button app-titlebar__button--win app-titlebar__button--minimize"
+          type="button"
+          aria-label="最小化"
+          @click="minimizeWindow"
+        >
+          <span class="app-titlebar__button-icon" aria-hidden="true" />
         </button>
-        <button class="app-titlebar__button app-titlebar__button--win" type="button" @click="toggleWindowMaximize">
-          {{ isWindowMaximized ? '❐' : '□' }}
+        <button
+          class="app-titlebar__button app-titlebar__button--win"
+          :class="isWindowMaximized ? 'app-titlebar__button--restore' : 'app-titlebar__button--maximize'"
+          type="button"
+          :aria-label="isWindowMaximized ? '还原' : '最大化'"
+          @click="toggleWindowMaximize"
+        >
+          <span class="app-titlebar__button-icon" aria-hidden="true" />
         </button>
-        <button class="app-titlebar__button app-titlebar__button--win app-titlebar__button--close" type="button" @click="closeWindow">
-          ×
+        <button
+          class="app-titlebar__button app-titlebar__button--win app-titlebar__button--close"
+          type="button"
+          aria-label="关闭"
+          @click="closeWindow"
+        >
+          <span class="app-titlebar__button-icon" aria-hidden="true" />
         </button>
       </div>
     </header>
