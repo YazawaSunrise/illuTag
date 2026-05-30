@@ -1,4 +1,18 @@
 <script setup lang="ts">
+import {
+  AllApplication,
+  Delete,
+  FolderClose,
+  FolderFocusOne,
+  FolderOpen,
+  Like,
+  SettingTwo,
+  ShuffleOne,
+  Tag,
+  Triangle,
+  WaterfallsV,
+} from '@icon-park/vue-next'
+
 type ViewMode = 'gallery' | 'settings' | 'board'
 
 type FolderTreeItem = {
@@ -67,13 +81,21 @@ defineProps<{
       </div>
 
       <div class="sidebar__body">
+        <div class="sidebar-gallery-section__title">
+          <WaterfallsV class="sidebar__section-icon" theme="outline" :size="14" :stroke-width="3" :fill="['currentColor']" />
+          <span class="sidebar__section-label">瀑布流</span>
+        </div>
+
         <button
           class="sidebar__nav-button"
           type="button"
           :class="{ 'is-active': viewMode === 'gallery' && activeUserFolderId === 'all' }"
           @click="handlers.showAllImages()"
         >
-          全部
+          <span class="sidebar__nav-content">
+            <AllApplication class="sidebar__nav-icon" theme="outline" :size="15" :stroke-width="3" :fill="['currentColor']" />
+            <span class="sidebar__nav-label">全部</span>
+          </span>
         </button>
 
         <button
@@ -82,7 +104,10 @@ defineProps<{
           :class="{ 'is-active': viewMode === 'gallery' && activeUserFolderId === 'random' }"
           @click="handlers.showRandomImages()"
         >
-          随机
+          <span class="sidebar__nav-content">
+            <ShuffleOne class="sidebar__nav-icon" theme="outline" :size="15" :stroke-width="3" :fill="['currentColor']" />
+            <span class="sidebar__nav-label">随机</span>
+          </span>
         </button>
 
         <button
@@ -91,7 +116,10 @@ defineProps<{
           :class="{ 'is-active': viewMode === 'gallery' && activeUserFolderId === 'favorites' }"
           @click="handlers.showFavoriteImages()"
         >
-          我喜爱的
+          <span class="sidebar__nav-content">
+            <Like class="sidebar__nav-icon" theme="outline" :size="15" :stroke-width="3" :fill="['currentColor']" />
+            <span class="sidebar__nav-label">我喜爱的</span>
+          </span>
         </button>
 
         <button
@@ -100,23 +128,35 @@ defineProps<{
           :class="{ 'is-active': viewMode === 'gallery' && activeUserFolderId === 'trash' }"
           @click="handlers.showTrashImages()"
         >
-          回收站
+          <span class="sidebar__nav-content">
+            <Delete class="sidebar__nav-icon" theme="outline" :size="15" :stroke-width="3" :fill="['currentColor']" />
+            <span class="sidebar__nav-label">回收站</span>
+          </span>
         </button>
 
         <div class="sidebar-tag-manager">
-          <div class="sidebar-tag-manager__title">标签</div>
+          <div class="sidebar-tag-manager__title">
+            <Tag class="sidebar__section-icon" theme="outline" :size="14" :stroke-width="3" :fill="['currentColor']" />
+            <span class="sidebar__section-label">标签</span>
+          </div>
           <button
             class="sidebar__nav-button"
             type="button"
             :class="{ 'is-active': tagManagerOpen }"
             @click="handlers.openTagManager()"
           >
-            标签管理
+            <span class="sidebar__nav-content">
+              <Tag class="sidebar__nav-icon" theme="outline" :size="15" :stroke-width="3" :fill="['currentColor']" />
+              <span class="sidebar__nav-label">标签管理</span>
+            </span>
           </button>
         </div>
 
         <div class="folder-section" @contextmenu="handlers.openFolderSectionMenu($event)">
-          <div class="folder-section__title">文件夹</div>
+          <div class="folder-section__title">
+            <FolderFocusOne class="sidebar__section-icon" theme="outline" :size="14" :stroke-width="3" :fill="['currentColor']" />
+            <span class="sidebar__section-label">文件夹</span>
+          </div>
           <div class="folder-tree">
             <div
               v-for="folder in folderTree"
@@ -141,31 +181,48 @@ defineProps<{
                 :aria-label="folder.isExpanded ? '收起文件夹' : '展开文件夹'"
                 @click.stop="handlers.toggleFolderExpanded(folder.id)"
               >
-                <span class="folder-tree__twist-icon" aria-hidden="true" />
+                <Triangle
+                  class="folder-tree__twist-icon"
+                  theme="filled"
+                  :size="9"
+                  :fill="['currentColor']"
+                  aria-hidden="true"
+                />
               </button>
-              <button
-                v-if="renamingUserFolderId !== folder.id"
-                class="folder-tree__item"
-                type="button"
-              >
-                <span class="folder-tree__item-label">{{ folder.name }}</span>
-              </button>
-              <input
-                v-else
-                :data-user-folder-rename-id="folder.id"
-                class="folder-tree__rename-input"
-                type="text"
-                :value="renamingUserFolderName"
-                autocomplete="off"
-                @pointerdown.stop
-                @click.stop
-                @input="handlers.setRenamingUserFolderName(($event.target as HTMLInputElement).value)"
-                @keydown.enter="handlers.onUserFolderRenameEnter($event)"
-                @keydown.esc.prevent="handlers.cancelUserFolderRename()"
-                @blur="handlers.commitUserFolderRename()"
-                @compositionstart="handlers.startComposingUserFolderRename()"
-                @compositionend="handlers.endComposingUserFolderRename()"
-              />
+              <div class="folder-tree__content">
+                <component
+                  :is="folder.isExpanded ? FolderOpen : FolderClose"
+                  class="folder-tree__folder-icon"
+                  theme="outline"
+                  :size="16"
+                  :stroke-width="3"
+                  :fill="['currentColor']"
+                  aria-hidden="true"
+                />
+                <button
+                  v-if="renamingUserFolderId !== folder.id"
+                  class="folder-tree__item"
+                  type="button"
+                >
+                  <span class="folder-tree__item-label">{{ folder.name }}</span>
+                </button>
+                <input
+                  v-else
+                  :data-user-folder-rename-id="folder.id"
+                  class="folder-tree__rename-input"
+                  type="text"
+                  :value="renamingUserFolderName"
+                  autocomplete="off"
+                  @pointerdown.stop
+                  @click.stop
+                  @input="handlers.setRenamingUserFolderName(($event.target as HTMLInputElement).value)"
+                  @keydown.enter="handlers.onUserFolderRenameEnter($event)"
+                  @keydown.esc.prevent="handlers.cancelUserFolderRename()"
+                  @blur="handlers.commitUserFolderRename()"
+                  @compositionstart="handlers.startComposingUserFolderRename()"
+                  @compositionend="handlers.endComposingUserFolderRename()"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -179,7 +236,14 @@ defineProps<{
         title="设置"
         @click="handlers.openSettings()"
       >
-        <span aria-hidden="true">⚙</span>
+        <SettingTwo
+          class="sidebar__settings-icon"
+          theme="outline"
+          :size="18"
+          :stroke-width="3"
+          :fill="['currentColor']"
+          aria-hidden="true"
+        />
       </button>
 
       <div

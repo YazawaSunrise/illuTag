@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { FolderClose, FolderOpen, Triangle } from '@icon-park/vue-next'
+
 type ReferenceBoardRow =
   | { kind: 'folder'; id: number; name: string; hasBoards: boolean; isExpanded: boolean }
   | { kind: 'board'; id: number; folderId: number | null; name: string; depth: number }
@@ -226,25 +228,44 @@ function onBoardClick(boardId: number) {
               :aria-label="row.isExpanded ? '收起参考板文件夹' : '展开参考板文件夹'"
               @click.stop="handlers.toggleReferenceBoardFolderExpanded(row.id)"
             >
-              <span class="board-folder-row__twist-icon" aria-hidden="true" />
+              <Triangle
+                class="board-folder-row__twist-icon"
+                theme="filled"
+                :size="9"
+                :fill="['currentColor']"
+                aria-hidden="true"
+              />
             </button>
-            <span v-if="renamingReferenceBoardFolderId !== row.id">{{ row.name }}</span>
-            <input
-              v-else
-              :data-reference-board-folder-rename-id="row.id"
-              class="board-folder-row__rename-input"
-              type="text"
-              :value="renamingReferenceBoardFolderName"
-              autocomplete="off"
-              @pointerdown.stop
-              @click.stop
-              @input="handlers.setRenamingReferenceBoardFolderName(($event.target as HTMLInputElement).value)"
-              @keydown.enter="handlers.onReferenceBoardFolderRenameEnter($event)"
-              @keydown.esc.prevent="handlers.cancelReferenceBoardFolderRename()"
-              @blur="handlers.commitReferenceBoardFolderRename()"
-              @compositionstart="handlers.startComposingReferenceBoardFolderRename()"
-              @compositionend="handlers.endComposingReferenceBoardFolderRename()"
-            />
+            <div class="board-folder-row__content">
+              <component
+                :is="row.isExpanded ? FolderOpen : FolderClose"
+                class="board-folder-row__folder-icon"
+                theme="outline"
+                :size="16"
+                :stroke-width="3"
+                :fill="['currentColor']"
+                aria-hidden="true"
+              />
+              <span v-if="renamingReferenceBoardFolderId !== row.id" class="board-folder-row__label">
+                {{ row.name }}
+              </span>
+              <input
+                v-else
+                :data-reference-board-folder-rename-id="row.id"
+                class="board-folder-row__rename-input"
+                type="text"
+                :value="renamingReferenceBoardFolderName"
+                autocomplete="off"
+                @pointerdown.stop
+                @click.stop
+                @input="handlers.setRenamingReferenceBoardFolderName(($event.target as HTMLInputElement).value)"
+                @keydown.enter="handlers.onReferenceBoardFolderRenameEnter($event)"
+                @keydown.esc.prevent="handlers.cancelReferenceBoardFolderRename()"
+                @blur="handlers.commitReferenceBoardFolderRename()"
+                @compositionstart="handlers.startComposingReferenceBoardFolderRename()"
+                @compositionend="handlers.endComposingReferenceBoardFolderRename()"
+              />
+            </div>
           </div>
           <button
             v-else

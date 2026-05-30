@@ -28,6 +28,9 @@ button {
   --left-sidebar-gap: 10px;
   --left-sidebar-width: 232px;
   --left-sidebar-shell-width: calc(var(--left-sidebar-width) + var(--left-sidebar-gap));
+  --right-sidebar-gap: 10px;
+  --right-sidebar-width: 232px;
+  --right-sidebar-shell-width: calc(var(--right-sidebar-width) + var(--right-sidebar-gap));
   display: flex;
   height: 100vh;
   overflow: hidden;
@@ -104,14 +107,15 @@ button {
 .right-sidebar {
   position: fixed;
   z-index: 5;
-  right: 0;
-  top: 0;
+  right: var(--right-sidebar-gap);
+  top: 8px;
   display: flex;
-  width: 232px;
-  height: 100vh;
+  width: var(--right-sidebar-width);
+  height: calc(100vh - 16px);
   flex-direction: column;
   padding: 16px 14px;
-  border-left: 1px solid #2a3037;
+  border: 1px solid #2a3037;
+  border-radius: 14px;
   background: #171b20;
   box-shadow: -12px 0 28px rgb(0 0 0 / 0.28);
   overflow: hidden;
@@ -131,11 +135,16 @@ button {
 .sidebar.is-pinned {
   position: relative;
   z-index: 2;
+  top: 0;
+  margin-top: 8px;
+  height: calc(100vh - 16px);
   flex: 0 0 var(--left-sidebar-shell-width);
   box-shadow: 12px 0 28px rgb(0 0 0 / 0.18);
 }
 
 .right-sidebar.is-pinned {
+  top: 8px;
+  height: calc(100vh - 16px);
   box-shadow: -12px 0 28px rgb(0 0 0 / 0.18);
 }
 
@@ -389,13 +398,38 @@ button {
 
 .sidebar__settings-button {
   margin-top: auto;
-  font-size: 20px;
 }
 
 .sidebar__nav-button {
+  display: flex;
+  align-items: center;
   width: 100%;
   padding: 10px 12px;
   text-align: left;
+}
+
+.sidebar__nav-content {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar__nav-icon {
+  display: block;
+  flex: 0 0 auto;
+  color: currentColor;
+  transform: translateY(1.5px);
+}
+
+.sidebar__settings-icon {
+  display: block;
+  color: currentColor;
+  transform: translateY(1.5px);
+}
+
+.sidebar__nav-label {
+  line-height: 1;
 }
 
 .sidebar-tag-manager {
@@ -406,7 +440,11 @@ button {
   border-top: 1px solid #2a3037;
 }
 
+.sidebar-gallery-section__title,
 .sidebar-tag-manager__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 4px;
   color: #98a5b3;
   font-size: 12px;
@@ -424,10 +462,24 @@ button {
 }
 
 .folder-section__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 4px;
   color: #98a5b3;
   font-size: 12px;
   line-height: 1.4;
+}
+
+.sidebar__section-icon {
+  display: block;
+  flex: 0 0 auto;
+  color: currentColor;
+  transform: translateY(1px);
+}
+
+.sidebar__section-label {
+  line-height: 1;
 }
 
 .folder-tree {
@@ -453,21 +505,19 @@ button {
 .folder-tree__twist,
 .board-folder-row__twist {
   display: grid;
-  flex: 0 0 22px;
-  width: 22px;
-  height: 28px;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
   place-items: center;
   padding: 0;
   border: 0;
   appearance: none;
   -webkit-appearance: none;
-  color: #98a5b3;
+  color: #8d9aa9;
   background: transparent;
   cursor: pointer;
-  line-height: 1;
-  font-size: 12px;
-  font-weight: 700;
   border-radius: 4px;
+  margin-right: 2px;
 }
 
 .folder-tree__item {
@@ -477,22 +527,25 @@ button {
   cursor: pointer;
 }
 
+.folder-tree__folder-icon,
+.board-folder-row__folder-icon {
+  display: block;
+  flex: 0 0 auto;
+  color: currentColor;
+  pointer-events: none;
+  margin-right: 6px;
+}
+
 .folder-tree__twist-icon,
 .board-folder-row__twist-icon {
-  width: 0;
-  height: 0;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 7px solid currentColor;
-  transform: translateX(1px) rotate(0deg);
-  transform-origin: 38% 50%;
-  transition: transform 140ms ease;
+  display: block;
+  transform: rotate(90deg);
   pointer-events: none;
 }
 
 .folder-tree__twist.is-expanded .folder-tree__twist-icon,
 .board-folder-row__twist.is-expanded .board-folder-row__twist-icon {
-  transform: rotate(90deg);
+  transform: rotate(180deg);
 }
 
 .folder-tree__twist.is-hidden {
@@ -501,9 +554,8 @@ button {
 
 .folder-tree__row:hover .folder-tree__twist:not(.is-hidden),
 .folder-tree__twist.is-expanded {
-  color: #d7e1ec;
-  background: rgb(151 166 183 / 0.2);
-  border-radius: 4px;
+  color: #8d9aa9;
+  background: transparent;
 }
 
 .folder-tree__item {
@@ -513,6 +565,19 @@ button {
   align-items: center;
   justify-content: flex-start;
   padding: 7px 8px 7px 0;
+  border: 0;
+  background: transparent;
+}
+
+.folder-tree__content {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
 }
 
 .folder-tree__item-label {
@@ -527,7 +592,7 @@ button {
 .folder-tree__rename-input {
   flex: 1;
   min-width: 0;
-  margin-right: 6px;
+  margin-right: 0;
   padding: 6px 8px;
   border: 1px solid #82d5b8;
   border-radius: 6px;
@@ -536,8 +601,8 @@ button {
   outline: none;
 }
 
-.folder-tree__row:hover,
-.folder-tree__row.is-active {
+.folder-tree__row:hover .folder-tree__content,
+.folder-tree__row.is-active .folder-tree__content {
   border-color: #343c45;
   background: #20262d;
 }
@@ -584,11 +649,6 @@ button {
   user-select: none;
 }
 
-.board-folder-row:hover {
-  border-color: #343c45;
-  background: #20262d;
-}
-
 .board-folder-row.is-drag-over,
 .board-row.is-drag-over {
   border-color: #82d5b8;
@@ -606,17 +666,34 @@ button {
 
 .board-folder-row:hover .board-folder-row__twist:not(.is-hidden),
 .board-folder-row__twist.is-expanded {
-  color: #d7e1ec;
-  background: rgb(151 166 183 / 0.2);
-  border-radius: 4px;
+  color: #8d9aa9;
+  background: transparent;
 }
 
-.board-folder-row > span {
+.board-folder-row__label {
+  display: block;
   flex: 1;
   min-width: 0;
+  padding: 7px 8px 7px 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.board-folder-row__content {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.board-folder-row:hover .board-folder-row__content {
+  border-color: #343c45;
+  background: #20262d;
 }
 
 .board-folder-row__rename-input {
@@ -780,8 +857,8 @@ button {
   height: calc(100vh - 16px);
 }
 
-.app-shell.is-titlebar-pinned .sidebar.is-pinned {
-  margin-top: 8px;
+.app-shell.is-titlebar-pinned .right-sidebar {
+  top: 8px;
   height: calc(100vh - 16px);
 }
 
@@ -792,8 +869,8 @@ button {
 }
 
 .app-shell:not(.is-window-maximized).is-titlebar-pinned .right-sidebar {
-  top: var(--app-titlebar-offset);
-  height: calc(100vh - var(--app-titlebar-offset));
+  top: calc(var(--app-titlebar-offset) + 8px);
+  height: calc(100vh - var(--app-titlebar-offset) - 16px);
 }
 
 .app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar:not(.is-pinned) {
@@ -801,17 +878,34 @@ button {
   height: calc(100vh - var(--app-titlebar-offset) - 16px);
 }
 
-.app-shell:not(.is-window-maximized).is-titlebar-pinned .sidebar.is-pinned {
+.app-shell.is-settings-view .sidebar:not(.is-pinned) {
+  top: 8px;
+  height: calc(100vh - 16px);
+}
+
+.app-shell.is-settings-view .sidebar.is-pinned {
+  top: 0;
+  margin-top: 8px;
+  height: calc(100vh - 16px);
+}
+
+.app-shell.is-settings-view.is-titlebar-pinned .sidebar:not(.is-pinned) {
+  top: calc(var(--app-titlebar-offset) + 8px);
+  height: calc(100vh - var(--app-titlebar-offset) - 16px);
+}
+
+.app-shell.is-settings-view.is-titlebar-pinned .sidebar.is-pinned {
+  top: 0;
   margin-top: calc(var(--app-titlebar-offset) + 8px);
   height: calc(100vh - var(--app-titlebar-offset) - 16px);
 }
 
 .workspace.is-reference-preview-active {
-  margin-right: 232px;
+  margin-right: var(--right-sidebar-shell-width);
 }
 
 .workspace.is-right-sidebar-fixed {
-  margin-right: 232px;
+  margin-right: var(--right-sidebar-shell-width);
 }
 
 .workspace-view {
@@ -2013,6 +2107,10 @@ button {
 .app-shell:not(.is-window-maximized).is-titlebar-pinned .workspace.is-settings-view {
   height: calc(100% - var(--app-titlebar-offset));
   margin-top: var(--app-titlebar-offset);
+}
+
+.app-shell.is-window-maximized.is-settings-view.is-titlebar-pinned .settings {
+  padding-top: calc(24px + var(--app-titlebar-offset));
 }
 
 .settings__header {
@@ -3235,6 +3333,7 @@ button {
 .app-shell.theme-light .app-titlebar__view,
 .app-shell.theme-light .settings__header p,
 .app-shell.theme-light .empty-panel p,
+.app-shell.theme-light .sidebar-gallery-section__title,
 .app-shell.theme-light .folder-section__title,
 .app-shell.theme-light .sidebar-tag-manager__title,
 .app-shell.theme-light .board-section__empty,
@@ -3325,9 +3424,9 @@ button {
   background: rgb(202 210 220 / 0.78);
 }
 
-.app-shell.theme-light .folder-tree__row:hover,
-.app-shell.theme-light .folder-tree__row.is-active,
-.app-shell.theme-light .board-folder-row:hover,
+.app-shell.theme-light .folder-tree__row:hover .folder-tree__content,
+.app-shell.theme-light .folder-tree__row.is-active .folder-tree__content,
+.app-shell.theme-light .board-folder-row:hover .board-folder-row__content,
 .app-shell.theme-light .board-row:hover,
 .app-shell.theme-light .board-row.is-active {
   border-color: #cbd5e1;
@@ -3340,14 +3439,6 @@ button {
 .app-shell.theme-light .board-row.is-preview-copy-target {
   border-color: #82d5b8;
   background: #e6f5ef;
-}
-
-.app-shell.theme-light .folder-tree__row:hover .folder-tree__twist:not(.is-hidden),
-.app-shell.theme-light .folder-tree__twist.is-expanded,
-.app-shell.theme-light .board-folder-row:hover .board-folder-row__twist:not(.is-hidden),
-.app-shell.theme-light .board-folder-row__twist.is-expanded {
-  color: #475569;
-  background: rgb(148 163 184 / 0.22);
 }
 
 .app-shell.theme-light .board-row__drop-choice {

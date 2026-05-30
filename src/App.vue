@@ -65,6 +65,7 @@ const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const importLibraryFolderPickerItemId = ref<number | null>(null)
 const importLibraryFolderPickerResolve = ref<((folderId: number | null) => void) | null>(null)
 const sidebarHoverCloseTimer = ref<number | null>(null)
+const rightSidebarHoverCloseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
 const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
@@ -891,6 +892,7 @@ async function runStartupAutoScanPipeline() {
 
 onUnmounted(() => {
   clearSidebarHoverCloseTimer()
+  clearRightSidebarHoverCloseTimer()
   stopBackgroundScanPolling()
   stopThumbnailGenerationPolling()
   stopAtmosphereGenerationPolling()
@@ -1523,6 +1525,7 @@ function openSidebarByHover() {
 }
 
 function openRightSidebarByHover() {
+  clearRightSidebarHoverCloseTimer()
   if (!rightSidebarPinned.value) rightSidebarHoverOpen.value = true
 }
 
@@ -1565,20 +1568,43 @@ function isSidebarHoverSafeAreaActive() {
 
 function closeRightSidebarByHover() {
   if (previewBoardItemDrag.value) return
-  if (
-    !rightSidebarPinned.value &&
-    !boardDraft.value &&
-    !isComposingBoardName.value &&
-    renamingReferenceBoardFolderId.value === null &&
-    renamingReferenceBoardId.value === null &&
-    !isComposingReferenceBoardFolderRename.value &&
-    !isComposingReferenceBoardRename.value &&
-    draggedReferenceBoardId.value === null &&
-    draggedReferenceBoardFolderId.value === null
-  ) {
-    rightSidebarHoverOpen.value = false
-    closeBoardContextMenu()
+  clearRightSidebarHoverCloseTimer()
+  rightSidebarHoverCloseTimer.value = window.setTimeout(() => {
+    rightSidebarHoverCloseTimer.value = null
+    if (
+      !rightSidebarPinned.value &&
+      !boardDraft.value &&
+      !isComposingBoardName.value &&
+      renamingReferenceBoardFolderId.value === null &&
+      renamingReferenceBoardId.value === null &&
+      !isComposingReferenceBoardFolderRename.value &&
+      !isComposingReferenceBoardRename.value &&
+      draggedReferenceBoardId.value === null &&
+      draggedReferenceBoardFolderId.value === null &&
+      !isRightSidebarHoverSafeAreaActive()
+    ) {
+      rightSidebarHoverOpen.value = false
+      closeBoardContextMenu()
+    }
+  }, 90)
+}
+
+function clearRightSidebarHoverCloseTimer() {
+  if (rightSidebarHoverCloseTimer.value === null) return
+  window.clearTimeout(rightSidebarHoverCloseTimer.value)
+  rightSidebarHoverCloseTimer.value = null
+}
+
+function isRightSidebarHoverSafeAreaActive() {
+  const sidebar = document.querySelector('.right-sidebar')
+  if (sidebar instanceof HTMLElement && sidebar.matches(':hover')) {
+    return true
   }
+  const hotspot = document.querySelector('.right-sidebar-hotspot')
+  if (hotspot instanceof HTMLElement && hotspot.matches(':hover')) {
+    return true
+  }
+  return false
 }
 
 function openSettings() {
@@ -2167,6 +2193,7 @@ function formatError(error: unknown) {
     class="app-shell"
     :class="{
       'is-sidebar-pinned': sidebarPinnedEffective,
+      'is-settings-view': isSettingsView,
       'is-titlebar-pinned': isTitlebarPinned,
       'is-window-maximized': isWindowMaximized,
       'is-gallery-search-active': isSearchFocused || isSearchPointerInside,
