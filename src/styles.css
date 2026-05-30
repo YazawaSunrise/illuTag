@@ -753,6 +753,7 @@ button {
   display: flex;
   flex: 1;
   flex-direction: column;
+  position: relative;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -1024,6 +1025,44 @@ button {
   padding: 16px 42px 48px;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.gallery-page::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.gallery-scroll-progress-indicator {
+  position: absolute;
+  z-index: 4;
+  top: 16px;
+  right: 10px;
+  bottom: 16px;
+  width: 4px;
+  pointer-events: none;
+}
+
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .gallery-scroll-progress-indicator {
+  top: calc(var(--app-titlebar-offset) + 14px);
+}
+
+.gallery-scroll-progress-indicator__track {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: rgb(151 166 183 / 0.24);
+  overflow: hidden;
+}
+
+.gallery-scroll-progress-indicator__fill {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: #82d5b8;
+  transform-origin: top center;
+  will-change: transform;
 }
 
 .app-shell:not(.is-window-maximized) .gallery-page {
@@ -3401,6 +3440,14 @@ button {
   border-color: rgb(180 194 211 / 0.62);
   background: rgb(250 253 255 / 0.66);
   box-shadow: 0 14px 28px rgb(77 101 128 / 0.18);
+}
+
+.app-shell.theme-light .gallery-scroll-progress-indicator__track {
+  background: rgb(124 160 191 / 0.22);
+}
+
+.app-shell.theme-light .gallery-scroll-progress-indicator__fill {
+  background: #4f9f86;
 }
 
 .app-shell.theme-light .gallery-search__cell {

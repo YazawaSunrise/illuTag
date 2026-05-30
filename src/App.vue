@@ -571,6 +571,8 @@ async function onTagManagerFolderDrop(folderId: number, event: DragEvent) {
 }
 
 const {
+  galleryEl,
+  galleryScrollTop,
   renderedLayoutItems,
   masonryContentWidth,
   totalHeight,
@@ -586,6 +588,20 @@ const {
   convertFileSrc,
   clamp,
 })
+
+const galleryScrollableHeight = computed(() => {
+  const element = galleryEl.value
+  if (!element) return 0
+  return Math.max(0, element.scrollHeight - element.clientHeight)
+})
+
+const galleryScrollProgress = computed(() => {
+  const maxScroll = galleryScrollableHeight.value
+  if (maxScroll <= 0) return 0
+  return clamp(galleryScrollTop.value / maxScroll, 0, 1)
+})
+
+const showGalleryScrollProgress = computed(() => viewMode.value === 'gallery' && galleryScrollableHeight.value > 1)
 
 const {
   autoScanOnStartup,
@@ -2337,6 +2353,14 @@ function formatError(error: unknown) {
           />
         </div>
       </Transition>
+      <div v-if="showGalleryScrollProgress" class="gallery-scroll-progress-indicator" aria-hidden="true">
+        <div class="gallery-scroll-progress-indicator__track">
+          <div
+            class="gallery-scroll-progress-indicator__fill"
+            :style="{ transform: `scaleY(${galleryScrollProgress})` }"
+          />
+        </div>
+      </div>
     </main>
 
     <AppOverlayLayer
