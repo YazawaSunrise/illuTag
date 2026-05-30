@@ -1191,6 +1191,7 @@ const {
   startBackgroundScanPolling,
   stopBackgroundScanPolling,
   startAutoScanIfEnabled,
+  startScanAllFoldersCollectOnly,
 } = useBackgroundScan({
   loadLibrary,
   formatError,
@@ -1398,7 +1399,9 @@ onMounted(async () => {
   startAtmosphereGenerationPolling()
   startColorSignatureGenerationPolling()
   void startStartupCleanup()
-  void runStartupAutoScanPipeline()
+  if (autoScanOnStartup.value) {
+    void runStartupAutoScanPipeline()
+  }
   if (thumbnailCacheEnabled.value && !isBackgroundScanRunning.value && !autoScanOnStartup.value) {
     void startThumbnailGeneration()
   }
@@ -1421,16 +1424,29 @@ async function waitUntilIdle(refresh: () => Promise<void>, isRunning: () => bool
 }
 
 async function runStartupAutoScanPipeline() {
+  await runOneClickScanPipeline(async () => await startAutoScanIfEnabled())
+}
+
+async function runOneClickScanPipeline(
+  startCollectPhase: () => Promise<boolean>,
+) {
   if (startupAutoScanPipelineRunning.value) return
   startupAutoScanPipelineRunning.value = true
   try {
-    const started = await startAutoScanIfEnabled()
-    if (!started) return
+    await refreshBackgroundScanStatus()
+    if (isBackgroundScanRunning.value) {
+      await stopScanAllFolders()
+      await waitUntilIdle(refreshBackgroundScanStatus, () => isBackgroundScanRunning.value)
+    }
+
+    let started = await startCollectPhase()
+    if (!started) {
+      await waitUntilIdle(refreshBackgroundScanStatus, () => isBackgroundScanRunning.value)
+      started = await startCollectPhase()
+      if (!started) return
+    }
 
     await waitUntilIdle(refreshBackgroundScanStatus, () => isBackgroundScanRunning.value)
-    const newImages = Math.max(0, Number(lastBackgroundScanProgress.value?.newImages ?? 0))
-    if (newImages <= 0) return
-
     await startThumbnailGeneration()
     await waitUntilIdle(refreshThumbnailGenerationStatus, () => isThumbnailGenerationRunning.value)
 
@@ -1444,9 +1460,14 @@ async function runStartupAutoScanPipeline() {
     await waitUntilIdle(refreshColorSignatureGenerationStatus, () => isColorSignatureGenerationRunning.value)
 
     await startScanAllFolders()
+    await waitUntilIdle(refreshBackgroundScanStatus, () => isBackgroundScanRunning.value)
   } finally {
     startupAutoScanPipelineRunning.value = false
   }
+}
+
+async function runOneClickScan() {
+  await runOneClickScanPipeline(async () => await startScanAllFoldersCollectOnly())
 }
 
 onUnmounted(() => {
@@ -1705,6 +1726,12 @@ async function removeFolder(folderPath: string) {
   }
 }
 
+async function removeFolderWithConfirm(folderPath: string) {
+  const confirmed = window.confirm(`确认移除该文件夹索引？\n${folderPath}`)
+  if (!confirmed) return
+  await removeFolder(folderPath)
+}
+
 function isEditableKeyboardTarget(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null
   if (!target) return false
@@ -1848,6 +1875,70 @@ function focusReferenceBoardBySpaceShortcut() {
   }
 }
 
+function guessImageMimeTypeFromName(fileName: string) {
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'png') return 'image/png'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'bmp') return 'image/bmp'
+  if (ext === 'avif') return 'image/avif'
+  if (ext === 'heic') return 'image/heic'
+  if (ext === 'heif') return 'image/heif'
+  return 'application/octet-stream'
+}
+
+function referenceBoardWorldPointFromClient(clientX: number, clientY: number, container: HTMLElement) {
+  const rect = container.getBoundingClientRect()
+  return {
+    x: (clientX - rect.left - boardPan.value.x) / boardScale.value,
+    y: (clientY - rect.top - boardPan.value.y) / boardScale.value,
+  }
+}
+
+function onReferenceBoardExternalImageDragOver(event: DragEvent) {
+  if (!activeReferenceBoard.value) return
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  const hasImage = files.some((file) => file.type.startsWith('image/'))
+  if (!hasImage) return
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'copy'
+  }
+}
+
+async function onReferenceBoardExternalImageDrop(event: DragEvent) {
+  if (!activeReferenceBoard.value) return
+  const container = event.currentTarget as HTMLElement | null
+  if (!container) return
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  const imageFile = files.find((file) => file.type.startsWith('image/'))
+  if (!imageFile) return
+
+  try {
+    const mimeType =
+      imageFile.type && imageFile.type.startsWith('image/')
+        ? imageFile.type
+        : guessImageMimeTypeFromName(imageFile.name)
+    if (!mimeType.startsWith('image/')) {
+      errorText.value = '仅支持拖入图片文件'
+      return
+    }
+    const bytes = Array.from(new Uint8Array(await imageFile.arrayBuffer()))
+    const world = referenceBoardWorldPointFromClient(event.clientX, event.clientY, container)
+    const { invoke } = await import('@tauri-apps/api/core')
+    library.value = await invoke<LibraryStore>('paste_image_to_reference_board_command', {
+      boardId: activeReferenceBoard.value.id,
+      imageBytes: bytes,
+      mimeType,
+      x: world.x,
+      y: world.y,
+    })
+    ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
 async function autoArrangeActiveReferenceBoard() {
   if (!activeReferenceBoard.value) return
   const boardId = activeReferenceBoard.value.id
@@ -1927,9 +2018,6 @@ async function pickImportedLibraryFolderIdForImport(itemId: number) {
   if (folders.length === 0) {
     errorText.value = '请先在设置中导入至少一个本地图库文件夹。'
     return null
-  }
-  if (folders.length === 1) {
-    return folders[0].id
   }
   return openImportLibraryFolderPicker(itemId)
 }
@@ -2210,6 +2298,16 @@ function canEditFolderRule(folderId: number) {
   return !folder.hasChildren
 }
 
+function createEmptyFolderRuleCondition(): FolderRuleConditionDraft {
+  const id = folderRuleSeed.value++
+  return {
+    id,
+    logic: 'AND',
+    source: 'danbooru',
+    keyword: '',
+  }
+}
+
 function clearFolderRuleDanbooruSuggestionTimer() {
   if (folderRuleDanbooruSuggestTimer.value === null) return
   window.clearTimeout(folderRuleDanbooruSuggestTimer.value)
@@ -2295,17 +2393,11 @@ function selectFolderRuleDanbooruSuggestion(condition: FolderRuleConditionDraft,
 
 function addFolderRuleCondition() {
   if (!folderRuleEditor.value) return
-  const id = folderRuleSeed.value++
   folderRuleEditor.value = {
     ...folderRuleEditor.value,
     conditions: [
       ...folderRuleEditor.value.conditions,
-      {
-        id,
-        logic: 'AND',
-        source: 'danbooru',
-        keyword: '',
-      },
+      createEmptyFolderRuleCondition(),
     ],
   }
 }
@@ -2332,31 +2424,79 @@ async function openFolderRuleEditor(folderId: number) {
     closeFolderContextMenu()
     return
   }
-  await reloadTagManagementState()
-  const folder = folderTree.value.find((item) => item.id === folderId)
-  if (!folder) return
-  const id = folderRuleSeed.value++
-  folderRuleEditor.value = {
-    folderId,
-    folderName: folder.name,
-    conditions: [
-      {
-        id,
-        logic: 'AND',
-        source: 'danbooru',
-        keyword: '',
-      },
-    ],
+  try {
+    await reloadTagManagementState()
+    const folder = folderTree.value.find((item) => item.id === folderId)
+    if (!folder) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    const raw = await invoke<Record<string, unknown> | null>('get_user_folder_rule_command', {
+      folderId,
+    })
+    const loadedConditionsRaw = Array.isArray(raw?.conditions) ? raw?.conditions : []
+    const loadedConditions = loadedConditionsRaw
+      .map((item) => {
+        const logicRaw = String((item as Record<string, unknown>).logic ?? 'AND').toUpperCase()
+        const sourceRaw = String((item as Record<string, unknown>).source ?? 'danbooru').toLowerCase()
+        const keyword = String((item as Record<string, unknown>).keyword ?? '').trim()
+        const logic = logicRaw === 'OR' || logicRaw === 'NOT' ? logicRaw : 'AND'
+        const source = sourceRaw === 'custom' || sourceRaw === 'filename' ? sourceRaw : 'danbooru'
+        if (!keyword) return null
+        return {
+          id: folderRuleSeed.value++,
+          logic: logic as FolderRuleConditionDraft['logic'],
+          source: source as FolderRuleConditionDraft['source'],
+          keyword,
+        }
+      })
+      .filter((item): item is FolderRuleConditionDraft => Boolean(item))
+    folderRuleEditor.value = {
+      folderId,
+      folderName: folder.name,
+      conditions: loadedConditions.length > 0 ? loadedConditions : [createEmptyFolderRuleCondition()],
+    }
+    closeFolderContextMenu()
+  } catch (error) {
+    errorText.value = formatError(error)
   }
-  closeFolderContextMenu()
 }
 
-function saveFolderRuleDraft(applyNow: boolean) {
+async function saveFolderRuleDraft(applyNow: boolean) {
   if (!folderRuleEditor.value) return
-  statusText.value = applyNow
-    ? `已保存规则并立即应用（UI 预览）：${folderRuleEditor.value.folderName}`
-    : `已保存规则（UI 预览）：${folderRuleEditor.value.folderName}`
-  closeFolderRuleEditor()
+  try {
+    const payload = folderRuleEditor.value.conditions.map((condition) => ({
+      logic: condition.logic,
+      source: condition.source,
+      keyword: condition.keyword.trim(),
+    }))
+    const { invoke } = await import('@tauri-apps/api/core')
+    library.value = await invoke<LibraryStore>('save_user_folder_rule_command', {
+      folderId: folderRuleEditor.value.folderId,
+      conditions: payload,
+      applyNow,
+    })
+    statusText.value = applyNow
+      ? `已保存规则并立即应用：${folderRuleEditor.value.folderName}`
+      : `已保存规则：${folderRuleEditor.value.folderName}`
+    closeFolderRuleEditor()
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function deleteFolderRuleDraft() {
+  if (!folderRuleEditor.value) return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    library.value = await invoke<LibraryStore>('save_user_folder_rule_command', {
+      folderId: folderRuleEditor.value.folderId,
+      conditions: [],
+      applyNow: false,
+    })
+    statusText.value = `已删除规则：${folderRuleEditor.value.folderName}`
+    closeFolderRuleEditor()
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
 }
 
 function openGalleryImageMenu(item: GalleryLayoutItem, event: MouseEvent) {
@@ -2719,6 +2859,7 @@ const settingsViewHandlers = {
   stopColorSignatureGeneration,
   rebuildColorSignatureCache,
   setAutoScanOnStartup,
+  runOneClickScan,
   startScanAllFolders,
   pauseScanAllFolders,
   resumeScanAllFolders,
@@ -2732,7 +2873,7 @@ const settingsViewHandlers = {
   setFolderPathInput(value: string) {
     folderPathInput.value = value
   },
-  removeFolder,
+  removeFolder: removeFolderWithConfirm,
 }
 
 const leftSidebarHandlers = {
@@ -2824,6 +2965,8 @@ const referenceBoardViewHandlers = {
   startBoardItemMove,
   startBoardItemResize,
   startBoardItemRotate,
+  onReferenceBoardExternalImageDragOver,
+  onReferenceBoardExternalImageDrop,
   removeReferenceBoardItem,
   openReferenceBoardItemMenu,
   openReferenceBoardCanvasMenu,
@@ -3090,6 +3233,7 @@ function formatError(error: unknown) {
             :color-signature-progress-percent="colorSignatureProgressPercent"
             :color-signature-recent-errors="colorSignatureRecentErrors"
             :auto-scan-on-startup="autoScanOnStartup"
+            :is-one-click-scan-running="startupAutoScanPipelineRunning"
             :is-background-scan-running="isBackgroundScanRunning"
             :is-background-scan-paused="isBackgroundScanPaused"
             :scan-progress-text="scanProgressText"
@@ -3302,8 +3446,13 @@ function formatError(error: unknown) {
           </section>
         </div>
         <footer class="folder-rule-editor__footer">
-          <button type="button" class="secondary-button" @click="saveFolderRuleDraft(false)">保存规则</button>
-          <button type="button" class="primary-button" @click="saveFolderRuleDraft(true)">保存并立即应用</button>
+          <button type="button" class="secondary-button folder-rule-editor__delete" @click="deleteFolderRuleDraft()">
+            删除规则
+          </button>
+          <div class="folder-rule-editor__footer-actions">
+            <button type="button" class="secondary-button" @click="saveFolderRuleDraft(false)">保存规则</button>
+            <button type="button" class="primary-button" @click="saveFolderRuleDraft(true)">保存并立即应用</button>
+          </div>
         </footer>
       </article>
     </div>
@@ -3474,13 +3623,13 @@ function formatError(error: unknown) {
             <p v-if="batchTagSuggestLoading" class="batch-action-modal__placeholder">搜索中...</p>
             <p v-else-if="batchTagDraft && batchTagSuggestions.length === 0" class="batch-action-modal__placeholder">暂无匹配标签</p>
           </div>
-          <div class="batch-action-modal__tag-actions">
-            <button type="button" class="secondary-button" @click="closeBatchTagModal()">取消</button>
-            <button type="button" class="primary-button" :disabled="batchTagPending.length === 0" @click="applyBatchPendingTags()">
-              添加以上标签
-            </button>
-          </div>
         </div>
+        <footer class="batch-action-modal__footer">
+          <button type="button" class="secondary-button" @click="closeBatchTagModal()">取消</button>
+          <button type="button" class="primary-button" :disabled="batchTagPending.length === 0" @click="applyBatchPendingTags()">
+            添加以上标签
+          </button>
+        </footer>
         <div v-if="batchTagCustomConflict" class="image-detail-modal__dialog-layer batch-action-modal__conflict-layer" @click.stop>
           <article class="image-detail-modal__dialog" @click.stop>
             <h4>标签已存在</h4>

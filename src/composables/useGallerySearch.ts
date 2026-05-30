@@ -889,6 +889,8 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       imageId,
       tagText: normalized,
     })
+    const latestLibrary = await invoke<TLibraryStore>('list_library')
+    options.library.value = latestLibrary
     if (activeImageDetailId.value !== imageId) return
     applyImageUserTagSummary(parseImageUserTagSummary(summaryRaw))
   }
@@ -914,6 +916,8 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       tagEn: normalized,
       tagZh: tagZh ?? null,
     })
+    const latestLibrary = await invoke<TLibraryStore>('list_library')
+    options.library.value = latestLibrary
     if (activeImageDetailId.value !== imageId) return
     applyImageUserTagSummary(parseImageUserTagSummary(summaryRaw))
   }

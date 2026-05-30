@@ -2768,14 +2768,35 @@ button {
 
 .folder-rule-editor__footer {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   gap: 8px;
   padding: 10px 16px 14px;
   border-top: 1px solid #2f3a45;
 }
 
+.folder-rule-editor__footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.folder-rule-editor__delete {
+  border-color: #704046;
+  color: #ffdbe1;
+}
+
+.folder-rule-editor__delete:hover {
+  border-color: #92535d;
+  background: rgb(120 55 68 / 0.32);
+}
+
 .batch-action-modal--tags {
   width: min(680px, calc(100vw - 48px));
+}
+
+.batch-action-modal--tags .batch-action-modal__body {
+  overflow: auto;
 }
 
 .batch-action-modal__header {
@@ -4600,6 +4621,16 @@ button {
 .app-shell.theme-light .folder-rule-editor__remove:hover:not(:disabled) {
   border-color: #a9b9ca;
   background: #eef4fb;
+}
+
+.app-shell.theme-light .folder-rule-editor__delete {
+  border-color: #e4b8bf;
+  color: #b42318;
+}
+
+.app-shell.theme-light .folder-rule-editor__delete:hover {
+  border-color: #d08e98;
+  background: #feecef;
 }
 
 .app-shell.theme-light .batch-action-modal {

@@ -304,6 +304,22 @@ pub struct TagManagementState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UserFolderRuleCondition {
+    pub logic: String,
+    pub source: String,
+    pub keyword: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFolderRule {
+    pub folder_id: i64,
+    pub conditions: Vec<UserFolderRuleCondition>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GallerySearchFilters {
     pub chinese_tag_ens: Vec<String>,
     pub english_query: String,
@@ -1120,12 +1136,22 @@ pub fn test_wd_swinv2_tagger(
     Ok(result)
 }
 
-fn start_scan_all_folders_worker(state: &AppState, with_tagging: bool) -> Result<bool, String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundScanJobMode {
+    CollectOnly,
+    CollectAndTag,
+    TagPendingOnly,
+}
+
+fn start_scan_all_folders_worker(state: &AppState, mode: BackgroundScanJobMode) -> Result<bool, String> {
     let mut running = state
         .background_scan_running
         .lock()
         .map_err(|_| "Background scan state is locked".to_string())?;
     if *running {
+        if matches!(mode, BackgroundScanJobMode::CollectOnly) {
+            return Ok(false);
+        }
         if let Ok(mut pending) = state.background_scan_pending.lock() {
             *pending = true;
         }
@@ -1159,30 +1185,68 @@ fn start_scan_all_folders_worker(state: &AppState, with_tagging: bool) -> Result
         wait_until_startup_cleanup_finished(&startup_cleanup_running);
         eprintln!("[wd-scan] worker started");
         loop {
+            let tag_pending_only = matches!(mode, BackgroundScanJobMode::TagPendingOnly);
             set_scan_progress(
                 &background_scan_progress,
                 BackgroundScanProgress {
                     running: true,
-                    phase: "collecting".to_string(),
+                    phase: if tag_pending_only {
+                        "tagging".to_string()
+                    } else {
+                        "collecting".to_string()
+                    },
                     ..BackgroundScanProgress::default()
                 },
             );
 
-            match scan_all_folders_and_collect_new_images(
-                &database_path,
-                &background_scan_progress,
-                &background_scan_pause_requested_flag,
-                &background_scan_stop_requested_flag,
-                with_tagging,
-            ) {
-                Ok(scan_result) => {
-                    if let Ok(mut cache) = library_cache.lock() {
-                        *cache = None;
+            let tag_queue_result = if tag_pending_only {
+                let conn = match open_database(&database_path) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        set_scan_progress_error(&background_scan_progress, &error);
+                        push_scan_progress_recent_error(&background_scan_progress, &error);
+                        eprintln!("[wd-tag] {error}");
+                        break;
                     }
-                    clear_optional_cache(&clip_vector_cache);
-                    clear_optional_cache(&atmosphere_signature_cache);
-                    clear_optional_cache(&color_signature_cache);
-                    if with_tagging {
+                };
+                let mut tag_queue_image_ids = match collect_pending_tag_image_ids(&conn) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        set_scan_progress_error(&background_scan_progress, &error);
+                        push_scan_progress_recent_error(&background_scan_progress, &error);
+                        eprintln!("[wd-tag] {error}");
+                        break;
+                    }
+                };
+                tag_queue_image_ids.sort();
+                tag_queue_image_ids.dedup();
+                set_scan_progress_phase(&background_scan_progress, "tagging");
+                set_scan_progress_queued_images(
+                    &background_scan_progress,
+                    tag_queue_image_ids.len() as i64,
+                );
+                Ok(ScanCollectResult { tag_queue_image_ids })
+            } else {
+                scan_all_folders_and_collect_new_images(
+                    &database_path,
+                    &background_scan_progress,
+                    &background_scan_pause_requested_flag,
+                    &background_scan_stop_requested_flag,
+                    matches!(mode, BackgroundScanJobMode::CollectAndTag),
+                )
+            };
+
+            match tag_queue_result {
+                Ok(scan_result) => {
+                    if !tag_pending_only {
+                        if let Ok(mut cache) = library_cache.lock() {
+                            *cache = None;
+                        }
+                        clear_optional_cache(&clip_vector_cache);
+                        clear_optional_cache(&atmosphere_signature_cache);
+                        clear_optional_cache(&color_signature_cache);
+                    }
+                    if matches!(mode, BackgroundScanJobMode::CollectAndTag | BackgroundScanJobMode::TagPendingOnly) {
                         if let Err(error) = tag_images_with_wd_model(
                             &database_path,
                             &scan_result.tag_queue_image_ids,
@@ -1262,11 +1326,15 @@ fn start_scan_all_folders_worker(state: &AppState, with_tagging: bool) -> Result
 }
 
 pub fn start_scan_all_folders_with_tagging(state: &AppState) -> Result<bool, String> {
-    start_scan_all_folders_worker(state, true)
+    start_scan_all_folders_worker(state, BackgroundScanJobMode::CollectAndTag)
 }
 
 pub fn start_scan_all_folders_collect_only(state: &AppState) -> Result<bool, String> {
-    start_scan_all_folders_worker(state, false)
+    start_scan_all_folders_worker(state, BackgroundScanJobMode::CollectOnly)
+}
+
+pub fn start_tag_pending_images_only(state: &AppState) -> Result<bool, String> {
+    start_scan_all_folders_worker(state, BackgroundScanJobMode::TagPendingOnly)
 }
 
 pub fn background_scan_status(state: &AppState) -> Result<BackgroundScanStatus, String> {
@@ -3246,6 +3314,15 @@ fn load_image_user_tag_summary(conn: &Connection, image_id: &str) -> Result<Imag
     })
 }
 
+fn refresh_library_cache_best_effort(state: &AppState, conn: &Connection) {
+    let Ok(store) = load_store(conn) else {
+        return;
+    };
+    if let Ok(mut cache) = state.library.lock() {
+        *cache = Some(store);
+    }
+}
+
 pub fn list_image_user_tags(image_id: String, state: &AppState) -> Result<ImageUserTagSummary, String> {
     sync_tag_dictionary_from_source_if_changed(state)?;
     let conn = open_database(&state.database_path)?;
@@ -3276,6 +3353,8 @@ pub fn add_image_user_custom_tag(
     )
     .map_err(|error| format!("Failed to add custom user tag: {error}"))?;
     upsert_user_custom_tag(&conn, &normalized)?;
+    apply_matching_user_folder_rules_for_image(&conn, &image_id)?;
+    refresh_library_cache_best_effort(state, &conn);
     load_image_user_tag_summary(&conn, &image_id)
 }
 
@@ -3323,6 +3402,8 @@ pub fn add_image_user_supplement_tag(
         params![image_id, normalized_tag_en, normalized_tag_zh, now],
     )
     .map_err(|error| format!("Failed to add supplement user tag: {error}"))?;
+    apply_matching_user_folder_rules_for_image(&conn, &image_id)?;
+    refresh_library_cache_best_effort(state, &conn);
     load_image_user_tag_summary(&conn, &image_id)
 }
 
@@ -3862,6 +3943,448 @@ pub fn search_gallery_image_ids(
         .map_err(|error| format!("Failed to run gallery search query: {error}"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Failed to run gallery search query: {error}"))
+}
+
+fn normalize_user_folder_rule_logic(logic: &str) -> Option<&'static str> {
+    match logic.trim().to_uppercase().as_str() {
+        "AND" => Some("AND"),
+        "OR" => Some("OR"),
+        "NOT" => Some("NOT"),
+        _ => None,
+    }
+}
+
+fn normalize_user_folder_rule_source(source: &str) -> Option<&'static str> {
+    match source.trim().to_lowercase().as_str() {
+        "danbooru" => Some("danbooru"),
+        "custom" => Some("custom"),
+        "filename" => Some("filename"),
+        _ => None,
+    }
+}
+
+fn normalize_user_folder_rule_conditions(
+    conditions: Vec<UserFolderRuleCondition>,
+) -> Result<Vec<UserFolderRuleCondition>, String> {
+    let mut normalized = Vec::<UserFolderRuleCondition>::with_capacity(conditions.len());
+    for condition in conditions {
+        let logic = normalize_user_folder_rule_logic(&condition.logic)
+            .ok_or_else(|| format!("Unsupported rule logic: {}", condition.logic))?;
+        let source = normalize_user_folder_rule_source(&condition.source)
+            .ok_or_else(|| format!("Unsupported rule source: {}", condition.source))?;
+        let keyword = condition.keyword.trim().to_string();
+        if keyword.is_empty() {
+            return Err("Rule keyword cannot be empty".to_string());
+        }
+        normalized.push(UserFolderRuleCondition {
+            logic: logic.to_string(),
+            source: source.to_string(),
+            keyword,
+        });
+    }
+    Ok(normalized)
+}
+
+fn user_folder_exists(conn: &Connection, folder_id: i64) -> Result<bool, String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM user_folders WHERE id = ?1)",
+            params![folder_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Failed to query user folder: {error}"))?;
+    Ok(exists != 0)
+}
+
+fn user_folder_is_leaf(conn: &Connection, folder_id: i64) -> Result<bool, String> {
+    let has_children: i64 = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM user_folders WHERE parent_id = ?1)",
+            params![folder_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Failed to query user folder children: {error}"))?;
+    Ok(has_children == 0)
+}
+
+fn load_user_folder_rule(
+    conn: &Connection,
+    folder_id: i64,
+) -> Result<Option<UserFolderRule>, String> {
+    let row = conn
+        .query_row(
+            "
+            SELECT rule_json, updated_at
+            FROM user_folder_rules
+            WHERE folder_id = ?1
+            ",
+            params![folder_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("Failed to load user folder rule: {error}"))?;
+    let Some((rule_json, updated_at)) = row else {
+        return Ok(None);
+    };
+    let parsed: Vec<UserFolderRuleCondition> = serde_json::from_str(&rule_json)
+        .map_err(|error| format!("Failed to parse stored user folder rule: {error}"))?;
+    Ok(Some(UserFolderRule {
+        folder_id,
+        conditions: normalize_user_folder_rule_conditions(parsed)?,
+        updated_at,
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct ImageFolderRuleMatchContext {
+    file_name_lower: String,
+    danbooru_terms: HashSet<String>,
+    custom_terms: HashSet<String>,
+}
+
+fn load_image_folder_rule_match_context(
+    conn: &Connection,
+    image_id: &str,
+) -> Result<Option<ImageFolderRuleMatchContext>, String> {
+    let image_row = conn
+        .query_row(
+            "
+            SELECT file_name, source, COALESCE(trashed, 0)
+            FROM images
+            WHERE id = ?1
+            ",
+            params![image_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Failed to load image info for folder rule: {error}"))?;
+    let Some((file_name, source, trashed)) = image_row else {
+        return Ok(None);
+    };
+    if source != "library" || trashed != 0 {
+        return Ok(None);
+    }
+
+    let mut danbooru_terms = HashSet::<String>::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT tag_en, COALESCE(tag_zh, '')
+                FROM image_auto_tags
+                WHERE image_id = ?1
+                ",
+            )
+            .map_err(|error| format!("Failed to prepare auto tag query for folder rule: {error}"))?;
+        let rows = stmt
+            .query_map(params![image_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("Failed to query auto tags for folder rule: {error}"))?;
+        for row in rows {
+            let (tag_en, tag_zh) =
+                row.map_err(|error| format!("Failed to query auto tags for folder rule: {error}"))?;
+            let normalized_en = tag_en.trim().to_lowercase();
+            if !normalized_en.is_empty() {
+                danbooru_terms.insert(normalized_en);
+            }
+            let normalized_zh = tag_zh.trim().to_lowercase();
+            if !normalized_zh.is_empty() {
+                danbooru_terms.insert(normalized_zh);
+            }
+        }
+    }
+    {
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT tag_en, COALESCE(tag_zh, '')
+                FROM image_user_supplement_tags
+                WHERE image_id = ?1
+                ",
+            )
+            .map_err(|error| format!("Failed to prepare supplement tag query for folder rule: {error}"))?;
+        let rows = stmt
+            .query_map(params![image_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("Failed to query supplement tags for folder rule: {error}"))?;
+        for row in rows {
+            let (tag_en, tag_zh) = row
+                .map_err(|error| format!("Failed to query supplement tags for folder rule: {error}"))?;
+            let normalized_en = tag_en.trim().to_lowercase();
+            if !normalized_en.is_empty() {
+                danbooru_terms.insert(normalized_en);
+            }
+            let normalized_zh = tag_zh.trim().to_lowercase();
+            if !normalized_zh.is_empty() {
+                danbooru_terms.insert(normalized_zh);
+            }
+        }
+    }
+
+    let mut custom_terms = HashSet::<String>::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT tag_text
+                FROM image_user_custom_tags
+                WHERE image_id = ?1
+                ",
+            )
+            .map_err(|error| format!("Failed to prepare custom tag query for folder rule: {error}"))?;
+        let rows = stmt
+            .query_map(params![image_id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Failed to query custom tags for folder rule: {error}"))?;
+        for row in rows {
+            let tag_text =
+                row.map_err(|error| format!("Failed to query custom tags for folder rule: {error}"))?;
+            let normalized = tag_text.trim().to_lowercase();
+            if !normalized.is_empty() {
+                custom_terms.insert(normalized);
+            }
+        }
+    }
+
+    Ok(Some(ImageFolderRuleMatchContext {
+        file_name_lower: file_name.to_lowercase(),
+        danbooru_terms,
+        custom_terms,
+    }))
+}
+
+fn evaluate_user_folder_rule_condition(
+    context: &ImageFolderRuleMatchContext,
+    condition: &UserFolderRuleCondition,
+) -> bool {
+    let keyword = condition.keyword.trim().to_lowercase();
+    if keyword.is_empty() {
+        return false;
+    }
+    match condition.source.as_str() {
+        "danbooru" => context.danbooru_terms.contains(&keyword),
+        "custom" => context.custom_terms.contains(&keyword),
+        "filename" => context.file_name_lower.contains(&keyword),
+        _ => false,
+    }
+}
+
+fn evaluate_user_folder_rule_conditions(
+    context: &ImageFolderRuleMatchContext,
+    conditions: &[UserFolderRuleCondition],
+) -> bool {
+    if conditions.is_empty() {
+        return false;
+    }
+    let first = evaluate_user_folder_rule_condition(context, &conditions[0]);
+    let mut result = if conditions[0].logic == "NOT" {
+        !first
+    } else {
+        first
+    };
+    for condition in conditions.iter().skip(1) {
+        let matched = evaluate_user_folder_rule_condition(context, condition);
+        match condition.logic.as_str() {
+            "AND" => result = result && matched,
+            "OR" => result = result || matched,
+            "NOT" => result = result && !matched,
+            _ => {}
+        }
+    }
+    result
+}
+
+fn load_active_leaf_user_folder_rules(
+    conn: &Connection,
+) -> Result<Vec<(i64, Vec<UserFolderRuleCondition>)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT r.folder_id, r.rule_json
+            FROM user_folder_rules r
+            JOIN user_folders f ON f.id = r.folder_id
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM user_folders c
+              WHERE c.parent_id = f.id
+            )
+            ",
+        )
+        .map_err(|error| format!("Failed to prepare user folder rules query: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|error| format!("Failed to query user folder rules: {error}"))?;
+    let mut rules = Vec::<(i64, Vec<UserFolderRuleCondition>)>::new();
+    for row in rows {
+        let (folder_id, rule_json) =
+            row.map_err(|error| format!("Failed to query user folder rules: {error}"))?;
+        let parsed = match serde_json::from_str::<Vec<UserFolderRuleCondition>>(&rule_json) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("[folder-rule] skip invalid rule json for folder {folder_id}: {error}");
+                continue;
+            }
+        };
+        let normalized = match normalize_user_folder_rule_conditions(parsed) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("[folder-rule] skip invalid rule for folder {folder_id}: {error}");
+                continue;
+            }
+        };
+        if normalized.is_empty() {
+            continue;
+        }
+        rules.push((folder_id, normalized));
+    }
+    Ok(rules)
+}
+
+fn apply_matching_user_folder_rules_for_image(
+    conn: &Connection,
+    image_id: &str,
+) -> Result<usize, String> {
+    let Some(context) = load_image_folder_rule_match_context(conn, image_id)? else {
+        return Ok(0);
+    };
+    let rules = load_active_leaf_user_folder_rules(conn)?;
+    if rules.is_empty() {
+        return Ok(0);
+    }
+    let now = now_ms();
+    let mut assigned = 0usize;
+    for (folder_id, conditions) in rules {
+        if !evaluate_user_folder_rule_conditions(&context, &conditions) {
+            continue;
+        }
+        let affected = conn
+            .execute(
+                "
+                INSERT OR IGNORE INTO image_user_folders (image_id, folder_id, assigned_at)
+                VALUES (?1, ?2, ?3)
+                ",
+                params![image_id, folder_id, now],
+            )
+            .map_err(|error| format!("Failed to apply folder rule assignment: {error}"))?;
+        assigned += affected;
+    }
+    Ok(assigned)
+}
+
+fn apply_user_folder_rule_to_library_images(
+    conn: &Connection,
+    folder_id: i64,
+    conditions: &[UserFolderRuleCondition],
+) -> Result<usize, String> {
+    if conditions.is_empty() {
+        return Ok(0);
+    }
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT id
+            FROM images
+            WHERE source = 'library'
+              AND COALESCE(trashed, 0) = 0
+            ",
+        )
+        .map_err(|error| format!("Failed to prepare folder rule apply candidates: {error}"))?;
+    let image_ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Failed to query folder rule apply candidates: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to query folder rule apply candidates: {error}"))?;
+    let now = now_ms();
+    let mut assigned = 0usize;
+    for image_id in image_ids {
+        let Some(context) = load_image_folder_rule_match_context(conn, &image_id)? else {
+            continue;
+        };
+        if !evaluate_user_folder_rule_conditions(&context, conditions) {
+            continue;
+        }
+        let affected = conn
+            .execute(
+                "
+                INSERT OR IGNORE INTO image_user_folders (image_id, folder_id, assigned_at)
+                VALUES (?1, ?2, ?3)
+                ",
+                params![image_id, folder_id, now],
+            )
+            .map_err(|error| format!("Failed to apply folder rule assignment: {error}"))?;
+        assigned += affected;
+    }
+    Ok(assigned)
+}
+
+pub fn get_user_folder_rule(folder_id: i64, state: &AppState) -> Result<Option<UserFolderRule>, String> {
+    let conn = open_database(&state.database_path)?;
+    if !user_folder_exists(&conn, folder_id)? {
+        return Err("User folder not found".to_string());
+    }
+    load_user_folder_rule(&conn, folder_id)
+}
+
+pub fn save_user_folder_rule(
+    folder_id: i64,
+    conditions: Vec<UserFolderRuleCondition>,
+    apply_now: bool,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "Library state is locked".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    if !user_folder_exists(&conn, folder_id)? {
+        return Err("User folder not found".to_string());
+    }
+    if !user_folder_is_leaf(&conn, folder_id)? {
+        return Err("Only leaf folders can have rules".to_string());
+    }
+
+    let normalized = normalize_user_folder_rule_conditions(conditions)?;
+    let now = now_ms();
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to open folder rule transaction: {error}"))?;
+    if normalized.is_empty() {
+        tx.execute(
+            "DELETE FROM user_folder_rules WHERE folder_id = ?1",
+            params![folder_id],
+        )
+        .map_err(|error| format!("Failed to clear folder rule: {error}"))?;
+    } else {
+        let rule_json = serde_json::to_string(&normalized)
+            .map_err(|error| format!("Failed to serialize folder rule: {error}"))?;
+        tx.execute(
+            "
+            INSERT INTO user_folder_rules (folder_id, rule_json, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(folder_id) DO UPDATE SET
+              rule_json = excluded.rule_json,
+              updated_at = excluded.updated_at
+            ",
+            params![folder_id, rule_json, now],
+        )
+        .map_err(|error| format!("Failed to save folder rule: {error}"))?;
+        if apply_now {
+            apply_user_folder_rule_to_library_images(&tx, folder_id, &normalized)?;
+        }
+    }
+    tx.commit()
+        .map_err(|error| format!("Failed to commit folder rule transaction: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
 }
 
 pub fn create_user_folder(
@@ -4981,6 +5504,13 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_image_user_folders_folder_id ON image_user_folders(folder_id);
+
+        CREATE TABLE IF NOT EXISTS user_folder_rules (
+          folder_id INTEGER PRIMARY KEY,
+          rule_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(folder_id) REFERENCES user_folders(id) ON DELETE CASCADE
+        );
 
         CREATE TABLE IF NOT EXISTS ai_models (
           id INTEGER PRIMARY KEY,
@@ -6573,6 +7103,7 @@ fn save_wd_tagger_result(
 
     tx.commit()
         .map_err(|error| format!("Failed to commit image tags: {error}"))?;
+    apply_matching_user_folder_rules_for_image(conn, image_id)?;
     Ok(())
 }
 

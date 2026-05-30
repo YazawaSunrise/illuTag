@@ -25,6 +25,7 @@ defineProps<{
   colorSignatureProgressPercent: number
   colorSignatureRecentErrors: string[]
   autoScanOnStartup: boolean
+  isOneClickScanRunning: boolean
   isBackgroundScanRunning: boolean
   isBackgroundScanPaused: boolean
   scanProgressText: string
@@ -97,6 +98,17 @@ defineProps<{
       />
       <span>启动时自动扫描</span>
     </label>
+
+    <div class="settings__thumbnail-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="isOneClickScanRunning"
+        @click="handlers.runOneClickScan()"
+      >
+        {{ isOneClickScanRunning ? '扫描/创建索引文件中…' : '扫描并创建所有索引文件' }}
+      </button>
+    </div>
 
     <div class="settings__thumbnail-actions">
       <button
@@ -343,7 +355,7 @@ defineProps<{
         :disabled="isBackgroundScanRunning"
         @click="handlers.startScanAllFolders()"
       >
-        {{ isBackgroundScanRunning ? '标注中...' : '开始标注标签' }}
+        {{ isBackgroundScanRunning ? '扫描/标注中...' : '开始标注标签' }}
       </button>
       <button
         class="secondary-button"

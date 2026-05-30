@@ -90,7 +90,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
   async function startScanAllFolders() {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      const started = await invoke<boolean>('start_scan_all_folders_with_tagging_command')
+      const started = await invoke<boolean>('start_tag_pending_images_only_command')
       if (started) {
         isBackgroundScanRunning.value = true
         isBackgroundScanPaused.value = false
@@ -116,6 +116,25 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
         scanProgressText.value = 'Scan task started'
       } else {
         scanProgressText.value = 'Scan task already running; queued next round'
+      }
+      await refreshBackgroundScanStatus()
+      return started
+    } catch (error) {
+      options.setErrorText(options.formatError(error))
+      return false
+    }
+  }
+
+  async function startTagPendingImagesOnly() {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const started = await invoke<boolean>('start_tag_pending_images_only_command')
+      if (started) {
+        isBackgroundScanRunning.value = true
+        isBackgroundScanPaused.value = false
+        scanProgressText.value = 'Tagging pending images started'
+      } else {
+        scanProgressText.value = 'Tagging task already running; queued next round'
       }
       await refreshBackgroundScanStatus()
       return started
@@ -436,6 +455,7 @@ export function useBackgroundScan(options: UseBackgroundScanOptions) {
     setAutoScanOnStartup,
     startScanAllFolders,
     startScanAllFoldersCollectOnly,
+    startTagPendingImagesOnly,
     pauseScanAllFolders,
     resumeScanAllFolders,
     stopScanAllFolders,

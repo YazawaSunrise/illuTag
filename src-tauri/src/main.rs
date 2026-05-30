@@ -36,6 +36,7 @@ use illutag_core::library::{
     thumbnail_generation_status,
     auto_arrange_reference_board, create_reference_board, create_reference_board_folder,
     create_user_folder, delete_reference_board, delete_reference_board_folder, delete_user_folder,
+    get_user_folder_rule, save_user_folder_rule, UserFolderRule, UserFolderRuleCondition,
     duplicate_reference_board_item, export_gallery_image_from_state, export_reference_board_item_from_state,
     import_reference_board_item_to_library, list_library_from_state,
     list_image_auto_tags, list_image_user_tags, add_image_user_custom_tag, remove_image_user_custom_tag,
@@ -50,7 +51,7 @@ use illutag_core::library::{
     restore_reference_board_item,
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
-    bring_reference_board_item_to_front, start_scan_all_folders_collect_only, start_scan_all_folders_with_tagging, test_wd_swinv2_tagger,
+    bring_reference_board_item_to_front, start_scan_all_folders_collect_only, start_scan_all_folders_with_tagging, start_tag_pending_images_only, test_wd_swinv2_tagger,
     AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
@@ -144,6 +145,11 @@ fn start_scan_all_folders_with_tagging_command(state: State<AppState>) -> Result
 #[tauri::command]
 fn start_scan_all_folders_collect_only_command(state: State<AppState>) -> Result<bool, String> {
     start_scan_all_folders_collect_only(&state)
+}
+
+#[tauri::command]
+fn start_tag_pending_images_only_command(state: State<AppState>) -> Result<bool, String> {
+    start_tag_pending_images_only(&state)
 }
 
 #[tauri::command]
@@ -511,6 +517,24 @@ fn reorder_user_folder_command(
 }
 
 #[tauri::command]
+fn get_user_folder_rule_command(
+    folder_id: i64,
+    state: State<AppState>,
+) -> Result<Option<UserFolderRule>, String> {
+    get_user_folder_rule(folder_id, &state)
+}
+
+#[tauri::command]
+fn save_user_folder_rule_command(
+    folder_id: i64,
+    conditions: Vec<UserFolderRuleCondition>,
+    apply_now: bool,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    save_user_folder_rule(folder_id, conditions, apply_now, &state)
+}
+
+#[tauri::command]
 fn assign_image_to_user_folder_command(
     image_id: String,
     folder_id: i64,
@@ -855,6 +879,7 @@ fn main() {
             test_wd_swinv2_tagger_command,
             start_scan_all_folders_with_tagging_command,
             start_scan_all_folders_collect_only_command,
+            start_tag_pending_images_only_command,
             background_scan_status_command,
             background_scan_progress_command,
             pause_background_scan_command,
@@ -909,6 +934,8 @@ fn main() {
             rename_user_folder_command,
             delete_user_folder_command,
             reorder_user_folder_command,
+            get_user_folder_rule_command,
+            save_user_folder_rule_command,
             assign_image_to_user_folder_command,
             remove_image_from_user_folder_command,
             create_reference_board_folder_command,

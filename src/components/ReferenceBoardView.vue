@@ -40,6 +40,8 @@ defineProps<{
     @wheel="handlers.zoomReferenceBoard($event)"
     @pointerdown="handlers.startBoardPan($event)"
     @contextmenu="handlers.openReferenceBoardCanvasMenu($event)"
+    @dragover.prevent="handlers.onReferenceBoardExternalImageDragOver($event)"
+    @drop.prevent="handlers.onReferenceBoardExternalImageDrop($event)"
   >
     <div v-if="!activeReferenceBoard" class="empty-panel">
       <h2>还没有打开参考板</h2>
