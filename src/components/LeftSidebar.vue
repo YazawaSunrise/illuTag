@@ -3,6 +3,7 @@ import AllApplication from '@icon-park/vue-next/es/icons/AllApplication'
 import Delete from '@icon-park/vue-next/es/icons/Delete'
 import FolderClose from '@icon-park/vue-next/es/icons/FolderClose'
 import FolderFocusOne from '@icon-park/vue-next/es/icons/FolderFocusOne'
+import FolderOne from '@icon-park/vue-next/es/icons/FolderOne'
 import FolderOpen from '@icon-park/vue-next/es/icons/FolderOpen'
 import Like from '@icon-park/vue-next/es/icons/Like'
 import SettingTwo from '@icon-park/vue-next/es/icons/SettingTwo'
@@ -35,7 +36,7 @@ defineProps<{
   visible: boolean
   sidebarPinned: boolean
   viewMode: ViewMode
-  activeUserFolderId: number | 'all' | 'random' | 'favorites' | 'trash'
+  activeUserFolderId: number | 'all' | 'random' | 'favorites' | 'unclassified' | 'trash'
   tagManagerOpen: boolean
   folderTree: FolderTreeItem[]
   folderDragOverId: number | null
@@ -98,6 +99,18 @@ defineProps<{
           <span class="sidebar__nav-content">
             <Like class="sidebar__nav-icon" theme="outline" :size="15" :stroke-width="3" :fill="['currentColor']" />
             <span class="sidebar__nav-label">我喜爱的</span>
+          </span>
+        </button>
+
+        <button
+          class="sidebar__nav-button"
+          type="button"
+          :class="{ 'is-active': viewMode === 'gallery' && activeUserFolderId === 'unclassified' }"
+          @click="handlers.showUnclassifiedImages()"
+        >
+          <span class="sidebar__nav-content">
+            <FolderOne class="sidebar__nav-icon" theme="outline" :size="15" :stroke-width="3" :fill="['currentColor']" />
+            <span class="sidebar__nav-label">待分类</span>
           </span>
         </button>
 

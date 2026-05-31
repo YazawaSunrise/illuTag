@@ -262,6 +262,7 @@ const {
   showAllImages,
   showRandomImages,
   showFavoriteImages,
+  showUnclassifiedImages,
   showTrashImages,
   onUserFolderRowClick,
   toggleFolderUnclassifiedOnly,
@@ -3134,6 +3135,7 @@ const leftSidebarHandlers = {
   showAllImages,
   showRandomImages,
   showFavoriteImages,
+  showUnclassifiedImages,
   showTrashImages,
   openTagManager: openTagManagerPanel,
   openFolderSectionMenu,
@@ -3304,10 +3306,11 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-function galleryScrollScopeKeyOf(folderId: number | 'all' | 'random' | 'favorites' | 'trash') {
+function galleryScrollScopeKeyOf(folderId: number | 'all' | 'random' | 'favorites' | 'unclassified' | 'trash') {
   if (folderId === 'all') return 'all'
   if (folderId === 'random') return 'random'
   if (folderId === 'favorites') return 'favorites'
+  if (folderId === 'unclassified') return 'unclassified'
   if (folderId === 'trash') return 'trash'
   return `folder:${folderId}`
 }
@@ -4371,7 +4374,8 @@ console.info(
         v-if="
           activeUserFolderId === 'all' ||
           activeUserFolderId === 'random' ||
-          activeUserFolderId === 'favorites'
+          activeUserFolderId === 'favorites' ||
+          activeUserFolderId === 'unclassified'
         "
         class="is-danger"
         type="button"

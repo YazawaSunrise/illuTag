@@ -63,7 +63,7 @@ const defaultFolderDragDelayMs = 160
 export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   options: UseFolderManagementOptions<TLibraryStore>,
 ) {
-  const activeUserFolderId = ref<number | 'all' | 'random' | 'favorites' | 'trash'>('all')
+  const activeUserFolderId = ref<number | 'all' | 'random' | 'favorites' | 'unclassified' | 'trash'>('all')
   const randomGalleryVisitSerial = ref(0)
   const unclassifiedOnlyParentFolderId = ref<number | null>(null)
   const newFolderName = ref('')
@@ -113,6 +113,10 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     const activeImages = galleryImages.filter((image) => !image.trashed)
     if (activeUserFolderId.value === 'favorites') {
       return activeImages.filter((image) => image.isFavorite)
+    }
+    if (activeUserFolderId.value === 'unclassified') {
+      const assignedIds = new Set(options.library.value.imageFolders.map((assignment) => assignment.imageId))
+      return activeImages.filter((image) => !assignedIds.has(image.id))
     }
     if (activeUserFolderId.value === 'all' || activeUserFolderId.value === 'random') return activeImages
 
@@ -348,6 +352,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
         activeUserFolderId.value !== 'all' &&
         activeUserFolderId.value !== 'random' &&
         activeUserFolderId.value !== 'favorites' &&
+        activeUserFolderId.value !== 'unclassified' &&
         activeUserFolderId.value !== 'trash' &&
         !options.library.value.userFolders.some((item) => item.id === activeUserFolderId.value)
       ) {
@@ -437,6 +442,13 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   function showFavoriteImages() {
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'favorites'
+    unclassifiedOnlyParentFolderId.value = null
+    options.activeReferenceBoardId.value = null
+  }
+
+  function showUnclassifiedImages() {
+    options.viewMode.value = 'gallery'
+    activeUserFolderId.value = 'unclassified'
     unclassifiedOnlyParentFolderId.value = null
     options.activeReferenceBoardId.value = null
   }
@@ -721,6 +733,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     showAllImages,
     showRandomImages,
     showFavoriteImages,
+    showUnclassifiedImages,
     showTrashImages,
     onUserFolderRowClick,
     toggleFolderUnclassifiedOnly,

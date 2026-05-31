@@ -598,6 +598,7 @@ impl Default for ColorSignatureGenerationProgress {
     }
 }
 
+#[derive(Clone)]
 struct ScannedImage {
     path: String,
     file_name: String,
@@ -7670,6 +7671,7 @@ fn scan_all_folders_and_collect_new_images(
         let folder_id = upsert_folder(&conn, &folder_path, scanned_at)?;
         let found = scan_images(Path::new(&folder_path), scanned_at, &mut seen_paths, &existing_meta);
         let found_count = found.len() as i64;
+        let mut newly_found_images = Vec::<ScannedImage>::new();
         for image in &found {
             let previous = existing_meta.get(&image.path).copied();
             let is_new = !known_paths.contains(&image.path);
@@ -7686,6 +7688,7 @@ fn scan_all_folders_and_collect_new_images(
             if is_new {
                 known_paths.insert(image.path.clone());
                 new_image_ids.push(image.path.clone());
+                newly_found_images.push(image.clone());
             } else if let Some(meta) = previous {
                 if meta.modified_at != image.modified_at
                     || meta.file_size != image.file_size
@@ -7700,7 +7703,12 @@ fn scan_all_folders_and_collect_new_images(
                 updated_images += 1;
             }
         }
-        assign_scanned_images_to_nearest_synced_parent_folder(&conn, &folder_path, &found, scanned_at)?;
+        assign_scanned_images_to_nearest_synced_parent_folder(
+            &conn,
+            &folder_path,
+            &newly_found_images,
+            scanned_at,
+        )?;
         scanned_folders += 1;
         set_scan_progress_new_images(progress, new_image_ids.len() as i64);
         set_scan_progress_updated_images(progress, updated_images);
