@@ -10,14 +10,14 @@ $tauriRoot = Join-Path $repoRoot "src-tauri"
 $scriptSourceDir = Join-Path $tauriRoot "scripts"
 $releaseExe = Join-Path $tauriRoot "target\release\illutag.exe"
 $portableRoot = Join-Path $repoRoot "release\portable"
-$portableAppDir = Join-Path $portableRoot "illuTag"
+$portableAppDir = Join-Path $portableRoot ("illuTag-{0}" -f $Version)
 $zipPath = Join-Path $portableRoot ("illuTag-portable-{0}.zip" -f $Version)
 
 if ($Build) {
   Push-Location $repoRoot
   try {
-    Write-Host "[portable] running npm run tauri build ..."
-    npm run tauri build
+    Write-Host "[portable] running npm run tauri build -- --no-bundle ..."
+    npm run tauri build -- --no-bundle
   } finally {
     Pop-Location
   }
