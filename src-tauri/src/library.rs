@@ -22,10 +22,22 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const WD_TAGGER_MODEL_NAME: &str = "wd-swinv2-tagger-v3";
 const CHINESE_CLIP_MODEL_ID: &str = "cn_clip_vit_base_patch16";
 const CHINESE_CLIP_MODEL_VERSION: &str = "onnx_v1";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+fn apply_hidden_child_window(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
 const THUMBNAIL_LONG_EDGE: u32 = 960;
 const THUMBNAIL_WEBP_QUALITY: f32 = 85.0;
 const THUMBNAIL_WORKER_COUNT: usize = 3;
@@ -1779,7 +1791,9 @@ pub fn test_wd_swinv2_tagger(
         return Err(format!("selected_tags.csv not found: {}", tags_path.display()));
     }
 
-    let output = Command::new("python")
+    let mut command = Command::new("python");
+    apply_hidden_child_window(&mut command);
+    let output = command
         .arg(&script_path)
         .arg("--image")
         .arg(&image.path)
@@ -7722,7 +7736,9 @@ fn spawn_wd_tagger_service(
     tags_path: &Path,
     script_path: &Path,
 ) -> Result<WdTaggerService, String> {
-    let mut child = Command::new("python")
+    let mut command = Command::new("python");
+    apply_hidden_child_window(&mut command);
+    let mut child = command
         .arg("-X")
         .arg("utf8")
         .arg(script_path)
@@ -9037,7 +9053,9 @@ fn ensure_clip_text_service_started(
 }
 
 fn spawn_clip_text_service(model_root: &Path, script_path: &Path) -> Result<ClipTextEncoderService, String> {
-    let mut child = Command::new("python")
+    let mut command = Command::new("python");
+    apply_hidden_child_window(&mut command);
+    let mut child = command
         .arg("-X")
         .arg("utf8")
         .arg(script_path)
@@ -9135,7 +9153,9 @@ fn ensure_clip_image_service_started(
 }
 
 fn spawn_clip_image_service(model_root: &Path, script_path: &Path) -> Result<ClipImageEncoderService, String> {
-    let mut child = Command::new("python")
+    let mut command = Command::new("python");
+    apply_hidden_child_window(&mut command);
+    let mut child = command
         .arg("-X")
         .arg("utf8")
         .arg(script_path)

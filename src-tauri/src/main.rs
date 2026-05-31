@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use illutag_core::library::{
     add_gallery_folder, add_image_to_reference_board, assign_image_to_user_folder,
     background_scan_progress,
