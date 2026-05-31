@@ -64,6 +64,11 @@ const statusText = ref('还没有添加图库文件夹')
 const errorText = ref('')
 const folderPathInput = ref('')
 const removeFolderConfirmPath = ref<string | null>(null)
+const removeFromFolderConfirmState = ref<null | {
+  imageId: string
+  targetFolderIds: number[]
+  message: string
+}>(null)
 const systemTrashMoveErrorMessage = ref<string | null>(null)
 const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
@@ -1921,6 +1926,10 @@ function closeRemoveFolderConfirm() {
   removeFolderConfirmPath.value = null
 }
 
+function closeRemoveFromFolderConfirm() {
+  removeFromFolderConfirmState.value = null
+}
+
 function closeSystemTrashMoveErrorDialog() {
   systemTrashMoveErrorMessage.value = null
 }
@@ -1930,6 +1939,39 @@ async function confirmRemoveFolder() {
   if (!folderPath) return
   removeFolderConfirmPath.value = null
   await removeFolder(folderPath)
+}
+
+async function removeImageFromFolderAssignments(imageId: string, targetFolderIds: number[]) {
+  if (targetFolderIds.length === 0) return
+  const { invoke } = await import('@tauri-apps/api/core')
+  if (targetFolderIds.length === 1) {
+    library.value = await invoke<LibraryStore>('remove_image_from_user_folder_command', {
+      imageId,
+      folderId: targetFolderIds[0],
+    })
+    return
+  }
+  let nextLibrary: LibraryStore | null = null
+  for (const folderId of targetFolderIds) {
+    nextLibrary = await invoke<LibraryStore>('remove_images_from_user_folder_command', {
+      imageIds: [imageId],
+      folderId,
+    })
+  }
+  if (nextLibrary) {
+    library.value = nextLibrary
+  }
+}
+
+async function confirmRemoveFromFolder() {
+  const pending = removeFromFolderConfirmState.value
+  if (!pending) return
+  removeFromFolderConfirmState.value = null
+  try {
+    await removeImageFromFolderAssignments(pending.imageId, pending.targetFolderIds)
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
 }
 
 function isEditableKeyboardTarget(event: KeyboardEvent) {
@@ -1954,6 +1996,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     endTagManagerTagDrag()
     closeTagManagerTagContextMenu()
     closeImageDetail()
+    closeRemoveFromFolderConfirm()
     closeGalleryImageContextMenu()
     cancelImageDrag()
     clearFolderPress()
@@ -2843,11 +2886,51 @@ async function toggleGalleryImageFavorite(imageId: string, favorite: boolean) {
 async function removeGalleryImageFromFolder(imageId: string) {
   if (typeof activeUserFolderId.value !== 'number') return
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('remove_image_from_user_folder_command', {
-      imageId,
-      folderId: activeUserFolderId.value,
-    })
+    const currentFolderId = activeUserFolderId.value
+    const childrenByParent = new Map<number, number[]>()
+    for (const folder of library.value.userFolders) {
+      if (folder.parentId == null) continue
+      const list = childrenByParent.get(folder.parentId) ?? []
+      list.push(folder.id)
+      childrenByParent.set(folder.parentId, list)
+    }
+
+    const scopedFolderIds = new Set<number>()
+    const stack = [currentFolderId]
+    while (stack.length > 0) {
+      const folderId = stack.pop()!
+      if (scopedFolderIds.has(folderId)) continue
+      scopedFolderIds.add(folderId)
+      for (const childId of childrenByParent.get(folderId) ?? []) {
+        stack.push(childId)
+      }
+    }
+
+    const assignedFolderIds = new Set(
+      library.value.imageFolders
+        .filter((assignment) => assignment.imageId === imageId && scopedFolderIds.has(assignment.folderId))
+        .map((assignment) => assignment.folderId),
+    )
+    if (assignedFolderIds.size === 0) return
+
+    const descendantFolderIds = [...assignedFolderIds].filter((folderId) => folderId !== currentFolderId)
+    if (descendantFolderIds.length > 0) {
+      const folderNameById = new Map(library.value.userFolders.map((folder) => [folder.id, folder.name]))
+      const names = descendantFolderIds
+        .map((folderId) => folderNameById.get(folderId))
+        .filter((name): name is string => Boolean(name))
+      const preview = names.slice(0, 3).join('、')
+      const more = names.length > 3 ? ` 等${names.length}个子文件夹` : ''
+      const folderText = preview || `共${descendantFolderIds.length}个子文件夹`
+      removeFromFolderConfirmState.value = {
+        imageId,
+        targetFolderIds: [...assignedFolderIds],
+        message: `此操作将从子文件夹 ${folderText}${more} 中移除该图片，是否继续？`,
+      }
+      return
+    }
+
+    await removeImageFromFolderAssignments(imageId, [...assignedFolderIds])
   } catch (error) {
     errorText.value = formatError(error)
   } finally {
@@ -3611,6 +3694,21 @@ console.info(
         <div class="image-detail-modal__dialog-actions">
           <button type="button" class="secondary-button" @click="closeRemoveFolderConfirm()">取消</button>
           <button type="button" class="danger-button" @click="confirmRemoveFolder()">确认移除</button>
+        </div>
+      </article>
+    </div>
+
+    <div
+      v-if="removeFromFolderConfirmState"
+      class="image-detail-modal__dialog-layer"
+      @click="closeRemoveFromFolderConfirm()"
+    >
+      <article class="image-detail-modal__dialog" @click.stop>
+        <h4>确认移除</h4>
+        <p class="image-detail-modal__dialog-text">{{ removeFromFolderConfirmState.message }}</p>
+        <div class="image-detail-modal__dialog-actions">
+          <button type="button" class="secondary-button" @click="closeRemoveFromFolderConfirm()">取消</button>
+          <button type="button" class="danger-button" @click="confirmRemoveFromFolder()">继续</button>
         </div>
       </article>
     </div>
@@ -4395,14 +4493,22 @@ console.info(
           移动到系统回收站
         </button>
       </template>
-      <button
-        v-else
-        class="is-danger"
-        type="button"
-        @click="removeGalleryImageFromFolder(galleryImageContextMenu.imageId)"
-      >
-        从文件夹中移除
-      </button>
+      <template v-else>
+        <button
+          class="is-danger"
+          type="button"
+          @click="removeGalleryImageFromFolder(galleryImageContextMenu.imageId)"
+        >
+          从文件夹中移除
+        </button>
+        <button
+          class="is-danger"
+          type="button"
+          @click="removeGalleryImageFromIndex(galleryImageContextMenu.imageId)"
+        >
+          移入回收站
+        </button>
+      </template>
       <button type="button" @click="copyGalleryImageToClipboard(galleryImageContextMenu.imageId)">复制</button>
       <button type="button" @click="exportGalleryImage(galleryImageContextMenu.imageId)">导出到本地</button>
     </div>
