@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         mpsc::{self, TrySendError},
     },
     thread,
@@ -36,6 +36,60 @@ fn apply_hidden_child_window(command: &mut Command) -> &mut Command {
     {
         command.creation_flags(CREATE_NO_WINDOW);
     }
+    command
+}
+
+fn resolve_python_executable_path() -> PathBuf {
+    static PYTHON_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
+    PYTHON_EXECUTABLE
+        .get_or_init(|| {
+            let mut candidates = Vec::<PathBuf>::new();
+            if let Ok(exe_path) = env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    candidates.push(exe_dir.join("runtime").join("python").join("python.exe"));
+                    candidates.push(
+                        exe_dir
+                            .join("..")
+                            .join("runtime")
+                            .join("python")
+                            .join("python.exe"),
+                    );
+                    candidates.push(
+                        exe_dir
+                            .join("resources")
+                            .join("runtime")
+                            .join("python")
+                            .join("python.exe"),
+                    );
+                }
+            }
+            if let Ok(cwd) = env::current_dir() {
+                candidates.push(cwd.join("runtime").join("python").join("python.exe"));
+                candidates.push(
+                    cwd.join("src-tauri")
+                        .join("runtime")
+                        .join("python")
+                        .join("python.exe"),
+                );
+            }
+            for candidate in candidates {
+                if candidate.is_file() {
+                    eprintln!(
+                        "[python-runtime] using embedded python: {}",
+                        candidate.display()
+                    );
+                    return candidate;
+                }
+            }
+            eprintln!("[python-runtime] using system python from PATH");
+            PathBuf::from("python")
+        })
+        .clone()
+}
+
+fn python_command() -> Command {
+    let mut command = Command::new(resolve_python_executable_path());
+    apply_hidden_child_window(&mut command);
     command
 }
 const THUMBNAIL_LONG_EDGE: u32 = 960;
@@ -1791,9 +1845,10 @@ pub fn test_wd_swinv2_tagger(
         return Err(format!("selected_tags.csv not found: {}", tags_path.display()));
     }
 
-    let mut command = Command::new("python");
-    apply_hidden_child_window(&mut command);
+    let mut command = python_command();
     let output = command
+        .arg("-X")
+        .arg("utf8")
         .arg(&script_path)
         .arg("--image")
         .arg(&image.path)
@@ -7736,8 +7791,7 @@ fn spawn_wd_tagger_service(
     tags_path: &Path,
     script_path: &Path,
 ) -> Result<WdTaggerService, String> {
-    let mut command = Command::new("python");
-    apply_hidden_child_window(&mut command);
+    let mut command = python_command();
     let mut child = command
         .arg("-X")
         .arg("utf8")
@@ -9053,8 +9107,7 @@ fn ensure_clip_text_service_started(
 }
 
 fn spawn_clip_text_service(model_root: &Path, script_path: &Path) -> Result<ClipTextEncoderService, String> {
-    let mut command = Command::new("python");
-    apply_hidden_child_window(&mut command);
+    let mut command = python_command();
     let mut child = command
         .arg("-X")
         .arg("utf8")
@@ -9153,8 +9206,7 @@ fn ensure_clip_image_service_started(
 }
 
 fn spawn_clip_image_service(model_root: &Path, script_path: &Path) -> Result<ClipImageEncoderService, String> {
-    let mut command = Command::new("python");
-    apply_hidden_child_window(&mut command);
+    let mut command = python_command();
     let mut child = command
         .arg("-X")
         .arg("utf8")
