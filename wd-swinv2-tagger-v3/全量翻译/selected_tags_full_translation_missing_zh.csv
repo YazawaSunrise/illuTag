@@ -1,5 +1,0 @@
-﻿tag_id,name,category,count,zh_name,zh_name_2,source,confidence,note,donmai_url,api_status
-9999999,general,9,1589178,,,danbooru_api_no_chinese,low,auth_failed_used_anonymous,https://danbooru.donmai.us/wiki_pages/general,ok
-9999998,sensitive,9,3994361,,,danbooru_api_no_chinese,low,auth_failed_used_anonymous,https://danbooru.donmai.us/wiki_pages/sensitive,ok
-9999997,questionable,9,892496,,,danbooru_api_no_chinese,low,auth_failed_used_anonymous,https://danbooru.donmai.us/wiki_pages/questionable,ok
-9999996,explicit,9,706509,,,danbooru_api_no_chinese,low,auth_failed_used_anonymous,https://danbooru.donmai.us/wiki_pages/explicit,ok

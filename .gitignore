@@ -32,4 +32,7 @@ Thumbs.db
 
 # Large local model assets
 model/
-wd-swinv2-tagger-v3/model.onnx
+wd-swinv2-tagger-v3/**
+!wd-swinv2-tagger-v3/
+!wd-swinv2-tagger-v3/selected_tags.csv
+!wd-swinv2-tagger-v3/selected_tags_full_translation.csv
