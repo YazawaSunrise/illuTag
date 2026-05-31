@@ -3,6 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function () {
+        var now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+        console.info('[startup-prof] index.html inline_head_ms=' + now)
+      })()
+    </script>
     <title>illuTag</title>
   </head>
   <body>

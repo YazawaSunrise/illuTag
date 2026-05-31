@@ -19,7 +19,7 @@ use std::{
         mpsc::{self, TrySendError},
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
 
@@ -636,17 +636,40 @@ impl Ord for NaturalLanguageSearchHeapEntry {
 }
 
 pub fn list_library_from_state(state: &AppState) -> Result<LibraryStore, String> {
+    let started = Instant::now();
     let mut library = state
         .library
         .lock()
         .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
 
-    if library.is_none() {
-        let conn = open_database(&state.database_path)?;
-        *library = Some(load_store(&conn)?);
+    if let Some(cached) = library.as_ref() {
+        eprintln!(
+            "[startup-prof] list_library_from_state cache_hit=true images={} total_ms={}",
+            cached.images.len(),
+            started.elapsed().as_millis()
+        );
+        return Ok(cached.clone());
     }
 
-    Ok(library.clone().unwrap_or_default())
+    let open_started = Instant::now();
+    let conn = open_database(&state.database_path)?;
+    let open_ms = open_started.elapsed().as_millis();
+
+    let load_started = Instant::now();
+    let store = load_store(&conn)?;
+    let load_ms = load_started.elapsed().as_millis();
+    let image_count = store.images.len();
+    *library = Some(store.clone());
+
+    eprintln!(
+        "[startup-prof] list_library_from_state cache_hit=false open_db_ms={} load_store_ms={} total_ms={} images={}",
+        open_ms,
+        load_ms,
+        started.elapsed().as_millis(),
+        image_count
+    );
+
+    Ok(store)
 }
 
 pub fn add_gallery_folder(folder_path: String, state: &AppState) -> Result<LibraryStore, String> {
@@ -6822,14 +6845,62 @@ fn ensure_user_folder_source_metadata(conn: &Connection) -> Result<(), String> {
 }
 
 fn load_store(conn: &Connection) -> Result<LibraryStore, String> {
+    let started = Instant::now();
+    let t0 = Instant::now();
+    let folders = load_folders(conn)?;
+    let folders_ms = t0.elapsed().as_millis();
+
+    let t1 = Instant::now();
+    let images = load_images(conn)?;
+    let images_ms = t1.elapsed().as_millis();
+
+    let t2 = Instant::now();
+    let user_folders = load_user_folders(conn)?;
+    let user_folders_ms = t2.elapsed().as_millis();
+
+    let t3 = Instant::now();
+    let image_folders = load_image_folder_assignments(conn)?;
+    let image_folders_ms = t3.elapsed().as_millis();
+
+    let t4 = Instant::now();
+    let reference_board_folders = load_reference_board_folders(conn)?;
+    let reference_board_folders_ms = t4.elapsed().as_millis();
+
+    let t5 = Instant::now();
+    let reference_boards = load_reference_boards(conn)?;
+    let reference_boards_ms = t5.elapsed().as_millis();
+
+    let t6 = Instant::now();
+    let reference_board_items = load_reference_board_items(conn)?;
+    let reference_board_items_ms = t6.elapsed().as_millis();
+
+    eprintln!(
+        "[startup-prof] load_store folders_ms={} images_ms={} user_folders_ms={} image_folders_ms={} ref_folders_ms={} ref_boards_ms={} ref_items_ms={} total_ms={} counts=folders:{} images:{} user_folders:{} image_folders:{} ref_folders:{} ref_boards:{} ref_items:{}",
+        folders_ms,
+        images_ms,
+        user_folders_ms,
+        image_folders_ms,
+        reference_board_folders_ms,
+        reference_boards_ms,
+        reference_board_items_ms,
+        started.elapsed().as_millis(),
+        folders.len(),
+        images.len(),
+        user_folders.len(),
+        image_folders.len(),
+        reference_board_folders.len(),
+        reference_boards.len(),
+        reference_board_items.len(),
+    );
+
     Ok(LibraryStore {
-        folders: load_folders(conn)?,
-        images: load_images(conn)?,
-        user_folders: load_user_folders(conn)?,
-        image_folders: load_image_folder_assignments(conn)?,
-        reference_board_folders: load_reference_board_folders(conn)?,
-        reference_boards: load_reference_boards(conn)?,
-        reference_board_items: load_reference_board_items(conn)?,
+        folders,
+        images,
+        user_folders,
+        image_folders,
+        reference_board_folders,
+        reference_boards,
+        reference_board_items,
     })
 }
 

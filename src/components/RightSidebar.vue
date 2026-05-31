@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { FolderClose, FolderOpen, Notepad, Pin } from '@icon-park/vue-next'
+import FolderClose from '@icon-park/vue-next/es/icons/FolderClose'
+import FolderOpen from '@icon-park/vue-next/es/icons/FolderOpen'
+import Notepad from '@icon-park/vue-next/es/icons/Notepad'
+import Pin from '@icon-park/vue-next/es/icons/Pin'
 
 type ReferenceBoardRow =
   | { kind: 'folder'; id: number; name: string; hasBoards: boolean; isExpanded: boolean }

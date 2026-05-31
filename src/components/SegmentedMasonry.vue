@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { Check, Like } from '@icon-park/vue-next'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import Check from '@icon-park/vue-next/es/icons/Check'
+import Like from '@icon-park/vue-next/es/icons/Like'
 import type { GalleryLayoutItem } from '../types/gallery'
 
 const props = defineProps<{
@@ -17,7 +18,11 @@ const dragImageId = computed(() => props.activeDragImageId ?? null)
 const favoriteImageIdSet = computed(() => new Set(props.favoriteImageIds ?? []))
 const batchSelectedImageIdSet = computed(() => new Set(props.batchSelectedImageIds ?? []))
 const animatingFavoriteImageId = ref<string | null>(null)
+const startupImageLoadCount = ref(0)
+const startupImageErrorCount = ref(0)
+const masonryRootEl = ref<HTMLElement | null>(null)
 let favoriteAnimationTimer: number | null = null
+let startupImageEventTimer: number | null = null
 
 const emit = defineEmits<{
   imagePointerDown: [item: GalleryLayoutItem, event: PointerEvent]
@@ -49,10 +54,41 @@ function onFavoriteClick(item: GalleryLayoutItem) {
   }, 240)
   emit('imageFavoriteToggle', item.id, nextFavorite)
 }
+
+function onItemImageLoad() {
+  startupImageLoadCount.value += 1
+}
+
+function onItemImageError() {
+  startupImageErrorCount.value += 1
+}
+
+onMounted(() => {
+  const imgNodes = masonryRootEl.value?.querySelectorAll('img') ?? []
+  const imgNodeCount = imgNodes.length
+  const imgCompleteCount = Array.from(imgNodes).filter((img) => img.complete).length
+  console.info(
+    `[startup-prof] SegmentedMasonry mounted_ms=${performance.now().toFixed(1)} first_render_items=${props.items.length} img_nodes=${imgNodeCount} img_complete=${imgCompleteCount}`,
+  )
+  startupImageEventTimer = window.setTimeout(() => {
+    startupImageEventTimer = null
+    console.info(
+      `[startup-prof] SegmentedMasonry first_img_events load=${startupImageLoadCount.value} error=${startupImageErrorCount.value} window_ms=5000`,
+    )
+  }, 5000)
+})
+
+onBeforeUnmount(() => {
+  if (startupImageEventTimer !== null) {
+    window.clearTimeout(startupImageEventTimer)
+    startupImageEventTimer = null
+  }
+})
 </script>
 
 <template>
   <div
+    ref="masonryRootEl"
     class="masonry"
     :style="{ height: `${totalHeight}px`, width: `${contentWidth ?? 0}px`, margin: '0 auto' }"
   >
@@ -77,7 +113,7 @@ function onFavoriteClick(item: GalleryLayoutItem) {
       @click="onItemClick(item, $event)"
       @contextmenu="$emit('imageContextMenu', item, $event)"
     >
-      <img :src="item.thumbnailUrl" alt="" draggable="false" />
+      <img :src="item.thumbnailUrl" alt="" draggable="false" @load="onItemImageLoad" @error="onItemImageError" />
       <span v-if="batchMode && batchSelectedImageIdSet.has(item.id)" class="masonry__batch-check" aria-hidden="true">
         <Check
           class="masonry__batch-check-icon"

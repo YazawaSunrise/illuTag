@@ -1,7 +1,9 @@
 ﻿<script setup lang="ts">
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { FolderClose, FolderOpen, Pushpin } from '@icon-park/vue-next'
+import FolderClose from '@icon-park/vue-next/es/icons/FolderClose'
+import FolderOpen from '@icon-park/vue-next/es/icons/FolderOpen'
+import Pushpin from '@icon-park/vue-next/es/icons/Pushpin'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import GalleryView from './components/GalleryView.vue'
 import AppOverlayLayer from './components/AppOverlayLayer.vue'
@@ -35,10 +37,14 @@ import type {
   ViewMode,
 } from './types/app-state'
 
+const appSetupStartMs = performance.now()
+console.info(`[startup-prof] App.vue setup_start_ms=${appSetupStartMs.toFixed(1)}`)
+
 const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoardFolderIds'
 const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
 const autoScanOnStartupStorageKey = 'illutag.autoScanOnStartup'
 const imageDragDelayMs = 120
+const startupAutoScanDelayMs = 3000
 const sidebarHoverOpen = ref(false)
 const rightSidebarHoverOpen = ref(false)
 const viewMode = ref<ViewMode>('gallery')
@@ -1503,11 +1509,13 @@ const {
 })
 
 onMounted(async () => {
+  const mountedStart = performance.now()
+  console.info(`[startup-prof] App.vue onMounted_start_ms=${mountedStart.toFixed(1)}`)
   initAppSettingsFromStorage()
   expandedReferenceBoardFolderIds.value = readStoredIdSet(expandedReferenceBoardFolderIdsStorageKey)
   previewReferenceBoardIds.value = readStoredIdSet(previewReferenceBoardIdsStorageKey)
   initAutoScanOnStartupFromStorage()
-  await loadLibrary()
+  void loadLibrary()
   handleWindowResize()
   window.addEventListener('resize', handleWindowResize)
   window.addEventListener('pointermove', moveImageDrag)
@@ -1535,14 +1543,17 @@ onMounted(async () => {
   startColorSignatureGenerationPolling()
   void startStartupCleanup()
   if (autoScanOnStartup.value) {
-    void runStartupAutoScanPipeline()
+    await nextTick()
+    scheduleStartupAutoScanPipeline()
   }
   if (thumbnailCacheEnabled.value && !isBackgroundScanRunning.value && !autoScanOnStartup.value) {
     void startThumbnailGeneration()
   }
+  console.info(`[startup-prof] App.vue onMounted_end_ms=${performance.now().toFixed(1)}`)
 })
 
 const startupAutoScanPipelineRunning = ref(false)
+const startupAutoScanTimer = ref<number | null>(null)
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => {
@@ -1560,6 +1571,20 @@ async function waitUntilIdle(refresh: () => Promise<void>, isRunning: () => bool
 
 async function runStartupAutoScanPipeline() {
   await runOneClickScanPipeline(async () => await startAutoScanIfEnabled())
+}
+
+function clearStartupAutoScanTimer() {
+  if (startupAutoScanTimer.value === null) return
+  window.clearTimeout(startupAutoScanTimer.value)
+  startupAutoScanTimer.value = null
+}
+
+function scheduleStartupAutoScanPipeline(delayMs = startupAutoScanDelayMs) {
+  clearStartupAutoScanTimer()
+  startupAutoScanTimer.value = window.setTimeout(() => {
+    startupAutoScanTimer.value = null
+    void runStartupAutoScanPipeline()
+  }, Math.max(0, delayMs))
 }
 
 async function runOneClickScanPipeline(
@@ -1606,6 +1631,7 @@ async function runOneClickScan() {
 }
 
 onUnmounted(() => {
+  clearStartupAutoScanTimer()
   clearTagManagerDragGhost()
   clearSidebarHoverCloseTimer()
   clearRightSidebarHoverCloseTimer()
@@ -1757,6 +1783,9 @@ watch(isBackgroundScanRunning, (running, wasRunning) => {
 
 async function loadLibrary(options?: { silent?: boolean }) {
   const silent = Boolean(options?.silent)
+  const begin = performance.now()
+  let assigned = false
+  console.info(`[startup-prof] loadLibrary start_ms=${begin.toFixed(1)} silent=${silent}`)
   if (!silent) {
     isLoading.value = true
     errorText.value = ''
@@ -1764,7 +1793,16 @@ async function loadLibrary(options?: { silent?: boolean }) {
 
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('list_library')
+    console.info(`[startup-prof] loadLibrary invoke_start_ms=${performance.now().toFixed(1)} silent=${silent}`)
+    const nextLibrary = await invoke<LibraryStore>('list_library')
+    console.info(
+      `[startup-prof] loadLibrary invoke_return_ms=${performance.now().toFixed(1)} silent=${silent} images=${nextLibrary.images.length}`,
+    )
+    library.value = nextLibrary
+    assigned = true
+    console.info(
+      `[startup-prof] loadLibrary assigned_ms=${performance.now().toFixed(1)} silent=${silent} images=${library.value.images.length}`,
+    )
     for (const board of library.value.referenceBoards) {
       ensureBoardCanvasBoundsFor(board.id)
     }
@@ -1774,10 +1812,19 @@ async function loadLibrary(options?: { silent?: boolean }) {
       errorText.value = formatError(error)
     }
   } finally {
+    console.info(
+      `[startup-prof] loadLibrary total_ms=${(performance.now() - begin).toFixed(1)} silent=${silent}`,
+    )
     if (!silent) {
       isLoading.value = false
     }
+    if (assigned) {
+      console.info(`[startup-prof] loadLibrary post_assign_before_nextTick_ms=${performance.now().toFixed(1)} silent=${silent}`)
+    }
     await nextTick()
+    if (assigned) {
+      console.info(`[startup-prof] loadLibrary post_assign_after_nextTick_ms=${performance.now().toFixed(1)} silent=${silent}`)
+    }
     updateViewportSize()
   }
 }
@@ -3282,6 +3329,10 @@ async function setExternalImageSearchFromGalleryDrag(imageId: string) {
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
+
+console.info(
+  `[startup-prof] App.vue setup_end_ms=${performance.now().toFixed(1)} duration_ms=${(performance.now() - appSetupStartMs).toFixed(1)}`,
+)
 </script>
 
 <template>

@@ -59,12 +59,22 @@ use illutag_core::library::{
     AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, BatchSupplementTagInput, BatchSystemTrashResult, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 use tauri::{Manager, State};
 
 #[tauri::command]
 fn list_library(state: State<AppState>) -> Result<LibraryStore, String> {
-    list_library_from_state(&state)
+    let started = Instant::now();
+    eprintln!("[startup-prof] list_library_command begin");
+    let result = list_library_from_state(&state);
+    eprintln!(
+        "[startup-prof] list_library_command total_ms={}",
+        started.elapsed().as_millis()
+    );
+    result
 }
 
 #[tauri::command]

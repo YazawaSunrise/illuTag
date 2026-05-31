@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Rotate, Scale } from '@icon-park/vue-next'
+import Rotate from '@icon-park/vue-next/es/icons/Rotate'
+import Scale from '@icon-park/vue-next/es/icons/Scale'
 
 type ReferenceBoard = {
   id: number

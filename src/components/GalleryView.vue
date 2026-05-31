@@ -1,7 +1,8 @@
 ﻿<script setup lang="ts">
-import { LoadingOne, Search } from '@icon-park/vue-next'
+import LoadingOne from '@icon-park/vue-next/es/icons/LoadingOne'
+import Search from '@icon-park/vue-next/es/icons/Search'
 import CircleDoubleUp from '@icon-park/vue-next/es/icons/CircleDoubleUp'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import SegmentedMasonry from './SegmentedMasonry.vue'
 import type { GalleryLayoutItem } from '../types/gallery'
 
@@ -130,8 +131,11 @@ function syncSearchViewportState() {
   )
 }
 
-onMounted(() => {
+onMounted(async () => {
+  console.info(`[startup-prof] GalleryView mounted_ms=${performance.now().toFixed(1)}`)
+  console.info(`[startup-prof] GalleryView first_setGalleryElement_before_ms=${performance.now().toFixed(1)}`)
   props.handlers.setGalleryElement(gallerySectionEl.value)
+  console.info(`[startup-prof] GalleryView first_setGalleryElement_after_ms=${performance.now().toFixed(1)}`)
   if (gallerySectionEl.value) {
     props.handlers.onGalleryScroll(gallerySectionEl.value.scrollTop, gallerySectionEl.value.clientHeight)
   }
@@ -150,6 +154,11 @@ onMounted(() => {
   }
   window.addEventListener('resize', scheduleSearchViewportSync, { passive: true })
   window.addEventListener('pointermove', trackPointerPosition, { passive: true })
+  await nextTick()
+  const firstScreenImgNodes = gallerySectionEl.value?.querySelectorAll('.masonry__item img').length ?? 0
+  console.info(
+    `[startup-prof] GalleryView first_screen_img_nodes=${firstScreenImgNodes}`,
+  )
 })
 
 onBeforeUnmount(() => {

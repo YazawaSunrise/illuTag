@@ -1,16 +1,14 @@
 <script setup lang="ts">
-import {
-  AllApplication,
-  Delete,
-  FolderClose,
-  FolderFocusOne,
-  FolderOpen,
-  Like,
-  SettingTwo,
-  ShuffleOne,
-  Tag,
-  WaterfallsV,
-} from '@icon-park/vue-next'
+import AllApplication from '@icon-park/vue-next/es/icons/AllApplication'
+import Delete from '@icon-park/vue-next/es/icons/Delete'
+import FolderClose from '@icon-park/vue-next/es/icons/FolderClose'
+import FolderFocusOne from '@icon-park/vue-next/es/icons/FolderFocusOne'
+import FolderOpen from '@icon-park/vue-next/es/icons/FolderOpen'
+import Like from '@icon-park/vue-next/es/icons/Like'
+import SettingTwo from '@icon-park/vue-next/es/icons/SettingTwo'
+import ShuffleOne from '@icon-park/vue-next/es/icons/ShuffleOne'
+import Tag from '@icon-park/vue-next/es/icons/Tag'
+import WaterfallsV from '@icon-park/vue-next/es/icons/WaterfallsV'
 
 type ViewMode = 'gallery' | 'settings' | 'board'
 
