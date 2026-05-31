@@ -52,6 +52,7 @@ defineProps<{
       <div>
         <h2>Tips</h2>
         <p>推荐按从上往下的顺序进行生成缩略图、自然语言等工作，或直接点击“扫描并创建所有索引文件”</p>
+        
       </div>
     </div>
 
@@ -241,7 +242,7 @@ defineProps<{
         :disabled="isAtmosphereGenerationRunning"
         @click="handlers.startAtmosphereGeneration()"
       >
-        开始生成氛围特征
+        开始计算氛围特征
       </button>
       <button
         class="secondary-button"
@@ -303,7 +304,7 @@ defineProps<{
         :disabled="isColorSignatureGenerationRunning"
         @click="handlers.startColorSignatureGeneration()"
       >
-        开始生成配色特征
+        开始计算配色特征
       </button>
       <button
         class="secondary-button"

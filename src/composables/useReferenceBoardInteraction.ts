@@ -215,20 +215,19 @@ export function useReferenceBoardInteraction<TLibraryStore extends LibraryStoreL
   }
 
   function startBoardPan(event: PointerEvent) {
-    if (event.button !== 2) return
     const target = event.target as HTMLElement | null
     const cardElement = target?.closest<HTMLElement>('.reference-board-card') ?? null
-    const cardItemIdRaw = cardElement?.dataset.referenceBoardItemId
-    const cardItemId = cardItemIdRaw ? Number(cardItemIdRaw) : null
-    const isSelectedCard =
-      cardItemId !== null &&
-      Number.isFinite(cardItemId) &&
-      selectedReferenceBoardItemId.value === cardItemId
-    if (cardElement && !isSelectedCard) return
-    closeReferenceBoardCanvasMenu()
-    if (!isSelectedCard) {
-      selectedReferenceBoardItemId.value = null
+
+    // Left click on blank canvas should clear current selection.
+    if (event.button === 0) {
+      if (!cardElement && selectedReferenceBoardItemId.value !== null) {
+        selectedReferenceBoardItemId.value = null
+      }
+      return
     }
+
+    if (event.button !== 2) return
+    closeReferenceBoardCanvasMenu()
 
     boardInteraction.value = {
       itemId: -1,
