@@ -1308,7 +1308,48 @@ const galleryScrollProgress = computed(() => {
   return clamp(galleryScrollTop.value / maxScroll, 0, 1)
 })
 
-const showGalleryScrollProgress = computed(() => viewMode.value === 'gallery' && galleryScrollableHeight.value > 1)
+const settingsScrollableHeight = ref(0)
+const settingsScrollTop = ref(0)
+
+function syncSettingsScrollMetricsFromElement(element: HTMLElement) {
+  const maxScroll = Math.max(0, element.scrollHeight - element.clientHeight)
+  settingsScrollableHeight.value = maxScroll
+  settingsScrollTop.value = clamp(element.scrollTop, 0, maxScroll)
+}
+
+function onSettingsScroll(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) return
+  syncSettingsScrollMetricsFromElement(target)
+}
+
+function refreshSettingsScrollMetrics() {
+  const element = document.querySelector<HTMLElement>('.settings')
+  if (!element) {
+    settingsScrollableHeight.value = 0
+    settingsScrollTop.value = 0
+    return
+  }
+  syncSettingsScrollMetricsFromElement(element)
+}
+
+const settingsScrollProgress = computed(() => {
+  const maxScroll = settingsScrollableHeight.value
+  if (maxScroll <= 0) return 0
+  return clamp(settingsScrollTop.value / maxScroll, 0, 1)
+})
+
+const showWorkspaceScrollProgress = computed(() => {
+  if (viewMode.value === 'gallery') return galleryScrollableHeight.value > 1
+  if (viewMode.value === 'settings') return settingsScrollableHeight.value > 1
+  return false
+})
+
+const workspaceScrollProgress = computed(() => {
+  if (viewMode.value === 'gallery') return galleryScrollProgress.value
+  if (viewMode.value === 'settings') return settingsScrollProgress.value
+  return 0
+})
 
 const {
   autoScanOnStartup,
@@ -1769,6 +1810,9 @@ watch(
       restoreGalleryScrollPosition(nextScopeKey)
       await nextTick()
       updateViewportSize()
+    } else if (nextViewMode === 'settings') {
+      await nextTick()
+      refreshSettingsScrollMetrics()
     }
   },
 )
@@ -2339,6 +2383,7 @@ function updateStatus() {
 
 function handleWindowResize() {
   updateViewportSize()
+  refreshSettingsScrollMetrics()
   void refreshWindowMaximized()
 }
 
@@ -3210,6 +3255,7 @@ const settingsViewHandlers = {
     folderPathInput.value = value
   },
   removeFolder: openRemoveFolderConfirm,
+  onSettingsScroll,
 }
 
 const leftSidebarHandlers = {
@@ -3505,6 +3551,7 @@ console.info(
       :active-user-folder-id="activeUserFolderId"
       :tag-manager-open="tagManagerOpen"
       :folder-tree="folderTree"
+      :image-drag-active="Boolean(dragState)"
       :folder-drag-over-id="folderDragOverId"
       :dragged-folder-id="draggedFolderId"
       :renaming-user-folder-id="renamingUserFolderId"
@@ -3644,11 +3691,11 @@ console.info(
           />
         </div>
       </Transition>
-      <div v-if="showGalleryScrollProgress" class="gallery-scroll-progress-indicator" aria-hidden="true">
+      <div v-if="showWorkspaceScrollProgress" class="gallery-scroll-progress-indicator" aria-hidden="true">
         <div class="gallery-scroll-progress-indicator__track">
           <div
             class="gallery-scroll-progress-indicator__fill"
-            :style="{ transform: `scaleY(${galleryScrollProgress})` }"
+            :style="{ transform: `scaleY(${workspaceScrollProgress})` }"
           />
         </div>
       </div>

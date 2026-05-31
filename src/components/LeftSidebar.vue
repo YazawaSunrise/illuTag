@@ -39,6 +39,7 @@ defineProps<{
   activeUserFolderId: number | 'all' | 'random' | 'favorites' | 'unclassified' | 'trash'
   tagManagerOpen: boolean
   folderTree: FolderTreeItem[]
+  imageDragActive: boolean
   folderDragOverId: number | null
   draggedFolderId: number | null
   renamingUserFolderId: number | null
@@ -57,7 +58,7 @@ defineProps<{
     <aside
       v-if="visible"
       class="sidebar"
-      :class="{ 'is-pinned': sidebarPinned }"
+      :class="{ 'is-pinned': sidebarPinned, 'is-image-dragging': imageDragActive }"
       @mouseleave="handlers.closeHover($event)"
     >
       <div class="sidebar__body">
@@ -158,6 +159,7 @@ defineProps<{
               :data-folder-id="folder.id"
               :class="{
                 'is-active': activeUserFolderId === folder.id,
+                'is-parent-folder': folder.hasChildren,
                 'is-drag-over': folderDragOverId === folder.id,
                 'is-dragging': draggedFolderId === folder.id,
               }"

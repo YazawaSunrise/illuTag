@@ -650,6 +650,11 @@ button {
   background: #20262d;
 }
 
+.sidebar.is-image-dragging .folder-tree__row.is-parent-folder:hover .folder-tree__content {
+  border-color: transparent;
+  background: transparent;
+}
+
 .folder-tree__row.is-drag-over {
   border-color: #82d5b8;
   background: #223129;
@@ -895,8 +900,14 @@ button {
 }
 
 .app-shell.is-titlebar-pinned .sidebar:not(.is-pinned) {
-  top: 8px;
-  height: calc(100vh - 16px);
+  top: calc(var(--app-titlebar-offset) + 8px);
+  height: calc(100vh - var(--app-titlebar-offset) - 16px);
+}
+
+.app-shell.is-titlebar-pinned .sidebar.is-pinned {
+  top: 0;
+  margin-top: calc(var(--app-titlebar-offset) + 8px);
+  height: calc(100vh - var(--app-titlebar-offset) - 16px);
 }
 
 .app-shell.is-titlebar-pinned .right-sidebar {
@@ -911,6 +922,11 @@ button {
 }
 
 .app-shell:not(.is-window-maximized).is-titlebar-pinned .right-sidebar {
+  top: calc(var(--app-titlebar-offset) + 8px);
+  height: calc(100vh - var(--app-titlebar-offset) - 16px);
+}
+
+.app-shell.is-window-maximized.is-titlebar-pinned .right-sidebar {
   top: calc(var(--app-titlebar-offset) + 8px);
   height: calc(100vh - var(--app-titlebar-offset) - 16px);
 }
@@ -2203,6 +2219,13 @@ button {
   gap: 18px;
   padding: 24px;
   overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.settings::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .settings > * {

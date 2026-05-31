@@ -47,7 +47,7 @@ defineProps<{
 </script>
 
 <template>
-  <section class="settings">
+  <section class="settings" @scroll.passive="handlers.onSettingsScroll?.($event)">
     <div class="settings__header">
       <div>
         <h2>Tips</h2>
