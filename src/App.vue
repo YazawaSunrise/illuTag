@@ -2374,7 +2374,7 @@ async function startWindowDrag(event: PointerEvent) {
 }
 
 function isTitlebarControlTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return false
+  if (!(target instanceof Element)) return false
   return Boolean(target.closest('.app-titlebar__right, .app-titlebar__button'))
 }
 
