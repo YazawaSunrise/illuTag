@@ -47,13 +47,16 @@ use illutag_core::library::{
     move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
     restore_image_from_trash,
+    remove_images_from_index, restore_images_from_trash, set_images_favorite,
+    assign_images_to_user_folder, move_images_to_user_folder, remove_images_from_user_folder, add_images_user_tags,
     move_image_to_system_trash,
+    move_images_to_system_trash,
     toggle_image_favorite,
     restore_reference_board_item,
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_collect_only, start_scan_all_folders_with_tagging, start_tag_pending_images_only, test_wd_swinv2_tagger,
-    AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
+    AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, BatchSupplementTagInput, BatchSystemTrashResult, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
 use std::sync::{Arc, Mutex};
@@ -102,6 +105,39 @@ fn move_image_to_system_trash_command(
     state: State<AppState>,
 ) -> Result<LibraryStore, String> {
     move_image_to_system_trash(image_id, &state)
+}
+
+#[tauri::command]
+fn set_images_favorite_command(
+    image_ids: Vec<String>,
+    favorite: bool,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    set_images_favorite(image_ids, favorite, &state)
+}
+
+#[tauri::command]
+fn remove_images_from_index_command(
+    image_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    remove_images_from_index(image_ids, &state)
+}
+
+#[tauri::command]
+fn restore_images_from_trash_command(
+    image_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    restore_images_from_trash(image_ids, &state)
+}
+
+#[tauri::command]
+fn move_images_to_system_trash_command(
+    image_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<BatchSystemTrashResult, String> {
+    move_images_to_system_trash(image_ids, &state)
 }
 
 #[tauri::command]
@@ -553,12 +589,50 @@ fn assign_image_to_user_folder_command(
 }
 
 #[tauri::command]
+fn assign_images_to_user_folder_command(
+    image_ids: Vec<String>,
+    folder_id: i64,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    assign_images_to_user_folder(image_ids, folder_id, &state)
+}
+
+#[tauri::command]
 fn remove_image_from_user_folder_command(
     image_id: String,
     folder_id: i64,
     state: State<AppState>,
 ) -> Result<LibraryStore, String> {
     remove_image_from_user_folder(image_id, folder_id, &state)
+}
+
+#[tauri::command]
+fn move_images_to_user_folder_command(
+    image_ids: Vec<String>,
+    from_folder_id: i64,
+    target_folder_id: i64,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    move_images_to_user_folder(image_ids, from_folder_id, target_folder_id, &state)
+}
+
+#[tauri::command]
+fn remove_images_from_user_folder_command(
+    image_ids: Vec<String>,
+    folder_id: i64,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    remove_images_from_user_folder(image_ids, folder_id, &state)
+}
+
+#[tauri::command]
+fn add_images_user_tags_command(
+    image_ids: Vec<String>,
+    custom_tags: Vec<String>,
+    supplement_tags: Vec<BatchSupplementTagInput>,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    add_images_user_tags(image_ids, custom_tags, supplement_tags, &state)
 }
 
 #[tauri::command]
@@ -881,9 +955,13 @@ fn main() {
             add_gallery_folder_command,
             remove_gallery_folder_command,
             remove_image_from_index_command,
+            remove_images_from_index_command,
             restore_image_from_trash_command,
+            restore_images_from_trash_command,
             move_image_to_system_trash_command,
+            move_images_to_system_trash_command,
             toggle_image_favorite_command,
+            set_images_favorite_command,
             read_image_bytes_command,
             copy_image_to_system_clipboard_command,
             test_wd_swinv2_tagger_command,
@@ -947,7 +1025,11 @@ fn main() {
             get_user_folder_rule_command,
             save_user_folder_rule_command,
             assign_image_to_user_folder_command,
+            assign_images_to_user_folder_command,
             remove_image_from_user_folder_command,
+            move_images_to_user_folder_command,
+            remove_images_from_user_folder_command,
+            add_images_user_tags_command,
             create_reference_board_folder_command,
             create_reference_board_command,
             add_image_to_reference_board_command,

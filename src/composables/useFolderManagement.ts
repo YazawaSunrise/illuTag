@@ -219,6 +219,26 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     }
   })
 
+  async function adjustFolderContextMenuPosition() {
+    if (!folderContextMenu.value) return
+    await nextTick()
+    if (!folderContextMenu.value) return
+    const menu = document.querySelector<HTMLElement>('.left-sidebar__context-menu')
+    if (!menu) return
+    const padding = 8
+    const { width, height } = menu.getBoundingClientRect()
+    const maxX = Math.max(padding, window.innerWidth - width - padding)
+    const maxY = Math.max(padding, window.innerHeight - height - padding)
+    const nextX = options.clamp(folderContextMenu.value.x, padding, maxX)
+    const nextY = options.clamp(folderContextMenu.value.y, padding, maxY)
+    if (nextX === folderContextMenu.value.x && nextY === folderContextMenu.value.y) return
+    folderContextMenu.value = {
+      ...folderContextMenu.value,
+      x: nextX,
+      y: nextY,
+    }
+  }
+
   function collectDescendantFolderIds(rootFolderId: number) {
     const childrenByParent = new Map<number, number[]>()
     for (const folder of options.library.value.userFolders) {
@@ -255,10 +275,16 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     return result
   }
 
-  async function createUserFolder(parentId: number | null = null) {
-    const name = newFolderName.value.trim()
+  async function createUserFolder(
+    parentId: number | null = null,
+    createOptions?: { name?: string; startRename?: boolean },
+  ) {
+    const name = (createOptions?.name ?? newFolderName.value).trim()
     if (!name) return
 
+    const beforeIds = new Set(
+      createOptions?.startRename ? options.library.value.userFolders.map((folder) => folder.id) : [],
+    )
     options.setErrorText('')
     try {
       const { invoke } = await import('@tauri-apps/api/core')
@@ -269,6 +295,14 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       newFolderName.value = ''
       folderDraft.value = null
       if (parentId !== null) expandFolder(parentId)
+      if (createOptions?.startRename) {
+        const createdFolder = options.library.value.userFolders
+          .filter((folder) => !beforeIds.has(folder.id) && (folder.parentId ?? null) === parentId)
+          .sort((a, b) => b.id - a.id)[0]
+        if (createdFolder) {
+          startUserFolderRename(createdFolder.id)
+        }
+      }
     } catch (error) {
       options.setErrorText(options.formatError(error))
     }
@@ -325,19 +359,10 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     }
   }
 
-  async function openCreateFolderDraft(parentId: number | null, x: number, y: number) {
-    folderDraft.value = {
-      parentId,
-      x: options.clamp(x, 10, window.innerWidth - 210),
-      y: options.clamp(y, 10, window.innerHeight - 42),
-    }
-    newFolderName.value = ''
+  async function openCreateFolderDraft(parentId: number | null, _x: number, _y: number) {
     closeFolderContextMenu()
-    if (parentId !== null) expandFolder(parentId)
-    await nextTick()
-    const input = document.querySelector<HTMLInputElement>('[data-folder-draft-input]')
-    input?.focus()
-    input?.select()
+    closeCreateFolderDraft()
+    await createUserFolder(parentId, { name: '新建文件夹', startRename: true })
   }
 
   function closeCreateFolderDraft() {
@@ -377,7 +402,9 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   function openFolderSectionMenu(event: MouseEvent) {
     event.preventDefault()
     event.stopPropagation()
-    void openCreateFolderDraft(null, event.clientX, event.clientY)
+    folderContextMenu.value = { kind: 'space', x: event.clientX, y: event.clientY }
+    options.closeBoardContextMenu()
+    void adjustFolderContextMenuPosition()
   }
 
   function openFolderMenu(folderId: number, event: MouseEvent) {
@@ -385,6 +412,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
     event.stopPropagation()
     folderContextMenu.value = { kind: 'folder', folderId, x: event.clientX, y: event.clientY }
     options.closeBoardContextMenu()
+    void adjustFolderContextMenuPosition()
   }
 
   function closeFolderContextMenu() {

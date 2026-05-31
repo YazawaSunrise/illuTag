@@ -51,7 +51,7 @@ defineProps<{
     <div class="settings__header">
       <div>
         <h2>Tips</h2>
-        <p>推荐按从上往下的顺序进行生成缩略图、自然语言等工作</p>
+        <p>推荐按从上往下的顺序进行生成缩略图、自然语言等工作，或直接点击“扫描并创建所有索引文件”</p>
       </div>
     </div>
 
@@ -61,7 +61,7 @@ defineProps<{
         type="checkbox"
         @change="handlers.setSidebarPinned(($event.target as HTMLInputElement).checked)"
       />
-      <span>侧边栏常开</span>
+      <span>左侧栏常开</span>
     </label>
 
     <label class="setting-toggle">

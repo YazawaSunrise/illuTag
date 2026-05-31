@@ -40,6 +40,7 @@ const CLIP_IMAGE_SERVICE_IDLE_RELEASE_MS: i64 = 20 * 60 * 1000;
 const CLIP_IMAGE_SERVICE_IDLE_CHECK_INTERVAL_MS: u64 = 30_000;
 const USER_FOLDER_SOURCE_KIND_LIBRARY_DIR: &str = "library_dir";
 const TAG_DICTIONARY_SOURCE_SCHEMA_VERSION: &str = "csv-col2-col5-v1";
+const BATCH_SQL_VARIABLE_LIMIT_SAFE: usize = 900;
 
 pub struct AppState {
     pub database_path: PathBuf,
@@ -218,6 +219,22 @@ pub struct ImageBytes {
     pub bytes: Vec<u8>,
     pub mime_type: String,
     pub file_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchSupplementTagInput {
+    pub tag_en: String,
+    pub tag_zh: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchSystemTrashResult {
+    pub store: LibraryStore,
+    pub moved_count: usize,
+    pub failed_image_ids: Vec<String>,
+    pub first_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1091,6 +1108,114 @@ pub fn move_image_to_system_trash(image_id: String, state: &AppState) -> Result<
     Ok(store)
 }
 
+pub fn move_images_to_system_trash(
+    image_ids: Vec<String>,
+    state: &AppState,
+) -> Result<BatchSystemTrashResult, String> {
+    let image_ids = normalize_batch_image_ids(image_ids);
+    if image_ids.is_empty() {
+        return Ok(BatchSystemTrashResult {
+            store: list_library_from_state(state)?,
+            moved_count: 0,
+            failed_image_ids: Vec::new(),
+            first_error: None,
+        });
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+
+    let mut moved_count = 0usize;
+    let mut failed_image_ids = Vec::<String>::new();
+    let mut first_error = None::<String>;
+    let mut removed_image_ids = Vec::<String>::new();
+
+    for image_id in &image_ids {
+        let image_row = conn
+            .query_row(
+                "
+                SELECT path, source, COALESCE(trashed, 0)
+                FROM images
+                WHERE id = ?1
+                ",
+                params![image_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("Failed to load image before recycle-bin move: {error}"))?;
+
+        let Some((path, source, trashed)) = image_row else {
+            failed_image_ids.push(image_id.clone());
+            if first_error.is_none() {
+                first_error = Some("Image not found".to_string());
+            }
+            continue;
+        };
+        if source != "library" {
+            failed_image_ids.push(image_id.clone());
+            if first_error.is_none() {
+                first_error = Some("Only library images can be moved to system recycle bin".to_string());
+            }
+            continue;
+        }
+        if trashed == 0 {
+            failed_image_ids.push(image_id.clone());
+            if first_error.is_none() {
+                first_error = Some("Image must be in app recycle bin before moving to system recycle bin".to_string());
+            }
+            continue;
+        }
+
+        let image_path = PathBuf::from(&path);
+        if !image_path.exists() {
+            failed_image_ids.push(image_id.clone());
+            if first_error.is_none() {
+                first_error = Some("源文件不存在，无法移入系统回收站。".to_string());
+            }
+            continue;
+        }
+
+        if let Err(error) = move_file_to_system_recycle_bin(&image_path) {
+            failed_image_ids.push(image_id.clone());
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+            continue;
+        }
+
+        conn.execute("DELETE FROM images WHERE id = ?1", params![image_id])
+            .map_err(|error| format!("Failed to remove image index after recycle-bin move: {error}"))?;
+        moved_count += 1;
+        removed_image_ids.push(image_id.clone());
+    }
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    for image_id in &removed_image_ids {
+        remove_signature_cache_entry(&state.atmosphere_signature_cache, image_id)?;
+        remove_signature_cache_entry(&state.color_signature_cache, image_id)?;
+        remove_clip_vector_cache_entry(&state.clip_vector_cache, image_id)?;
+    }
+
+    Ok(BatchSystemTrashResult {
+        store,
+        moved_count,
+        failed_image_ids,
+        first_error,
+    })
+}
+
 pub fn toggle_image_favorite(
     image_id: String,
     favorite: bool,
@@ -1108,6 +1233,437 @@ pub fn toggle_image_favorite(
         params![if favorite { 1 } else { 0 }, image_id],
     )
     .map_err(|error| format!("Failed to update image favorite state: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
+}
+
+fn normalize_batch_image_ids(image_ids: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut normalized = Vec::<String>::new();
+    for image_id in image_ids {
+        let trimmed = image_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let owned = trimmed.to_string();
+        if seen.insert(owned.clone()) {
+            normalized.push(owned);
+        }
+    }
+    normalized
+}
+
+fn for_each_image_id_chunk<F>(image_ids: &[String], mut handler: F) -> Result<(), String>
+where
+    F: FnMut(&[String]) -> Result<(), String>,
+{
+    for chunk in image_ids.chunks(BATCH_SQL_VARIABLE_LIMIT_SAFE) {
+        handler(chunk)?;
+    }
+    Ok(())
+}
+
+fn build_in_placeholders(count: usize) -> String {
+    std::iter::repeat("?")
+        .take(count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn set_images_favorite(
+    image_ids: Vec<String>,
+    favorite: bool,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let image_ids = normalize_batch_image_ids(image_ids);
+    if image_ids.is_empty() {
+        return list_library_from_state(state);
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start batch favorite transaction: {error}"))?;
+
+    for_each_image_id_chunk(&image_ids, |chunk| {
+        let placeholders = build_in_placeholders(chunk.len());
+        let sql = format!(
+            "
+            UPDATE images
+            SET is_favorite = ?1
+            WHERE source = 'library'
+              AND id IN ({placeholders})
+            "
+        );
+        let mut params_values = Vec::<Value>::with_capacity(1 + chunk.len());
+        params_values.push(Value::Integer(if favorite { 1 } else { 0 }));
+        for image_id in chunk {
+            params_values.push(Value::Text(image_id.clone()));
+        }
+        tx.execute(&sql, params_from_iter(params_values.iter()))
+            .map_err(|error| format!("Failed to update image favorite state in batch: {error}"))?;
+        Ok(())
+    })?;
+    tx.commit()
+        .map_err(|error| format!("Failed to commit batch favorite transaction: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
+}
+
+pub fn remove_images_from_index(
+    image_ids: Vec<String>,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let image_ids = normalize_batch_image_ids(image_ids);
+    if image_ids.is_empty() {
+        return list_library_from_state(state);
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start batch trash transaction: {error}"))?;
+
+    for_each_image_id_chunk(&image_ids, |chunk| {
+        let placeholders = build_in_placeholders(chunk.len());
+        let sql = format!(
+            "
+            UPDATE images
+            SET trashed = 1
+            WHERE source = 'library'
+              AND id IN ({placeholders})
+            "
+        );
+        let params_values: Vec<Value> = chunk
+            .iter()
+            .map(|image_id| Value::Text(image_id.clone()))
+            .collect();
+        tx.execute(&sql, params_from_iter(params_values.iter()))
+            .map_err(|error| format!("Failed to move images to trash in batch: {error}"))?;
+        Ok(())
+    })?;
+    tx.commit()
+        .map_err(|error| format!("Failed to commit batch trash transaction: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    for image_id in &image_ids {
+        remove_signature_cache_entry(&state.atmosphere_signature_cache, image_id)?;
+        remove_signature_cache_entry(&state.color_signature_cache, image_id)?;
+        remove_clip_vector_cache_entry(&state.clip_vector_cache, image_id)?;
+    }
+    Ok(store)
+}
+
+pub fn restore_images_from_trash(
+    image_ids: Vec<String>,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let image_ids = normalize_batch_image_ids(image_ids);
+    if image_ids.is_empty() {
+        return list_library_from_state(state);
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start batch restore transaction: {error}"))?;
+
+    for_each_image_id_chunk(&image_ids, |chunk| {
+        let placeholders = build_in_placeholders(chunk.len());
+        let sql = format!(
+            "
+            UPDATE images
+            SET trashed = 0
+            WHERE source = 'library'
+              AND id IN ({placeholders})
+            "
+        );
+        let params_values: Vec<Value> = chunk
+            .iter()
+            .map(|image_id| Value::Text(image_id.clone()))
+            .collect();
+        tx.execute(&sql, params_from_iter(params_values.iter()))
+            .map_err(|error| format!("Failed to restore images from trash in batch: {error}"))?;
+        Ok(())
+    })?;
+    tx.commit()
+        .map_err(|error| format!("Failed to commit batch restore transaction: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    invalidate_all_similarity_caches(state);
+    Ok(store)
+}
+
+pub fn assign_images_to_user_folder(
+    image_ids: Vec<String>,
+    folder_id: i64,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let image_ids = normalize_batch_image_ids(image_ids);
+    if image_ids.is_empty() {
+        return list_library_from_state(state);
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+
+    if !user_folder_is_leaf(&conn, folder_id)? {
+        return Err("只能将图片放入最小层级文件夹".to_string());
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start batch assign transaction: {error}"))?;
+    let now = now_ms();
+    for image_id in &image_ids {
+        tx.execute(
+            "
+            INSERT OR IGNORE INTO image_user_folders (image_id, folder_id, assigned_at)
+            VALUES (?1, ?2, ?3)
+            ",
+            params![image_id, folder_id, now],
+        )
+        .map_err(|error| format!("Failed to assign image to folder in batch: {error}"))?;
+    }
+    tx.commit()
+        .map_err(|error| format!("Failed to commit batch assign transaction: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
+}
+
+pub fn move_images_to_user_folder(
+    image_ids: Vec<String>,
+    from_folder_id: i64,
+    target_folder_id: i64,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let image_ids = normalize_batch_image_ids(image_ids);
+    if image_ids.is_empty() {
+        return list_library_from_state(state);
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+
+    if !user_folder_is_leaf(&conn, target_folder_id)? {
+        return Err("只能将图片放入最小层级文件夹".to_string());
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start batch move transaction: {error}"))?;
+    let now = now_ms();
+    for image_id in &image_ids {
+        tx.execute(
+            "
+            INSERT OR IGNORE INTO image_user_folders (image_id, folder_id, assigned_at)
+            VALUES (?1, ?2, ?3)
+            ",
+            params![image_id, target_folder_id, now],
+        )
+        .map_err(|error| format!("Failed to assign image during batch move: {error}"))?;
+    }
+
+    if from_folder_id != target_folder_id {
+        for image_id in &image_ids {
+            tx.execute(
+                "
+                DELETE FROM image_user_folders
+                WHERE image_id = ?1 AND folder_id = ?2
+                ",
+                params![image_id, from_folder_id],
+            )
+            .map_err(|error| format!("Failed to remove image from source folder in batch move: {error}"))?;
+        }
+    }
+
+    tx.commit()
+        .map_err(|error| format!("Failed to commit batch move transaction: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
+}
+
+pub fn remove_images_from_user_folder(
+    image_ids: Vec<String>,
+    folder_id: i64,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let image_ids = normalize_batch_image_ids(image_ids);
+    if image_ids.is_empty() {
+        return list_library_from_state(state);
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start batch remove-folder transaction: {error}"))?;
+
+    for_each_image_id_chunk(&image_ids, |chunk| {
+        let placeholders = build_in_placeholders(chunk.len());
+        let sql = format!(
+            "
+            DELETE FROM image_user_folders
+            WHERE folder_id = ?1
+              AND image_id IN ({placeholders})
+            "
+        );
+        let mut params_values = Vec::<Value>::with_capacity(1 + chunk.len());
+        params_values.push(Value::Integer(folder_id));
+        for image_id in chunk {
+            params_values.push(Value::Text(image_id.clone()));
+        }
+        tx.execute(&sql, params_from_iter(params_values.iter()))
+            .map_err(|error| format!("Failed to remove images from folder in batch: {error}"))?;
+        Ok(())
+    })?;
+    tx.commit()
+        .map_err(|error| format!("Failed to commit batch remove-folder transaction: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
+}
+
+pub fn add_images_user_tags(
+    image_ids: Vec<String>,
+    custom_tags: Vec<String>,
+    supplement_tags: Vec<BatchSupplementTagInput>,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    let image_ids = normalize_batch_image_ids(image_ids);
+    if image_ids.is_empty() {
+        return list_library_from_state(state);
+    }
+
+    let mut normalized_custom_tags = Vec::<String>::new();
+    let mut custom_seen = HashSet::<String>::new();
+    for tag in custom_tags {
+        let normalized = normalize_tag_text(&tag);
+        if normalized.is_empty() {
+            continue;
+        }
+        if custom_seen.insert(normalized.clone()) {
+            normalized_custom_tags.push(normalized);
+        }
+    }
+
+    let mut normalized_supplement_tags = Vec::<(String, Option<String>)>::new();
+    let mut supplement_seen = HashSet::<String>::new();
+    for tag in supplement_tags {
+        let normalized_tag_en = normalize_tag_text(&tag.tag_en);
+        if normalized_tag_en.is_empty() {
+            continue;
+        }
+        let dedupe_key = normalized_tag_en.to_lowercase();
+        if !supplement_seen.insert(dedupe_key) {
+            continue;
+        }
+        let normalized_tag_zh = normalize_optional_tag_text(tag.tag_zh);
+        normalized_supplement_tags.push((normalized_tag_en, normalized_tag_zh));
+    }
+
+    if normalized_custom_tags.is_empty() && normalized_supplement_tags.is_empty() {
+        return list_library_from_state(state);
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|error| format!("启用数据库外键失败：{error}"))?;
+
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start batch add tags transaction: {error}"))?;
+    let now = now_ms();
+
+    for tag in &normalized_custom_tags {
+        upsert_user_custom_tag(&tx, tag)?;
+    }
+
+    for image_id in &image_ids {
+        for tag_text in &normalized_custom_tags {
+            tx.execute(
+                "
+                INSERT INTO image_user_custom_tags (
+                  image_id, tag_text, created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?3)
+                ON CONFLICT(image_id, tag_text) DO UPDATE SET
+                  updated_at = excluded.updated_at
+                ",
+                params![image_id, tag_text, now],
+            )
+            .map_err(|error| format!("Failed to add custom user tag in batch: {error}"))?;
+        }
+
+        for (tag_en, tag_zh) in &normalized_supplement_tags {
+            tx.execute(
+                "
+                INSERT INTO image_user_supplement_tags (
+                  image_id, tag_en, tag_zh, created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?4)
+                ON CONFLICT(image_id, tag_en) DO UPDATE SET
+                  tag_zh = COALESCE(excluded.tag_zh, image_user_supplement_tags.tag_zh),
+                  updated_at = excluded.updated_at
+                ",
+                params![image_id, tag_en, tag_zh, now],
+            )
+            .map_err(|error| format!("Failed to add supplement user tag in batch: {error}"))?;
+        }
+
+        apply_matching_user_folder_rules_for_image(&tx, image_id)?;
+    }
+
+    tx.commit()
+        .map_err(|error| format!("Failed to commit batch add tags transaction: {error}"))?;
 
     let store = load_store(&conn)?;
     *library = Some(store.clone());

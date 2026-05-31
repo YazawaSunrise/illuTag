@@ -156,6 +156,26 @@ export function useReferenceBoardManagement<TLibraryStore extends LibraryStoreLi
     }
   })
 
+  async function adjustBoardContextMenuPosition() {
+    if (!boardContextMenu.value) return
+    await nextTick()
+    if (!boardContextMenu.value) return
+    const menu = document.querySelector<HTMLElement>('.right-sidebar__context-menu')
+    if (!menu) return
+    const padding = 8
+    const { width, height } = menu.getBoundingClientRect()
+    const maxX = Math.max(padding, window.innerWidth - width - padding)
+    const maxY = Math.max(padding, window.innerHeight - height - padding)
+    const nextX = Math.min(Math.max(boardContextMenu.value.x, padding), maxX)
+    const nextY = Math.min(Math.max(boardContextMenu.value.y, padding), maxY)
+    if (nextX === boardContextMenu.value.x && nextY === boardContextMenu.value.y) return
+    boardContextMenu.value = {
+      ...boardContextMenu.value,
+      x: nextX,
+      y: nextY,
+    }
+  }
+
   function buildReferenceBoardRows(expandedIds: Set<number>) {
     const result: ReferenceBoardRow[] = []
     const boardsByFolder = new Map<number | null, ReferenceBoardLike[]>()
@@ -421,18 +441,21 @@ export function useReferenceBoardManagement<TLibraryStore extends LibraryStoreLi
     event.preventDefault()
     event.stopPropagation()
     boardContextMenu.value = { kind: 'space', folderId, x: event.clientX, y: event.clientY }
+    void adjustBoardContextMenuPosition()
   }
 
   function openReferenceBoardFolderMenu(folderId: number, event: MouseEvent) {
     event.preventDefault()
     event.stopPropagation()
     boardContextMenu.value = { kind: 'folder', folderId, x: event.clientX, y: event.clientY }
+    void adjustBoardContextMenuPosition()
   }
 
   function openReferenceBoardMenu(boardId: number, event: MouseEvent) {
     event.preventDefault()
     event.stopPropagation()
     boardContextMenu.value = { kind: 'board', boardId, x: event.clientX, y: event.clientY }
+    void adjustBoardContextMenuPosition()
   }
 
   function toggleReferenceBoardPreview(boardId: number) {
@@ -455,13 +478,42 @@ export function useReferenceBoardManagement<TLibraryStore extends LibraryStoreLi
     previewReferenceBoardIds.value = next
   }
 
-  async function openBoardDraft(kind: 'board' | 'folder', folderId: number | null, x: number, y: number) {
-    boardDraft.value = { kind, folderId, x, y }
-    newBoardName.value = ''
-    await nextTick()
-    const input = document.querySelector<HTMLInputElement>('[data-board-draft-input]')
-    input?.focus()
-    input?.select()
+  async function openBoardDraft(kind: 'board' | 'folder', folderId: number | null, _x: number, _y: number) {
+    closeBoardDraft()
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      if (kind === 'folder') {
+        const beforeFolderIds = new Set(options.library.value.referenceBoardFolders.map((folder) => folder.id))
+        options.library.value = await invoke<TLibraryStore>('create_reference_board_folder_command', {
+          name: '新建文件夹',
+        })
+        const createdFolder = options.library.value.referenceBoardFolders
+          .filter((folder) => !beforeFolderIds.has(folder.id))
+          .sort((a, b) => b.id - a.id)[0]
+        if (createdFolder) {
+          startReferenceBoardFolderRename(createdFolder.id)
+        }
+        return
+      }
+
+      const beforeBoardIds = new Set(options.library.value.referenceBoards.map((board) => board.id))
+      options.library.value = await invoke<TLibraryStore>('create_reference_board_command', {
+        folderId,
+        name: '新建参考板',
+      })
+      if (folderId !== null) {
+        expandReferenceBoardFolder(folderId)
+      }
+      const createdBoard = options.library.value.referenceBoards
+        .filter((board) => !beforeBoardIds.has(board.id) && (board.folderId ?? null) === folderId)
+        .sort((a, b) => b.id - a.id)[0]
+      if (createdBoard) {
+        startReferenceBoardRename(createdBoard.id)
+      }
+      closeBoardContextMenu()
+    } catch (error) {
+      options.setErrorText(options.formatError(error))
+    }
   }
 
   function closeBoardDraft() {

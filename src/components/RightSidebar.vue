@@ -336,7 +336,7 @@ function onBoardClick(boardId: number) {
 
       <div
         v-if="boardContextMenu"
-        class="context-menu"
+        class="context-menu right-sidebar__context-menu"
         :style="boardContextMenuStyle"
         @click.stop
         @contextmenu.prevent

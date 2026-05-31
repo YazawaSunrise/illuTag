@@ -750,11 +750,33 @@ async function runBatchAction(
   }
 }
 
+async function runBatchInvokeAction(actionName: string, invokeCall: () => Promise<LibraryStore>) {
+  const imageIds = batchSelectedImageIds.value
+  if (imageIds.length === 0) {
+    errorText.value = '请先选择图片'
+    return false
+  }
+  isLoading.value = true
+  try {
+    library.value = await invokeCall()
+    errorText.value = ''
+    statusText.value = `${actionName}完成：${imageIds.length} 张`
+    clearGalleryBatchSelection()
+    exitGalleryBatchMode()
+    return true
+  } catch (error) {
+    errorText.value = formatError(error)
+    return false
+  } finally {
+    isLoading.value = false
+  }
+}
+
 async function runBatchFavorite() {
   const { invoke } = await import('@tauri-apps/api/core')
-  await runBatchAction('加入我喜爱的', async (imageId) => {
-    library.value = await invoke<LibraryStore>('toggle_image_favorite_command', {
-      imageId,
+  await runBatchInvokeAction('加入我喜爱的', async () => {
+    return invoke<LibraryStore>('set_images_favorite_command', {
+      imageIds: batchSelectedImageIds.value,
       favorite: true,
     })
   })
@@ -762,9 +784,9 @@ async function runBatchFavorite() {
 
 async function runBatchRemoveFavorite() {
   const { invoke } = await import('@tauri-apps/api/core')
-  await runBatchAction('从我喜爱的中移除', async (imageId) => {
-    library.value = await invoke<LibraryStore>('toggle_image_favorite_command', {
-      imageId,
+  await runBatchInvokeAction('从我喜爱的中移除', async () => {
+    return invoke<LibraryStore>('set_images_favorite_command', {
+      imageIds: batchSelectedImageIds.value,
       favorite: false,
     })
   })
@@ -772,38 +794,68 @@ async function runBatchRemoveFavorite() {
 
 async function runBatchMoveToTrash() {
   const { invoke } = await import('@tauri-apps/api/core')
-  await runBatchAction('移入回收站', async (imageId) => {
-    library.value = await invoke<LibraryStore>('remove_image_from_index_command', {
-      imageId,
+  await runBatchInvokeAction('移入回收站', async () => {
+    return invoke<LibraryStore>('remove_images_from_index_command', {
+      imageIds: batchSelectedImageIds.value,
     })
   })
 }
 
 async function runBatchRestoreFromTrash() {
   const { invoke } = await import('@tauri-apps/api/core')
-  await runBatchAction('还原', async (imageId) => {
-    library.value = await invoke<LibraryStore>('restore_image_from_trash_command', {
-      imageId,
+  await runBatchInvokeAction('还原', async () => {
+    return invoke<LibraryStore>('restore_images_from_trash_command', {
+      imageIds: batchSelectedImageIds.value,
     })
   })
 }
 
 async function runBatchMoveToSystemTrash() {
+  type BatchSystemTrashResult = {
+    store: LibraryStore
+    movedCount: number
+    failedImageIds: string[]
+    firstError?: string | null
+  }
   const { invoke } = await import('@tauri-apps/api/core')
-  await runBatchAction('移动到系统回收站', async (imageId) => {
-    library.value = await invoke<LibraryStore>('move_image_to_system_trash_command', {
-      imageId,
+  const imageIds = batchSelectedImageIds.value
+  if (imageIds.length === 0) {
+    errorText.value = '请先选择图片'
+    return
+  }
+  isLoading.value = true
+  try {
+    const result = await invoke<BatchSystemTrashResult>('move_images_to_system_trash_command', {
+      imageIds,
     })
-  })
+    library.value = result.store
+    const moved = result.movedCount ?? 0
+    const failed = result.failedImageIds?.length ?? 0
+    if (failed > 0) {
+      const reason = result.firstError ? `，原因：${result.firstError}` : ''
+      errorText.value = `移动到系统回收站：成功 ${moved}，失败 ${failed}${reason}`
+    } else {
+      errorText.value = ''
+      statusText.value = `移动到系统回收站完成：${moved} 张`
+    }
+    if (moved > 0 || failed > 0) {
+      clearGalleryBatchSelection()
+      exitGalleryBatchMode()
+    }
+  } catch (error) {
+    errorText.value = formatError(error)
+  } finally {
+    isLoading.value = false
+  }
 }
 
 async function runBatchRemoveFromCurrentFolder() {
   if (typeof activeUserFolderId.value !== 'number') return
   const folderId = activeUserFolderId.value
   const { invoke } = await import('@tauri-apps/api/core')
-  await runBatchAction('从文件夹中移除', async (imageId) => {
-    library.value = await invoke<LibraryStore>('remove_image_from_user_folder_command', {
-      imageId,
+  await runBatchInvokeAction('从文件夹中移除', async () => {
+    return invoke<LibraryStore>('remove_images_from_user_folder_command', {
+      imageIds: batchSelectedImageIds.value,
       folderId,
     })
   })
@@ -841,34 +893,42 @@ async function confirmBatchFolderAction() {
     return
   }
 
+  const { invoke } = await import('@tauri-apps/api/core')
   if (modal.mode === 'copy') {
-    await runBatchAction('复制到文件夹', async (imageId) => {
-      await assignImageToFolder(imageId, targetFolderId)
+    const ok = await runBatchInvokeAction('复制到文件夹', async () => {
+      return invoke<LibraryStore>('assign_images_to_user_folder_command', {
+        imageIds: batchSelectedImageIds.value,
+        folderId: targetFolderId,
+      })
     })
-    closeBatchFolderPickerModal()
+    if (ok) closeBatchFolderPickerModal()
     return
   }
 
   if (modal.mode === 'move') {
-    const fromFolderId = typeof activeUserFolderId.value === 'number' ? activeUserFolderId.value : null
-    const { invoke } = await import('@tauri-apps/api/core')
-    await runBatchAction('移动到文件夹', async (imageId) => {
-      await assignImageToFolder(imageId, targetFolderId)
-      if (fromFolderId !== null && fromFolderId !== targetFolderId) {
-        library.value = await invoke<LibraryStore>('remove_image_from_user_folder_command', {
-          imageId,
-          folderId: fromFolderId,
-        })
-      }
+    if (typeof activeUserFolderId.value !== 'number') {
+      errorText.value = '当前不在可移动的文件夹视图'
+      return
+    }
+    const fromFolderId = activeUserFolderId.value
+    const ok = await runBatchInvokeAction('移动到文件夹', async () => {
+      return invoke<LibraryStore>('move_images_to_user_folder_command', {
+        imageIds: batchSelectedImageIds.value,
+        fromFolderId,
+        targetFolderId,
+      })
     })
-    closeBatchFolderPickerModal()
+    if (ok) closeBatchFolderPickerModal()
     return
   }
 
-  await runBatchAction('归类到文件夹', async (imageId) => {
-    await assignImageToFolder(imageId, targetFolderId)
+  const ok = await runBatchInvokeAction('归类到文件夹', async () => {
+    return invoke<LibraryStore>('assign_images_to_user_folder_command', {
+      imageIds: batchSelectedImageIds.value,
+      folderId: targetFolderId,
+    })
   })
-  closeBatchFolderPickerModal()
+  if (ok) closeBatchFolderPickerModal()
 }
 
 async function refreshBatchTagSuggestionsNow() {
@@ -1043,14 +1103,22 @@ async function applyBatchPendingTags() {
     errorText.value = '请先加入要添加的标签'
     return
   }
-  await runBatchAction('批量添加标签', async (imageId) => {
-    for (const tag of pending) {
-      if (tag.kind === 'custom') {
-        await addImageUserCustomTag(imageId, tag.tagText)
-      } else {
-        await addImageUserSupplementTag(imageId, tag.tagEn, tag.tagZh)
-      }
-    }
+  const customTags = pending
+    .filter((tag): tag is Extract<PendingBatchTag, { kind: 'custom' }> => tag.kind === 'custom')
+    .map((tag) => tag.tagText)
+  const supplementTags = pending
+    .filter((tag): tag is Extract<PendingBatchTag, { kind: 'supplement' }> => tag.kind === 'supplement')
+    .map((tag) => ({
+      tagEn: tag.tagEn,
+      tagZh: tag.tagZh ?? null,
+    }))
+  const { invoke } = await import('@tauri-apps/api/core')
+  await runBatchInvokeAction('批量添加标签', async () => {
+    return invoke<LibraryStore>('add_images_user_tags_command', {
+      imageIds: batchSelectedImageIds.value,
+      customTags,
+      supplementTags,
+    })
   })
 }
 

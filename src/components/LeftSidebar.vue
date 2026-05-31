@@ -223,7 +223,7 @@ defineProps<{
 
       <div
         v-if="folderContextMenu"
-        class="context-menu"
+        class="context-menu left-sidebar__context-menu"
         :style="contextMenuStyle"
         @click.stop
         @contextmenu.prevent
