@@ -897,6 +897,88 @@ fn sync_user_folder_tree_for_library_directory(
     Ok(())
 }
 
+fn assign_scanned_images_to_nearest_synced_parent_folder(
+    conn: &Connection,
+    root_folder_path: &str,
+    scanned_images: &[ScannedImage],
+    now: i64,
+) -> Result<(), String> {
+    if scanned_images.is_empty() {
+        return Ok(());
+    }
+
+    let root_path = normalize_existing_or_stored_folder_path(root_folder_path);
+    let root_prefix = if root_path.ends_with(std::path::MAIN_SEPARATOR) {
+        root_path.clone()
+    } else {
+        format!("{root_path}{}", std::path::MAIN_SEPARATOR)
+    };
+
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT id, source_path
+            FROM user_folders
+            WHERE source_kind = ?1
+              AND source_path IS NOT NULL
+            ",
+        )
+        .map_err(|error| format!("Failed to load synced folders for scan assignment: {error}"))?;
+    let synced_rows = stmt
+        .query_map(params![USER_FOLDER_SOURCE_KIND_LIBRARY_DIR], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Failed to load synced folders for scan assignment: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to load synced folders for scan assignment: {error}"))?;
+    drop(stmt);
+
+    let mut folder_id_by_path = HashMap::<String, i64>::new();
+    for (id, path) in synced_rows {
+        folder_id_by_path.insert(normalize_existing_or_stored_folder_path(&path), id);
+    }
+
+    for image in scanned_images {
+        remove_synced_folder_assignments_for_image(conn, &image.path)?;
+
+        let mut current = Path::new(&image.path)
+            .parent()
+            .map(|path| normalize_existing_or_stored_folder_path(&path.to_string_lossy()))
+            .unwrap_or_else(|| root_path.clone());
+
+        if current != root_path && !current.starts_with(&root_prefix) {
+            continue;
+        }
+
+        let mut target_folder_id = folder_id_by_path.get(&current).copied();
+        while target_folder_id.is_none() && current != root_path {
+            let Some(parent) = Path::new(&current)
+                .parent()
+                .map(|path| normalize_existing_or_stored_folder_path(&path.to_string_lossy()))
+            else {
+                break;
+            };
+            current = parent;
+            target_folder_id = folder_id_by_path.get(&current).copied();
+        }
+
+        let Some(folder_id) = target_folder_id else {
+            continue;
+        };
+
+        conn.execute(
+            "
+            INSERT OR IGNORE INTO image_user_folders (image_id, folder_id, assigned_at)
+            VALUES (?1, ?2, ?3)
+            ",
+            params![image.path, folder_id, now],
+        )
+        .map_err(|error| format!("Failed to sync scanned image folder assignment: {error}"))?;
+    }
+
+    Ok(())
+}
+
 fn collect_directory_tree_paths(root_folder_path: &str) -> Result<HashSet<String>, String> {
     let mut paths = HashSet::<String>::new();
     let root = Path::new(root_folder_path);
@@ -7618,7 +7700,7 @@ fn scan_all_folders_and_collect_new_images(
                 updated_images += 1;
             }
         }
-        sync_user_folder_tree_for_library_directory(&conn, &folder_path, &found, scanned_at)?;
+        assign_scanned_images_to_nearest_synced_parent_folder(&conn, &folder_path, &found, scanned_at)?;
         scanned_folders += 1;
         set_scan_progress_new_images(progress, new_image_ids.len() as i64);
         set_scan_progress_updated_images(progress, updated_images);
