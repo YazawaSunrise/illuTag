@@ -115,8 +115,42 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       return activeImages.filter((image) => image.isFavorite)
     }
     if (activeUserFolderId.value === 'unclassified') {
-      const assignedIds = new Set(options.library.value.imageFolders.map((assignment) => assignment.imageId))
-      return activeImages.filter((image) => !assignedIds.has(image.id))
+      const activeImageIds = new Set(activeImages.map((image) => image.id))
+      const imageAssignedFolderIds = new Map<string, Set<number>>()
+      for (const assignment of options.library.value.imageFolders) {
+        if (!activeImageIds.has(assignment.imageId)) continue
+        const ids = imageAssignedFolderIds.get(assignment.imageId) ?? new Set<number>()
+        ids.add(assignment.folderId)
+        imageAssignedFolderIds.set(assignment.imageId, ids)
+      }
+
+      const parentFolderDescendantIds = new Map<number, Set<number>>()
+      for (const folder of options.library.value.userFolders) {
+        const hasChildren = (folderGroups.value.get(folder.id) ?? []).length > 0
+        if (!hasChildren) continue
+        const descendants = collectDescendantFolderIds(folder.id)
+        descendants.delete(folder.id)
+        parentFolderDescendantIds.set(folder.id, descendants)
+      }
+
+      return activeImages.filter((image) => {
+        const assignedFolderIds = imageAssignedFolderIds.get(image.id)
+        if (!assignedFolderIds || assignedFolderIds.size === 0) return true
+
+        for (const folderId of assignedFolderIds) {
+          const descendantIds = parentFolderDescendantIds.get(folderId)
+          if (!descendantIds || descendantIds.size === 0) continue
+          let hasDescendantAssignment = false
+          for (const descendantId of descendantIds) {
+            if (assignedFolderIds.has(descendantId)) {
+              hasDescendantAssignment = true
+              break
+            }
+          }
+          if (!hasDescendantAssignment) return true
+        }
+        return false
+      })
     }
     if (activeUserFolderId.value === 'all' || activeUserFolderId.value === 'random') return activeImages
 
