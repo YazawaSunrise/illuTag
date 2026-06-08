@@ -81,6 +81,10 @@ const importLibraryFolderPickerResolve = ref<((folderId: number | null) => void)
 const sidebarHoverCloseTimer = ref<number | null>(null)
 const rightSidebarHoverCloseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
+const sidebarPointerUseMaxAgeMs = 5000
+const referenceBoardSidebarHoverHoldMs = 250
+const sidebarHoverCloseHoldUntil = ref(0)
+const lastPointerPosition = ref<{ x: number; y: number; at: number } | null>(null)
 const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
 const sidebarOpen = computed(() => sidebarPinnedEffective.value || sidebarHoverOpen.value)
@@ -177,7 +181,7 @@ const {
   toggleReferenceBoardFolderExpanded,
   expandReferenceBoardFolder,
   onReferenceBoardFolderRowClick,
-  showReferenceBoard,
+  showReferenceBoard: showReferenceBoardBase,
   closeBoardContextMenu,
   referenceBoardIdFromPoint,
   referenceBoardFolderIdFromPoint,
@@ -235,6 +239,16 @@ const {
   },
   formatError,
 })
+
+function showReferenceBoard(boardId: number) {
+  clearSidebarHoverCloseTimer()
+  clearRightSidebarHoverCloseTimer()
+  sidebarHoverCloseHoldUntil.value = performance.now() + referenceBoardSidebarHoverHoldMs
+  showReferenceBoardBase(boardId)
+  void nextTick().then(() => {
+    recoverSidebarsFromPointerPosition()
+  })
+}
 
 const {
   activeUserFolderId,
@@ -1571,6 +1585,7 @@ onMounted(async () => {
   window.addEventListener('pointermove', moveFolderPointer)
   window.addEventListener('pointermove', moveBoardInteraction)
   window.addEventListener('pointermove', trackBoardPointer)
+  window.addEventListener('pointermove', trackGlobalPointerPosition, { passive: true })
   window.addEventListener('pointerup', finishImageDrag)
   window.addEventListener('pointerup', finishPreviewBoardItemPointerDrag)
   window.addEventListener('pointerup', finishFolderPointer)
@@ -1695,6 +1710,7 @@ onUnmounted(() => {
   window.removeEventListener('pointermove', moveFolderPointer)
   window.removeEventListener('pointermove', moveBoardInteraction)
   window.removeEventListener('pointermove', trackBoardPointer)
+  window.removeEventListener('pointermove', trackGlobalPointerPosition)
   window.removeEventListener('pointerup', finishImageDrag)
   window.removeEventListener('pointerup', finishPreviewBoardItemPointerDrag)
   window.removeEventListener('pointerup', finishFolderPointer)
@@ -2507,10 +2523,46 @@ function openRightSidebarByHover() {
   if (!rightSidebarPinned.value) rightSidebarHoverOpen.value = true
 }
 
+function trackGlobalPointerPosition(event: PointerEvent) {
+  lastPointerPosition.value = {
+    x: event.clientX,
+    y: event.clientY,
+    at: performance.now(),
+  }
+  recoverSidebarsFromPointerPosition()
+}
+
+function recoverSidebarsFromPointerPosition() {
+  if (isSearchFocused.value || isSearchPointerInside.value) return
+  const pointer = lastPointerPosition.value
+  if (!pointer || performance.now() - pointer.at > sidebarPointerUseMaxAgeMs) return
+  if (isPointInsideElement('.sidebar-hotspot', pointer.x, pointer.y)) {
+    openSidebarByHover()
+  }
+  if (isPointInsideElement('.right-sidebar-hotspot', pointer.x, pointer.y)) {
+    openRightSidebarByHover()
+  }
+}
+
+function isPointInsideElement(selector: string, x: number, y: number) {
+  const element = document.querySelector(selector)
+  if (!(element instanceof HTMLElement)) return false
+  const rect = element.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return false
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+}
+
+function isPointerInsideAnyElement(selectors: string[]) {
+  const pointer = lastPointerPosition.value
+  if (!pointer || performance.now() - pointer.at > sidebarPointerUseMaxAgeMs) return false
+  return selectors.some((selector) => isPointInsideElement(selector, pointer.x, pointer.y))
+}
+
 function closeSidebarByHover() {
   clearSidebarHoverCloseTimer()
   sidebarHoverCloseTimer.value = window.setTimeout(() => {
     sidebarHoverCloseTimer.value = null
+    if (performance.now() < sidebarHoverCloseHoldUntil.value) return
     if (
       !sidebarPinnedEffective.value &&
       !folderDraft.value &&
@@ -2533,15 +2585,7 @@ function clearSidebarHoverCloseTimer() {
 }
 
 function isSidebarHoverSafeAreaActive() {
-  const sidebar = document.querySelector('.sidebar')
-  if (sidebar instanceof HTMLElement && sidebar.matches(':hover')) {
-    return true
-  }
-  const hotspot = document.querySelector('.sidebar-hotspot')
-  if (hotspot instanceof HTMLElement && hotspot.matches(':hover')) {
-    return true
-  }
-  return false
+  return isPointerInsideAnyElement(['.sidebar', '.sidebar-hotspot'])
 }
 
 function closeRightSidebarByHover() {
@@ -2549,6 +2593,7 @@ function closeRightSidebarByHover() {
   clearRightSidebarHoverCloseTimer()
   rightSidebarHoverCloseTimer.value = window.setTimeout(() => {
     rightSidebarHoverCloseTimer.value = null
+    if (performance.now() < sidebarHoverCloseHoldUntil.value) return
     if (
       !rightSidebarPinned.value &&
       !boardDraft.value &&
@@ -2574,19 +2619,12 @@ function clearRightSidebarHoverCloseTimer() {
 }
 
 function isRightSidebarHoverSafeAreaActive() {
-  const sidebar = document.querySelector('.right-sidebar')
-  if (sidebar instanceof HTMLElement && sidebar.matches(':hover')) {
-    return true
-  }
-  const hotspot = document.querySelector('.right-sidebar-hotspot')
-  if (hotspot instanceof HTMLElement && hotspot.matches(':hover')) {
-    return true
-  }
-  return false
+  return isPointerInsideAnyElement(['.right-sidebar', '.right-sidebar-hotspot'])
 }
 
 function onWindowMouseOut(event: MouseEvent) {
   if (event.relatedTarget) return
+  lastPointerPosition.value = null
   closeSidebarByHover()
   closeRightSidebarByHover()
 }
