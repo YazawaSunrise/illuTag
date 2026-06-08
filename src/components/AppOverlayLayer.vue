@@ -16,6 +16,7 @@ type DragState = {
 defineProps<{
   referenceBoardCanvasMenu: ReferenceBoardCanvasMenu
   referenceBoardCanvasMenuStyle: Record<string, string | undefined>
+  referenceBoardSidebarsDisabled: boolean
   dragState: DragState | null
   handlers: Record<string, (...args: any[]) => any>
 }>()
@@ -59,6 +60,9 @@ defineProps<{
       </button>
       <button type="button" @click="handlers.autoArrangeActiveReferenceBoard()">自动排列图片</button>
     </template>
+    <button type="button" @click="handlers.toggleReferenceBoardSidebarsDisabled()">
+      {{ referenceBoardSidebarsDisabled ? '启用侧栏' : '禁用侧栏' }}
+    </button>
   </div>
 
   <template v-if="dragState">

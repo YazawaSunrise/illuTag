@@ -74,6 +74,7 @@ const activeReferenceBoardId = ref<number | null>(null)
 const isWindowMaximized = ref(false)
 const isWindowAlwaysOnTop = ref(false)
 const isTitlebarHovered = ref(false)
+const referenceBoardSidebarsDisabled = ref(false)
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const importLibraryFolderPickerItemId = ref<number | null>(null)
 const importLibraryFolderPickerResolve = ref<((folderId: number | null) => void) | null>(null)
@@ -2496,11 +2497,13 @@ async function closeWindow() {
 function openSidebarByHover() {
   clearSidebarHoverCloseTimer()
   if (isSettingsView.value) return
+  if (viewMode.value === 'board' && referenceBoardSidebarsDisabled.value) return
   if (!sidebarPinned.value) sidebarHoverOpen.value = true
 }
 
 function openRightSidebarByHover() {
   clearRightSidebarHoverCloseTimer()
+  if (viewMode.value === 'board' && referenceBoardSidebarsDisabled.value) return
   if (!rightSidebarPinned.value) rightSidebarHoverOpen.value = true
 }
 
@@ -3217,6 +3220,15 @@ function closeSidebarByToggle() {
   sidebarHoverOpen.value = false
 }
 
+function toggleReferenceBoardSidebarsDisabled() {
+  referenceBoardSidebarsDisabled.value = !referenceBoardSidebarsDisabled.value
+  if (referenceBoardSidebarsDisabled.value) {
+    sidebarHoverOpen.value = false
+    rightSidebarHoverOpen.value = false
+  }
+  closeReferenceBoardCanvasMenu()
+}
+
 const settingsViewHandlers = {
   setSidebarPinned,
   setAutoHideTitlebarInWindowMode,
@@ -3404,6 +3416,7 @@ const galleryViewHandlers = {
 }
 
 const overlayHandlers = {
+  toggleReferenceBoardSidebarsDisabled,
   copyReferenceBoardItemToClipboard,
   canImportReferenceBoardItemToLibrary,
   importSelectedReferenceItemToLibrary,
@@ -3476,6 +3489,7 @@ console.info(
       'is-titlebar-pinned': isTitlebarPinned,
       'is-window-maximized': isWindowMaximized,
       'is-gallery-search-active': isSearchFocused || isSearchPointerInside,
+      'is-reference-board-sidebars-disabled': viewMode === 'board' && referenceBoardSidebarsDisabled,
       'theme-light': themeMode === 'light',
       'theme-dark': themeMode === 'dark',
     }"
@@ -3704,6 +3718,7 @@ console.info(
     <AppOverlayLayer
       :reference-board-canvas-menu="referenceBoardCanvasMenu"
       :reference-board-canvas-menu-style="referenceBoardCanvasMenuStyle"
+      :reference-board-sidebars-disabled="referenceBoardSidebarsDisabled"
       :drag-state="dragState"
       :handlers="overlayHandlers"
     />

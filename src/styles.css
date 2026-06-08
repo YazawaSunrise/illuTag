@@ -76,6 +76,11 @@ button {
   pointer-events: none;
 }
 
+.app-shell.is-reference-board-sidebars-disabled .sidebar-hotspot,
+.app-shell.is-reference-board-sidebars-disabled .right-sidebar-hotspot {
+  pointer-events: none;
+}
+
 .sidebar {
   position: fixed;
   z-index: 5;
