@@ -62,10 +62,17 @@ use illutag_core::library::{
     WdTaggerTestResult,
 };
 use std::{
-    sync::{Arc, Mutex},
-    time::Instant,
+    fs,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::{Duration, Instant},
 };
-use tauri::{Manager, State};
+use serde::{Deserialize, Serialize};
+use tauri::{Manager, PhysicalPosition, PhysicalSize, Position, Size, State, WebviewWindow, WindowEvent};
 
 #[tauri::command]
 fn list_library(state: State<AppState>) -> Result<LibraryStore, String> {
@@ -895,6 +902,202 @@ fn window_is_always_on_top_command(window: tauri::Window) -> Result<bool, String
         .map_err(|error| format!("读取窗口置顶状态失败：{error}"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowMemoryState {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    is_maximized: bool,
+    is_fullscreen: bool,
+}
+
+const WINDOW_MEMORY_FILE_NAME: &str = "window-state.json";
+const WINDOW_STATE_SAVE_DEBOUNCE_MS: u64 = 350;
+
+fn capture_window_memory_state(window: &WebviewWindow) -> Result<WindowMemoryState, String> {
+    let position = window
+        .outer_position()
+        .map_err(|error| format!("failed to read window position: {error}"))?;
+    let size = window
+        .outer_size()
+        .map_err(|error| format!("failed to read window size: {error}"))?;
+    let is_maximized = window
+        .is_maximized()
+        .map_err(|error| format!("failed to read window maximized state: {error}"))?;
+    let is_fullscreen = window
+        .is_fullscreen()
+        .map_err(|error| format!("failed to read window fullscreen state: {error}"))?;
+
+    Ok(WindowMemoryState {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+        is_maximized,
+        is_fullscreen,
+    })
+}
+
+fn window_state_intersects_available_monitor(window: &WebviewWindow, state: &WindowMemoryState) -> Result<bool, String> {
+    let monitors = window
+        .available_monitors()
+        .map_err(|error| format!("failed to read available monitors: {error}"))?;
+    if monitors.is_empty() {
+        return Ok(true);
+    }
+
+    let window_left = state.x as i64;
+    let window_top = state.y as i64;
+    let window_right = window_left + state.width as i64;
+    let window_bottom = window_top + state.height as i64;
+
+    Ok(monitors.iter().any(|monitor| {
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        let monitor_left = monitor_position.x as i64;
+        let monitor_top = monitor_position.y as i64;
+        let monitor_right = monitor_left + monitor_size.width as i64;
+        let monitor_bottom = monitor_top + monitor_size.height as i64;
+        let intersection_width = window_right.min(monitor_right) - window_left.max(monitor_left);
+        let intersection_height = window_bottom.min(monitor_bottom) - window_top.max(monitor_top);
+        intersection_width > 80 && intersection_height > 80
+    }))
+}
+
+fn move_window_state_to_visible_monitor(window: &WebviewWindow, state: &mut WindowMemoryState) -> Result<(), String> {
+    if window_state_intersects_available_monitor(window, state)? {
+        return Ok(());
+    }
+
+    let monitors = window
+        .available_monitors()
+        .map_err(|error| format!("failed to read available monitors: {error}"))?;
+    let Some(monitor) = monitors.first() else {
+        return Ok(());
+    };
+
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let width = state.width.min(monitor_size.width).max(500);
+    let height = state.height.min(monitor_size.height).max(500);
+
+    state.width = width;
+    state.height = height;
+    state.x = monitor_position.x + ((monitor_size.width.saturating_sub(width) / 2) as i32);
+    state.y = monitor_position.y + ((monitor_size.height.saturating_sub(height) / 2) as i32);
+    Ok(())
+}
+
+fn restore_window_memory_state(window: &WebviewWindow, mut state: WindowMemoryState) -> Result<(), String> {
+    state.width = state.width.max(500);
+    state.height = state.height.max(500);
+    move_window_state_to_visible_monitor(window, &mut state)?;
+
+    if window
+        .is_fullscreen()
+        .map_err(|error| format!("failed to read window fullscreen state: {error}"))?
+    {
+        window
+            .set_fullscreen(false)
+            .map_err(|error| format!("failed to leave fullscreen before restore: {error}"))?;
+    }
+
+    if window
+        .is_maximized()
+        .map_err(|error| format!("failed to read window maximized state: {error}"))?
+    {
+        window
+            .unmaximize()
+            .map_err(|error| format!("failed to unmaximize before restore: {error}"))?;
+    }
+
+    window
+        .set_size(Size::Physical(PhysicalSize {
+            width: state.width,
+            height: state.height,
+        }))
+        .map_err(|error| format!("failed to restore window size: {error}"))?;
+    window
+        .set_position(Position::Physical(PhysicalPosition {
+            x: state.x,
+            y: state.y,
+        }))
+        .map_err(|error| format!("failed to restore window position: {error}"))?;
+
+    if state.is_maximized {
+        window
+            .maximize()
+            .map_err(|error| format!("failed to restore window maximized state: {error}"))?;
+    }
+    if state.is_fullscreen {
+        window
+            .set_fullscreen(true)
+            .map_err(|error| format!("failed to restore window fullscreen state: {error}"))?;
+    }
+
+    Ok(())
+}
+
+fn read_window_memory_state(path: &Path) -> Result<Option<WindowMemoryState>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read window memory state: {error}"))?;
+    let state = serde_json::from_str::<WindowMemoryState>(&content)
+        .map_err(|error| format!("failed to parse window memory state: {error}"))?;
+    Ok(Some(state))
+}
+
+fn save_window_memory_state(path: &Path, window: &WebviewWindow) -> Result<(), String> {
+    let state = capture_window_memory_state(window)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create window memory directory: {error}"))?;
+    }
+    let content = serde_json::to_string_pretty(&state)
+        .map_err(|error| format!("failed to serialize window memory state: {error}"))?;
+    fs::write(path, content)
+        .map_err(|error| format!("failed to write window memory state: {error}"))
+}
+
+fn restore_window_memory_state_from_path(window: &WebviewWindow, path: &Path) -> Result<(), String> {
+    if let Some(state) = read_window_memory_state(path)? {
+        restore_window_memory_state(window, state)?;
+    }
+    Ok(())
+}
+
+fn install_window_memory_state_listener(window: &WebviewWindow, path: PathBuf) {
+    let save_generation = Arc::new(AtomicU64::new(0));
+    let window_for_listener = window.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+            let generation = save_generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let save_generation = Arc::clone(&save_generation);
+            let window = window_for_listener.clone();
+            let path = path.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(WINDOW_STATE_SAVE_DEBOUNCE_MS));
+                if save_generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                if let Err(error) = save_window_memory_state(&path, &window) {
+                    eprintln!("[window-memory] save failed: {error}");
+                }
+            });
+        }
+        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+            if let Err(error) = save_window_memory_state(&path, &window_for_listener) {
+                eprintln!("[window-memory] save failed: {error}");
+            }
+        }
+        _ => {}
+    });
+}
+
 #[tauri::command]
 fn window_close_command(window: tauri::Window) -> Result<(), String> {
     window
@@ -917,6 +1120,23 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            let app_config_dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            let window_memory_state_path = app_config_dir.join(WINDOW_MEMORY_FILE_NAME);
+
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(error) =
+                    restore_window_memory_state_from_path(&window, &window_memory_state_path)
+                {
+                    eprintln!("[window-memory] restore failed: {error}");
+                }
+                install_window_memory_state_listener(&window, window_memory_state_path);
+                window
+                    .show()
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            }
 
             let app_state = AppState {
                 database_path: app_data_dir.join("illutag.sqlite"),

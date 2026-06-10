@@ -43,20 +43,33 @@ console.info(`[startup-prof] App.vue setup_start_ms=${appSetupStartMs.toFixed(1)
 const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoardFolderIds'
 const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
 const lastWorkspaceStateStorageKey = 'illutag.lastWorkspaceState'
+const referenceBoardMemoryStateStorageKey = 'illutag.referenceBoardMemoryState'
 const autoScanOnStartupStorageKey = 'illutag.autoScanOnStartup'
 const imageDragDelayMs = 120
 const startupAutoScanDelayMs = 3000
-const sidebarHoverOpen = ref(false)
-const rightSidebarHoverOpen = ref(false)
-const viewMode = ref<ViewMode>('gallery')
 
 type LastWorkspaceState = {
   viewMode: ViewMode
   activeReferenceBoardId: number | null
+}
+
+type ReferenceBoardMemoryState = {
+  activeReferenceBoardId: number | null
   referenceBoardScale?: number
   referenceBoardPan?: { x: number; y: number }
   selectedReferenceBoardItemId?: number | null
+  referenceBoardSidebarsDisabled?: boolean
 }
+
+const initialWorkspaceState = readStoredWorkspaceState()
+const initialReferenceBoardMemoryState = readStoredReferenceBoardMemoryState() ?? readLegacyReferenceBoardMemoryState()
+const initialReferenceBoardId =
+  initialWorkspaceState?.viewMode === 'board' && initialWorkspaceState.activeReferenceBoardId !== null
+    ? initialWorkspaceState.activeReferenceBoardId
+    : null
+const sidebarHoverOpen = ref(false)
+const rightSidebarHoverOpen = ref(false)
+const viewMode = ref<ViewMode>(initialReferenceBoardId !== null ? 'board' : 'gallery')
 
 const library = ref<LibraryStore>({
   folders: [],
@@ -80,11 +93,15 @@ const removeFromFolderConfirmState = ref<null | {
   message: string
 }>(null)
 const systemTrashMoveErrorMessage = ref<string | null>(null)
-const activeReferenceBoardId = ref<number | null>(null)
+const activeReferenceBoardId = ref<number | null>(initialReferenceBoardId)
 const isWindowMaximized = ref(false)
 const isWindowAlwaysOnTop = ref(false)
 const isTitlebarHovered = ref(false)
-const referenceBoardSidebarsDisabled = ref(false)
+const referenceBoardSidebarsDisabled = ref(
+  initialWorkspaceState?.viewMode === 'board' && initialReferenceBoardMemoryState?.activeReferenceBoardId === initialReferenceBoardId
+    ? Boolean(initialReferenceBoardMemoryState.referenceBoardSidebarsDisabled)
+    : false,
+)
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const importLibraryFolderPickerItemId = ref<number | null>(null)
 const importLibraryFolderPickerResolve = ref<((folderId: number | null) => void) | null>(null)
@@ -95,7 +112,8 @@ const sidebarPointerUseMaxAgeMs = 5000
 const referenceBoardSidebarHoverHoldMs = 250
 const sidebarHoverCloseHoldUntil = ref(0)
 const lastPointerPosition = ref<{ x: number; y: number; at: number } | null>(null)
-const pendingWorkspaceRestore = ref<LastWorkspaceState | null>(null)
+const pendingWorkspaceRestore = ref<LastWorkspaceState | null>(initialWorkspaceState)
+const pendingReferenceBoardMemoryRestore = ref<ReferenceBoardMemoryState | null>(initialReferenceBoardMemoryState)
 const workspaceRestoreApplied = ref(false)
 const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
@@ -253,10 +271,14 @@ const {
 })
 
 function showReferenceBoard(boardId: number) {
+  if (viewMode.value === 'board' && activeReferenceBoardId.value !== null && activeReferenceBoardId.value !== boardId) {
+    saveReferenceBoardMemoryState()
+  }
   clearSidebarHoverCloseTimer()
   clearRightSidebarHoverCloseTimer()
   sidebarHoverCloseHoldUntil.value = performance.now() + referenceBoardSidebarHoverHoldMs
   showReferenceBoardBase(boardId)
+  restoreReferenceBoardMemoryStateFor(boardId)
   void nextTick().then(() => {
     recoverSidebarsFromPointerPosition()
   })
@@ -1588,7 +1610,6 @@ onMounted(async () => {
   initAppSettingsFromStorage()
   expandedReferenceBoardFolderIds.value = readStoredIdSet(expandedReferenceBoardFolderIdsStorageKey)
   previewReferenceBoardIds.value = readStoredIdSet(previewReferenceBoardIdsStorageKey)
-  pendingWorkspaceRestore.value = readStoredWorkspaceState()
   initAutoScanOnStartupFromStorage()
   void loadLibrary()
   handleWindowResize()
@@ -1782,16 +1803,25 @@ watch(previewReferenceBoardIds, (value) => {
 })
 
 watch(
+  [viewMode, activeReferenceBoardId],
+  () => {
+    saveLastWorkspaceState()
+  },
+)
+
+watch(
   [
-    viewMode,
     activeReferenceBoardId,
     boardScale,
     () => boardPan.value.x,
     () => boardPan.value.y,
     selectedReferenceBoardItemId,
+    referenceBoardSidebarsDisabled,
   ],
   () => {
-    saveLastWorkspaceState()
+    if (viewMode.value === 'board') {
+      saveReferenceBoardMemoryState()
+    }
   },
 )
 
@@ -3293,6 +3323,7 @@ function toggleReferenceBoardSidebarsDisabled() {
     rightSidebarHoverOpen.value = false
   }
   closeReferenceBoardCanvasMenu()
+  saveLastWorkspaceState()
 }
 
 const settingsViewHandlers = {
@@ -3523,28 +3554,111 @@ function readStoredWorkspaceState(): LastWorkspaceState | null {
       typeof parsed.activeReferenceBoardId === 'number' && Number.isFinite(parsed.activeReferenceBoardId)
         ? parsed.activeReferenceBoardId
         : null
-    const parsedPan = parsed.referenceBoardPan
     return {
       viewMode: parsedViewMode,
       activeReferenceBoardId: parsedBoardId,
-      referenceBoardScale:
-        typeof parsed.referenceBoardScale === 'number' && Number.isFinite(parsed.referenceBoardScale)
-          ? parsed.referenceBoardScale
-          : undefined,
-      referenceBoardPan:
-        parsedPan &&
-        typeof parsedPan.x === 'number' &&
-        Number.isFinite(parsedPan.x) &&
-        typeof parsedPan.y === 'number' &&
-        Number.isFinite(parsedPan.y)
-          ? { x: parsedPan.x, y: parsedPan.y }
-          : undefined,
-      selectedReferenceBoardItemId:
-        typeof parsed.selectedReferenceBoardItemId === 'number' &&
-        Number.isFinite(parsed.selectedReferenceBoardItemId)
-          ? parsed.selectedReferenceBoardItemId
-          : null,
     }
+  } catch {
+    return null
+  }
+}
+
+function normalizeReferenceBoardMemoryState(
+  parsed: Partial<ReferenceBoardMemoryState>,
+): ReferenceBoardMemoryState | null {
+  const parsedBoardId =
+    typeof parsed.activeReferenceBoardId === 'number' && Number.isFinite(parsed.activeReferenceBoardId)
+      ? parsed.activeReferenceBoardId
+      : null
+  const parsedPan = parsed.referenceBoardPan
+  return {
+    activeReferenceBoardId: parsedBoardId,
+    referenceBoardScale:
+      typeof parsed.referenceBoardScale === 'number' && Number.isFinite(parsed.referenceBoardScale)
+        ? parsed.referenceBoardScale
+        : undefined,
+    referenceBoardPan:
+      parsedPan &&
+      typeof parsedPan.x === 'number' &&
+      Number.isFinite(parsedPan.x) &&
+      typeof parsedPan.y === 'number' &&
+      Number.isFinite(parsedPan.y)
+        ? { x: parsedPan.x, y: parsedPan.y }
+        : undefined,
+    selectedReferenceBoardItemId:
+      typeof parsed.selectedReferenceBoardItemId === 'number' &&
+      Number.isFinite(parsed.selectedReferenceBoardItemId)
+        ? parsed.selectedReferenceBoardItemId
+        : null,
+    referenceBoardSidebarsDisabled: Boolean(parsed.referenceBoardSidebarsDisabled),
+  }
+}
+
+function readStoredReferenceBoardMemoryState(
+  fallbackWorkspaceState?: (LastWorkspaceState & Partial<ReferenceBoardMemoryState>) | null,
+): ReferenceBoardMemoryState | null {
+  const raw = localStorage.getItem(referenceBoardMemoryStateStorageKey)
+  if (raw) {
+    try {
+      return normalizeReferenceBoardMemoryState(JSON.parse(raw) as Partial<ReferenceBoardMemoryState>)
+    } catch {}
+  }
+
+  if (fallbackWorkspaceState?.viewMode === 'board' && fallbackWorkspaceState.activeReferenceBoardId !== null) {
+    return normalizeReferenceBoardMemoryState(fallbackWorkspaceState)
+  }
+
+  return null
+}
+
+function saveReferenceBoardMemoryState() {
+  if (activeReferenceBoardId.value === null) return
+  const state: ReferenceBoardMemoryState = {
+    activeReferenceBoardId: activeReferenceBoardId.value,
+    referenceBoardScale: boardScale.value,
+    referenceBoardPan: { ...boardPan.value },
+    selectedReferenceBoardItemId: selectedReferenceBoardItemId.value,
+    referenceBoardSidebarsDisabled: referenceBoardSidebarsDisabled.value,
+  }
+  localStorage.setItem(referenceBoardMemoryStateStorageKey, JSON.stringify(state))
+}
+
+function restoreReferenceBoardMemoryStateFor(boardId: number) {
+  const state = pendingReferenceBoardMemoryRestore.value ?? readStoredReferenceBoardMemoryState()
+  if (!state || state.activeReferenceBoardId !== boardId) return
+
+  referenceBoardSidebarsDisabled.value = Boolean(state.referenceBoardSidebarsDisabled)
+  if (referenceBoardSidebarsDisabled.value) {
+    sidebarHoverOpen.value = false
+    rightSidebarHoverOpen.value = false
+  }
+  if (typeof state.referenceBoardScale === 'number') {
+    boardScale.value = clamp(state.referenceBoardScale, 0.1, 20)
+  }
+  if (state.referenceBoardPan) {
+    boardPan.value = { ...state.referenceBoardPan }
+  }
+
+  const selectedItemId = state.selectedReferenceBoardItemId
+  const selectedItemExists =
+    typeof selectedItemId === 'number' &&
+    library.value.referenceBoardItems.some((item) => item.id === selectedItemId && item.boardId === boardId)
+  selectedReferenceBoardItemId.value = selectedItemExists ? selectedItemId : null
+}
+
+function clearPendingReferenceBoardMemoryRestoreIfApplied(boardId: number) {
+  if (pendingReferenceBoardMemoryRestore.value?.activeReferenceBoardId === boardId) {
+    pendingReferenceBoardMemoryRestore.value = null
+  }
+}
+
+function readLegacyReferenceBoardMemoryState(): ReferenceBoardMemoryState | null {
+  const raw = localStorage.getItem(lastWorkspaceStateStorageKey)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<LastWorkspaceState & ReferenceBoardMemoryState>
+    if (parsed.viewMode !== 'board' || parsed.activeReferenceBoardId === null) return null
+    return normalizeReferenceBoardMemoryState(parsed)
   } catch {
     return null
   }
@@ -3553,13 +3667,12 @@ function readStoredWorkspaceState(): LastWorkspaceState | null {
 function saveLastWorkspaceState() {
   const state: LastWorkspaceState = {
     viewMode: viewMode.value,
-    activeReferenceBoardId: viewMode.value === 'board' ? activeReferenceBoardId.value : null,
-  }
-
-  if (viewMode.value === 'board') {
-    state.referenceBoardScale = boardScale.value
-    state.referenceBoardPan = { ...boardPan.value }
-    state.selectedReferenceBoardItemId = selectedReferenceBoardItemId.value
+    activeReferenceBoardId:
+      viewMode.value === 'board'
+        ? activeReferenceBoardId.value
+        : pendingReferenceBoardMemoryRestore.value?.activeReferenceBoardId ??
+          readStoredReferenceBoardMemoryState()?.activeReferenceBoardId ??
+          null,
   }
 
   localStorage.setItem(lastWorkspaceStateStorageKey, JSON.stringify(state))
@@ -3574,23 +3687,16 @@ function restorePendingWorkspaceState() {
 
   if (state.viewMode !== 'board' || state.activeReferenceBoardId === null) return
   const boardExists = library.value.referenceBoards.some((board) => board.id === state.activeReferenceBoardId)
-  if (!boardExists) return
+  if (!boardExists) {
+    viewMode.value = 'gallery'
+    activeReferenceBoardId.value = null
+    saveLastWorkspaceState()
+    return
+  }
 
   showReferenceBoard(state.activeReferenceBoardId)
-  if (typeof state.referenceBoardScale === 'number') {
-    boardScale.value = clamp(state.referenceBoardScale, 0.1, 20)
-  }
-  if (state.referenceBoardPan) {
-    boardPan.value = { ...state.referenceBoardPan }
-  }
-
-  const selectedItemId = state.selectedReferenceBoardItemId
-  const selectedItemExists =
-    typeof selectedItemId === 'number' &&
-    library.value.referenceBoardItems.some(
-      (item) => item.id === selectedItemId && item.boardId === state.activeReferenceBoardId,
-    )
-  selectedReferenceBoardItemId.value = selectedItemExists ? selectedItemId : null
+  restoreReferenceBoardMemoryStateFor(state.activeReferenceBoardId)
+  clearPendingReferenceBoardMemoryRestoreIfApplied(state.activeReferenceBoardId)
 }
 
 function clamp(value: number, min: number, max: number) {

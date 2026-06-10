@@ -17,6 +17,7 @@
         "height": 820,
         "decorations": false,
         "dragDropEnabled": false,
+        "visible": false,
         "minWidth": 500,
         "minHeight": 500
       }
