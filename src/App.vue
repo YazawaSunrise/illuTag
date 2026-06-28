@@ -3,6 +3,7 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import FolderClose from '@icon-park/vue-next/es/icons/FolderClose'
 import FolderOpen from '@icon-park/vue-next/es/icons/FolderOpen'
+import MoreApp from '@icon-park/vue-next/es/icons/MoreApp'
 import Pushpin from '@icon-park/vue-next/es/icons/Pushpin'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import GalleryView from './components/GalleryView.vue'
@@ -11,6 +12,7 @@ import LeftSidebar from './components/LeftSidebar.vue'
 import RightSidebar from './components/RightSidebar.vue'
 import ReferenceBoardView from './components/ReferenceBoardView.vue'
 import SettingsView from './components/SettingsView.vue'
+import SlideshowOverlay from './components/SlideshowOverlay.vue'
 import { useAppSettings } from './composables/useAppSettings'
 import { useBackgroundScan } from './composables/useBackgroundScan'
 import { useThumbnailGeneration } from './composables/useThumbnailGeneration'
@@ -36,6 +38,36 @@ import type {
   ReferenceBoardItem,
   ViewMode,
 } from './types/app-state'
+
+type GalleryBrowseMode = 'default' | 'sidebar-disabled' | 'carousel'
+type MigrationBackupInspection = {
+  schemaVersion: number
+  exportedAt: number
+  appVersion: string
+  folderCount: number
+  imageCount: number
+  userFolderCount: number
+  referenceBoardCount: number
+  pathStatuses: Array<{ path: string; exists: boolean }>
+  frontendSettings?: {
+    localStorage?: Record<string, string>
+  }
+}
+
+type MigrationBackupPathMapping = {
+  from: string
+  to: string
+}
+
+type OrganizedExportManifest = {
+  entries: Array<{
+    imageId: string
+    originalPath: string
+    folderId: number
+    folderPath: string
+    exportedPath: string
+  }>
+}
 
 const appSetupStartMs = performance.now()
 console.info(`[startup-prof] App.vue setup_start_ms=${appSetupStartMs.toFixed(1)}`)
@@ -102,6 +134,10 @@ const referenceBoardSidebarsDisabled = ref(
     ? Boolean(initialReferenceBoardMemoryState.referenceBoardSidebarsDisabled)
     : false,
 )
+const galleryBrowseMode = ref<GalleryBrowseMode>('default')
+const galleryBrowseModeBeforeSlideshow = ref<GalleryBrowseMode>('default')
+const slideshowOpen = ref(false)
+const slideshowStartIndex = ref(0)
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
 const importLibraryFolderPickerItemId = ref<number | null>(null)
 const importLibraryFolderPickerResolve = ref<((folderId: number | null) => void) | null>(null)
@@ -109,14 +145,21 @@ const sidebarHoverCloseTimer = ref<number | null>(null)
 const rightSidebarHoverCloseTimer = ref<number | null>(null)
 const boardPointerUseMaxAgeMs = 5000
 const sidebarPointerUseMaxAgeMs = 5000
+const sidebarPreheatZoneWidth = 220
+const sidebarTriggerZoneWidth = 30
 const referenceBoardSidebarHoverHoldMs = 250
 const sidebarHoverCloseHoldUntil = ref(0)
+const isLeftSidebarPreheatActive = ref(false)
+const isRightSidebarPreheatActive = ref(false)
 const lastPointerPosition = ref<{ x: number; y: number; at: number } | null>(null)
 const pendingWorkspaceRestore = ref<LastWorkspaceState | null>(initialWorkspaceState)
 const pendingReferenceBoardMemoryRestore = ref<ReferenceBoardMemoryState | null>(initialReferenceBoardMemoryState)
 const workspaceRestoreApplied = ref(false)
 const isSettingsView = computed(() => viewMode.value === 'settings')
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
+const gallerySidebarsDisabled = computed(
+  () => viewMode.value === 'gallery' && (galleryBrowseMode.value === 'sidebar-disabled' || slideshowOpen.value),
+)
 const sidebarOpen = computed(() => sidebarPinnedEffective.value || sidebarHoverOpen.value)
 const rightSidebarOpen = computed(() => rightSidebarPinned.value || rightSidebarHoverOpen.value)
 const isTitlebarPinned = computed(() => {
@@ -528,9 +571,11 @@ const {
   },
   onOpenImageDetail() {
     imageDetailContextMenu.value = null
+    resetImageDetailMediaTransform()
   },
   onCloseImageDetail() {
     imageDetailContextMenu.value = null
+    resetImageDetailMediaTransform()
   },
 })
 
@@ -556,10 +601,23 @@ const imageDetailSupplementSuggestions = ref<KnownAutoTagSuggestion[]>([])
 const imageDetailSupplementSuggestLoading = ref(false)
 const imageDetailSupplementSuggestTimer = ref<number | null>(null)
 const imageDetailSupplementSuggestRequestToken = ref(0)
+const imageDetailMediaScale = ref(1)
+const imageDetailMediaPan = ref({ x: 0, y: 0 })
+const imageDetailMediaDrag = ref<null | {
+  pointerId: number
+  startX: number
+  startY: number
+  panX: number
+  panY: number
+}>(null)
 
 const favoriteVisibleImageIds = computed(() =>
   visibleImages.value.filter((image) => image.isFavorite).map((image) => image.id),
 )
+const imageDetailMediaStyle = computed(() => ({
+  transform: `translate3d(${imageDetailMediaPan.value.x}px, ${imageDetailMediaPan.value.y}px, 0) scale(${imageDetailMediaScale.value})`,
+  cursor: imageDetailMediaScale.value > 1 ? (imageDetailMediaDrag.value ? 'grabbing' : 'grab') : 'zoom-in',
+}))
 const isGalleryBatchMode = ref(false)
 const galleryBatchSelectedImageIds = ref<string[]>([])
 type GalleryBatchActionItem = {
@@ -1773,12 +1831,28 @@ watch(rightSidebarPinned, async (value) => {
   updateViewportSize()
 })
 
+watch(gallerySidebarsDisabled, (disabled) => {
+  if (!disabled) return
+  sidebarHoverOpen.value = false
+  rightSidebarHoverOpen.value = false
+  isLeftSidebarPreheatActive.value = false
+  isRightSidebarPreheatActive.value = false
+  clearSidebarHoverCloseTimer()
+  clearRightSidebarHoverCloseTimer()
+})
+
 watch(
   () => activeImageDetailId.value,
   () => {
     resetImageDetailUserTagEditor()
   },
 )
+
+watch(visibleImages, (images) => {
+  if (slideshowOpen.value && images.length === 0) {
+    closeGallerySlideshow()
+  }
+})
 
 watch(
   () => imageDetailSupplementQuery.value,
@@ -2571,12 +2645,14 @@ async function closeWindow() {
 function openSidebarByHover() {
   clearSidebarHoverCloseTimer()
   if (isSettingsView.value) return
+  if (gallerySidebarsDisabled.value) return
   if (viewMode.value === 'board' && referenceBoardSidebarsDisabled.value) return
   if (!sidebarPinned.value) sidebarHoverOpen.value = true
 }
 
 function openRightSidebarByHover() {
   clearRightSidebarHoverCloseTimer()
+  if (gallerySidebarsDisabled.value) return
   if (viewMode.value === 'board' && referenceBoardSidebarsDisabled.value) return
   if (!rightSidebarPinned.value) rightSidebarHoverOpen.value = true
 }
@@ -2592,14 +2668,37 @@ function trackGlobalPointerPosition(event: PointerEvent) {
 
 function recoverSidebarsFromPointerPosition() {
   if (isSearchFocused.value || isSearchPointerInside.value) return
+  if (gallerySidebarsDisabled.value) {
+    isLeftSidebarPreheatActive.value = false
+    isRightSidebarPreheatActive.value = false
+    return
+  }
   const pointer = lastPointerPosition.value
   if (!pointer || performance.now() - pointer.at > sidebarPointerUseMaxAgeMs) return
-  if (isPointInsideElement('.sidebar-hotspot', pointer.x, pointer.y)) {
+  isLeftSidebarPreheatActive.value = isPointInsideLeftSidebarPreheatZone(pointer.x)
+  isRightSidebarPreheatActive.value = isPointInsideRightSidebarPreheatZone(pointer.x)
+  if (isPointInsideLeftSidebarTriggerZone(pointer.x)) {
     openSidebarByHover()
   }
-  if (isPointInsideElement('.right-sidebar-hotspot', pointer.x, pointer.y)) {
+  if (isPointInsideRightSidebarTriggerZone(pointer.x)) {
     openRightSidebarByHover()
   }
+}
+
+function isPointInsideLeftSidebarPreheatZone(x: number) {
+  return x >= 0 && x <= sidebarPreheatZoneWidth
+}
+
+function isPointInsideRightSidebarPreheatZone(x: number) {
+  return x >= window.innerWidth - sidebarPreheatZoneWidth && x <= window.innerWidth
+}
+
+function isPointInsideLeftSidebarTriggerZone(x: number) {
+  return x >= 0 && x <= sidebarTriggerZoneWidth
+}
+
+function isPointInsideRightSidebarTriggerZone(x: number) {
+  return x >= window.innerWidth - sidebarTriggerZoneWidth && x <= window.innerWidth
 }
 
 function isPointInsideElement(selector: string, x: number, y: number) {
@@ -2643,7 +2742,11 @@ function clearSidebarHoverCloseTimer() {
 }
 
 function isSidebarHoverSafeAreaActive() {
-  return isPointerInsideAnyElement(['.sidebar', '.sidebar-hotspot'])
+  const pointer = lastPointerPosition.value
+  return (
+    Boolean(pointer && performance.now() - pointer.at <= sidebarPointerUseMaxAgeMs && isPointInsideLeftSidebarPreheatZone(pointer.x)) ||
+    isPointerInsideAnyElement(['.sidebar', '.sidebar-hotspot'])
+  )
 }
 
 function closeRightSidebarByHover() {
@@ -2677,12 +2780,18 @@ function clearRightSidebarHoverCloseTimer() {
 }
 
 function isRightSidebarHoverSafeAreaActive() {
-  return isPointerInsideAnyElement(['.right-sidebar', '.right-sidebar-hotspot'])
+  const pointer = lastPointerPosition.value
+  return (
+    Boolean(pointer && performance.now() - pointer.at <= sidebarPointerUseMaxAgeMs && isPointInsideRightSidebarPreheatZone(pointer.x)) ||
+    isPointerInsideAnyElement(['.right-sidebar', '.right-sidebar-hotspot'])
+  )
 }
 
 function onWindowMouseOut(event: MouseEvent) {
   if (event.relatedTarget) return
   lastPointerPosition.value = null
+  isLeftSidebarPreheatActive.value = false
+  isRightSidebarPreheatActive.value = false
   closeSidebarByHover()
   closeRightSidebarByHover()
 }
@@ -2939,6 +3048,69 @@ function openImageDetailMenu(event: MouseEvent) {
   openImageDetailMenuState(event, Boolean(activeImageDetail.value), closeReferenceBoardCanvasMenu)
 }
 
+function resetImageDetailMediaTransform() {
+  imageDetailMediaScale.value = 1
+  imageDetailMediaPan.value = { x: 0, y: 0 }
+  imageDetailMediaDrag.value = null
+}
+
+function zoomImageDetailMedia(event: WheelEvent) {
+  if (!activeImageDetail.value) return
+  event.preventDefault()
+  closeImageDetailContextMenu()
+  const nextScale = clamp(
+    imageDetailMediaScale.value * (event.deltaY < 0 ? 1.12 : 0.88),
+    1,
+    8,
+  )
+  imageDetailMediaScale.value = nextScale
+  if (nextScale === 1) {
+    imageDetailMediaPan.value = { x: 0, y: 0 }
+  }
+}
+
+function startImageDetailMediaDrag(event: PointerEvent) {
+  if (event.button !== 0 || imageDetailMediaScale.value <= 1) return
+  event.preventDefault()
+  closeImageDetailContextMenu()
+  imageDetailMediaDrag.value = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    panX: imageDetailMediaPan.value.x,
+    panY: imageDetailMediaPan.value.y,
+  }
+  ;(event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId)
+}
+
+function moveImageDetailMediaDrag(event: PointerEvent) {
+  const drag = imageDetailMediaDrag.value
+  if (!drag || drag.pointerId !== event.pointerId) return
+  imageDetailMediaPan.value = {
+    x: drag.panX + event.clientX - drag.startX,
+    y: drag.panY + event.clientY - drag.startY,
+  }
+}
+
+function finishImageDetailMediaDrag(event: PointerEvent) {
+  const drag = imageDetailMediaDrag.value
+  if (!drag || drag.pointerId !== event.pointerId) return
+  imageDetailMediaDrag.value = null
+  ;(event.currentTarget as HTMLElement | null)?.releasePointerCapture?.(event.pointerId)
+}
+
+async function openGalleryImageWithDefaultApp(imageId: string) {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_gallery_image_with_default_app_command', { imageId })
+  } catch (error) {
+    errorText.value = formatError(error)
+  } finally {
+    imageDetailContextMenu.value = null
+    closeGalleryImageContextMenu()
+  }
+}
+
 async function exportGalleryImage(imageId: string) {
   const image = library.value.images.find((entry) => entry.id === imageId)
   const destination = await save({
@@ -3025,6 +3197,11 @@ async function toggleGalleryImageFavorite(imageId: string, favorite: boolean) {
   } catch (error) {
     errorText.value = formatError(error)
   }
+}
+
+async function favoriteGalleryImageFromDetailMenu(imageId: string) {
+  await toggleGalleryImageFavorite(imageId, true)
+  imageDetailContextMenu.value = null
 }
 
 async function removeGalleryImageFromFolder(imageId: string) {
@@ -3326,12 +3503,158 @@ function toggleReferenceBoardSidebarsDisabled() {
   saveLastWorkspaceState()
 }
 
+function openGallerySlideshow() {
+  if (visibleImages.value.length === 0) return
+  galleryBrowseModeBeforeSlideshow.value =
+    galleryBrowseMode.value === 'carousel' ? 'default' : galleryBrowseMode.value
+  const firstRenderedImageId = renderedLayoutItems.value[0]?.id
+  const firstRenderedIndex = firstRenderedImageId
+    ? visibleImages.value.findIndex((image) => image.id === firstRenderedImageId)
+    : -1
+  slideshowStartIndex.value = firstRenderedIndex >= 0 ? firstRenderedIndex : 0
+  slideshowOpen.value = true
+  galleryBrowseMode.value = 'carousel'
+  sidebarHoverOpen.value = false
+  rightSidebarHoverOpen.value = false
+  isLeftSidebarPreheatActive.value = false
+  isRightSidebarPreheatActive.value = false
+}
+
+function closeGallerySlideshow() {
+  slideshowOpen.value = false
+  galleryBrowseMode.value = galleryBrowseModeBeforeSlideshow.value
+  isLeftSidebarPreheatActive.value = false
+  isRightSidebarPreheatActive.value = false
+}
+
+function setGalleryBrowseMode(mode: GalleryBrowseMode) {
+  if (mode === 'carousel') {
+    openGallerySlideshow()
+    return
+  }
+  galleryBrowseMode.value = mode
+  if (mode === 'sidebar-disabled') {
+    sidebarHoverOpen.value = false
+    rightSidebarHoverOpen.value = false
+    isLeftSidebarPreheatActive.value = false
+    isRightSidebarPreheatActive.value = false
+  }
+}
+
+function collectMigrationFrontendSettings() {
+  const localStorageSnapshot: Record<string, string> = {}
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index)
+    if (!key || !key.startsWith('illutag.')) continue
+    const value = localStorage.getItem(key)
+    if (value !== null) {
+      localStorageSnapshot[key] = value
+    }
+  }
+  return {
+    localStorage: localStorageSnapshot,
+  }
+}
+
+function applyMigrationFrontendSettings(settings?: MigrationBackupInspection['frontendSettings']) {
+  const snapshot = settings?.localStorage
+  if (!snapshot || typeof snapshot !== 'object') return
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (!key.startsWith('illutag.')) continue
+    localStorage.setItem(key, String(value))
+  }
+  initAppSettingsFromStorage()
+  initAutoScanOnStartupFromStorage()
+  expandedReferenceBoardFolderIds.value = readStoredIdSet(expandedReferenceBoardFolderIdsStorageKey)
+  previewReferenceBoardIds.value = readStoredIdSet(previewReferenceBoardIdsStorageKey)
+}
+
+async function exportMigrationBackup() {
+  const destination = await save({
+    title: '导出 illuTag 数据迁移备份',
+    defaultPath: `illutag-backup-${new Date().toISOString().slice(0, 10)}.json`,
+    filters: [{ name: 'illuTag 数据备份', extensions: ['json'] }],
+  })
+  if (!destination || Array.isArray(destination)) return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('export_data_migration_backup_command', {
+      destinationPath: destination,
+      frontendSettings: collectMigrationFrontendSettings(),
+    })
+    statusText.value = '数据迁移备份已导出'
+    errorText.value = ''
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function importMigrationBackup() {
+  const selected = await open({
+    title: '导入 illuTag 数据迁移备份',
+    multiple: false,
+    filters: [{ name: 'illuTag 数据备份', extensions: ['json'] }],
+  })
+  if (!selected || Array.isArray(selected)) return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const inspection = await invoke<MigrationBackupInspection>('inspect_data_migration_backup_command', {
+      backupPath: selected,
+    })
+    const pathMappings: MigrationBackupPathMapping[] = []
+    for (const status of inspection.pathStatuses) {
+      if (status.exists) continue
+      const remapped = await open({
+        title: `选择新图库路径：${status.path}`,
+        directory: true,
+        multiple: false,
+      })
+      if (!remapped || Array.isArray(remapped)) {
+        errorText.value = `已取消导入：缺少路径重映射 ${status.path}`
+        return
+      }
+      pathMappings.push({ from: status.path, to: remapped })
+    }
+    library.value = await invoke<LibraryStore>('import_data_migration_backup_command', {
+      backupPath: selected,
+      pathMappings,
+    })
+    applyMigrationFrontendSettings(inspection.frontendSettings)
+    statusText.value = `已导入备份：${inspection.imageCount} 张图片，${inspection.referenceBoardCount} 个参考板`
+    errorText.value = ''
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function exportOrganizedFolderResult() {
+  const destination = await open({
+    title: '选择整理结果导出目录',
+    directory: true,
+    multiple: false,
+  })
+  if (!destination || Array.isArray(destination)) return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const manifest = await invoke<OrganizedExportManifest>('export_organized_folder_result_command', {
+      destinationDir: destination,
+    })
+    statusText.value = `整理结果已导出：${manifest.entries.length} 个文件`
+    errorText.value = ''
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
 const settingsViewHandlers = {
   setSidebarPinned,
   setAutoHideTitlebarInWindowMode,
   setThemeMode,
   setAutoFixRightSidebarOnPreview,
   setThumbnailCacheEnabled,
+  exportMigrationBackup,
+  importMigrationBackup,
+  exportOrganizedFolderResult,
   startThumbnailGeneration,
   pauseThumbnailGeneration,
   resumeThumbnailGeneration,
@@ -3510,6 +3833,7 @@ const galleryViewHandlers = {
   onGalleryBatchAction,
   toggleGalleryBatchImageSelection,
   appendGalleryBatchImageSelection,
+  setGalleryBrowseMode,
 }
 
 const overlayHandlers = {
@@ -3740,11 +4064,15 @@ console.info(
     class="app-shell"
     :class="{
       'is-sidebar-pinned': sidebarPinnedEffective,
+      'is-gallery-view': viewMode === 'gallery',
       'is-settings-view': isSettingsView,
+      'is-left-sidebar-preheat-active': isLeftSidebarPreheatActive && !sidebarOpen,
+      'is-right-sidebar-preheat-active': isRightSidebarPreheatActive && !rightSidebarOpen,
       'is-titlebar-pinned': isTitlebarPinned,
       'is-window-maximized': isWindowMaximized,
       'is-gallery-search-active': isSearchFocused || isSearchPointerInside,
       'is-reference-board-sidebars-disabled': viewMode === 'board' && referenceBoardSidebarsDisabled,
+      'is-gallery-sidebars-disabled': gallerySidebarsDisabled,
       'theme-light': themeMode === 'light',
       'theme-dark': themeMode === 'dark',
     }"
@@ -3810,8 +4138,12 @@ console.info(
         </button>
       </div>
     </header>
-    <div v-if="!isSettingsView" class="sidebar-hotspot" @mouseenter="openSidebarByHover" />
-    <div class="right-sidebar-hotspot" @mouseenter="openRightSidebarByHover" />
+    <div v-if="!isSettingsView" class="sidebar-hotspot" @mouseenter="openSidebarByHover">
+      <MoreApp class="sidebar-hotspot__icon" theme="outline" :size="15" :fill="['currentColor']" aria-hidden="true" />
+    </div>
+    <div class="right-sidebar-hotspot" @mouseenter="openRightSidebarByHover">
+      <MoreApp class="sidebar-hotspot__icon" theme="outline" :size="15" :fill="['currentColor']" aria-hidden="true" />
+    </div>
 
     <LeftSidebar
       :visible="sidebarOpen"
@@ -3944,6 +4276,7 @@ console.info(
             :search-confidence-max="searchConfidenceMax"
             :search-running="searchRunning"
             :search-error="searchError"
+            :gallery-browse-mode="galleryBrowseMode"
             :is-loading="isLoading"
             :show-unclassified-toggle="showGalleryUnclassifiedToggle"
             :is-unclassified-only="isGalleryUnclassifiedOnly"
@@ -3976,6 +4309,15 @@ console.info(
       :reference-board-sidebars-disabled="referenceBoardSidebarsDisabled"
       :drag-state="dragState"
       :handlers="overlayHandlers"
+    />
+
+    <SlideshowOverlay
+      v-if="slideshowOpen"
+      :images="visibleImages"
+      :initial-index="slideshowStartIndex"
+      :to-file-src="convertFileSrc"
+      @close="closeGallerySlideshow"
+      @favorite-toggle="toggleGalleryImageFavorite"
     />
 
     <div
@@ -4475,14 +4817,28 @@ console.info(
     </div>
 
     <div v-if="activeImageDetail" class="image-detail-layer" @click="closeImageDetail()">
-      <article class="image-detail-modal" @click.stop>
+      <article class="image-detail-modal" @click.stop="closeImageDetailContextMenu()">
         <button class="image-detail-modal__close" type="button" @click="closeImageDetail()">×</button>
         <div class="image-detail-modal__scroll">
           <div class="image-detail-modal__main">
             <div class="image-detail-modal__media-column">
               <div class="image-detail-modal__media-sticky">
-                <div class="image-detail-modal__media" @contextmenu="openImageDetailMenu($event)">
-                  <img :src="convertFileSrc(activeImageDetail.path)" :alt="activeImageDetail.fileName" draggable="false" />
+                <div
+                  class="image-detail-modal__media"
+                  @contextmenu="openImageDetailMenu($event)"
+                  @wheel="zoomImageDetailMedia($event)"
+                  @pointerdown="startImageDetailMediaDrag($event)"
+                  @pointermove="moveImageDetailMediaDrag($event)"
+                  @pointerup="finishImageDetailMediaDrag($event)"
+                  @pointercancel="finishImageDetailMediaDrag($event)"
+                  @dblclick="resetImageDetailMediaTransform()"
+                >
+                  <img
+                    :src="convertFileSrc(activeImageDetail.path)"
+                    :alt="activeImageDetail.fileName"
+                    :style="imageDetailMediaStyle"
+                    draggable="false"
+                  />
                 </div>
               </div>
             </div>
@@ -4771,8 +5127,8 @@ console.info(
           @click.stop
           @contextmenu.prevent
         >
-          <button type="button" @click="copyGalleryImageToClipboard(activeImageDetail.id)">复制</button>
-          <button type="button" @click="exportGalleryImage(activeImageDetail.id)">导出到本地</button>
+          <button type="button" @click="favoriteGalleryImageFromDetailMenu(activeImageDetail.id)">加入到我喜爱的</button>
+          <button type="button" @click="openGalleryImageWithDefaultApp(activeImageDetail.id)">使用默认软件打开</button>
         </div>
       </article>
     </div>

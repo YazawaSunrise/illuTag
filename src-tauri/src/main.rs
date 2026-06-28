@@ -45,6 +45,7 @@ use illutag_core::library::{
     add_image_user_supplement_tag, remove_image_user_supplement_tag,
     list_tag_management_state, create_user_tag_folder, rename_user_tag_folder, delete_user_tag_folder,
     assign_user_tag_to_folder, unassign_user_tag_from_folder, create_user_custom_tag, delete_user_custom_tag,
+    export_data_migration_backup, export_organized_folder_result, inspect_data_migration_backup, import_data_migration_backup,
     search_gallery_image_ids, start_startup_cleanup, startup_cleanup_status, suggest_known_auto_tags,
     move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
@@ -58,12 +59,13 @@ use illutag_core::library::{
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_collect_only, start_scan_all_folders_with_tagging, start_tag_pending_images_only, test_wd_swinv2_tagger,
-    AppState, AtmosphereGenerationProgress, BackgroundScanProgress, BackgroundScanStatus, BatchSupplementTagInput, BatchSystemTrashResult, ColorSignatureGenerationProgress, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
+    AppState, AtmosphereGenerationProgress, BackupPathMapping, BackgroundScanProgress, BackgroundScanStatus, BatchSupplementTagInput, BatchSystemTrashResult, ColorSignatureGenerationProgress, DataMigrationBackupInspection, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, OrganizedExportManifest, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -434,6 +436,39 @@ fn remove_image_user_supplement_tag_command(
 #[tauri::command]
 fn list_tag_management_state_command(state: State<AppState>) -> Result<TagManagementState, String> {
     list_tag_management_state(&state)
+}
+
+#[tauri::command]
+fn export_data_migration_backup_command(
+    destination_path: String,
+    frontend_settings: Option<serde_json::Value>,
+    state: State<AppState>,
+) -> Result<(), String> {
+    export_data_migration_backup(destination_path, frontend_settings, &state)
+}
+
+#[tauri::command]
+fn inspect_data_migration_backup_command(
+    backup_path: String,
+) -> Result<DataMigrationBackupInspection, String> {
+    inspect_data_migration_backup(backup_path)
+}
+
+#[tauri::command]
+fn import_data_migration_backup_command(
+    backup_path: String,
+    path_mappings: Vec<BackupPathMapping>,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    import_data_migration_backup(backup_path, path_mappings, &state)
+}
+
+#[tauri::command]
+fn export_organized_folder_result_command(
+    destination_dir: String,
+    state: State<AppState>,
+) -> Result<OrganizedExportManifest, String> {
+    export_organized_folder_result(destination_dir, &state)
 }
 
 #[tauri::command]
@@ -1112,6 +1147,63 @@ fn window_start_dragging_command(window: tauri::Window) -> Result<(), String> {
         .map_err(|error| format!("failed to start dragging window: {error}"))
 }
 
+#[tauri::command]
+fn open_gallery_image_with_default_app_command(
+    image_id: String,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let library = list_library_from_state(&state)?;
+    let image = library
+        .images
+        .iter()
+        .find(|entry| entry.id == image_id)
+        .ok_or_else(|| "Image not found".to_string())?;
+    open_path_with_default_app(&image.path)
+}
+
+fn open_path_with_default_app(path: &str) -> Result<(), String> {
+    let normalized_path = path.strip_prefix(r"\\?\").unwrap_or(path);
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(normalized_path)
+            .spawn()
+            .map_err(|error| format!("Failed to open image with default app: {error}"))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(normalized_path)
+            .status()
+            .map_err(|error| format!("Failed to open image with default app: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed to open image with default app. status={status}"
+            ))
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let status = Command::new("xdg-open")
+            .arg(normalized_path)
+            .status()
+            .map_err(|error| format!("Failed to open image with default app: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed to open image with default app. status={status}"
+            ))
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1239,6 +1331,10 @@ fn main() {
             add_image_user_supplement_tag_command,
             remove_image_user_supplement_tag_command,
             list_tag_management_state_command,
+            export_data_migration_backup_command,
+            inspect_data_migration_backup_command,
+            import_data_migration_backup_command,
+            export_organized_folder_result_command,
             create_user_tag_folder_command,
             create_user_custom_tag_command,
             delete_user_custom_tag_command,
@@ -1288,6 +1384,7 @@ fn main() {
             window_toggle_always_on_top_command,
             window_is_always_on_top_command,
             window_start_dragging_command,
+            open_gallery_image_with_default_app_command,
             window_close_command
         ])
         .run(tauri::generate_context!())

@@ -2,6 +2,7 @@
 import LoadingOne from '@icon-park/vue-next/es/icons/LoadingOne'
 import Search from '@icon-park/vue-next/es/icons/Search'
 import CircleDoubleUp from '@icon-park/vue-next/es/icons/CircleDoubleUp'
+import AppSwitch from '@icon-park/vue-next/es/icons/AppSwitch'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import SegmentedMasonry from './SegmentedMasonry.vue'
 import type { GalleryLayoutItem } from '../types/gallery'
@@ -34,6 +35,8 @@ type GalleryBatchActionItem = {
   label: string
 }
 
+type GalleryBrowseMode = 'default' | 'sidebar-disabled' | 'carousel'
+
 const props = defineProps<{
   previewDragOverDeleteZone: boolean
   visibleImages: Array<{ id: string }>
@@ -56,6 +59,7 @@ const props = defineProps<{
   searchConfidenceMax: number
   searchRunning: boolean
   searchError: string
+  galleryBrowseMode: GalleryBrowseMode
   isLoading: boolean
   showUnclassifiedToggle: boolean
   isUnclassifiedOnly: boolean
@@ -78,6 +82,7 @@ const searchPanelResizeObserver = ref<ResizeObserver | null>(null)
 const searchHideTimer = ref<number | null>(null)
 const lastPointerClient = ref<{ x: number; y: number } | null>(null)
 const viewportSyncRaf = ref<number | null>(null)
+const browseModeMenuOpen = ref(false)
 const suppressOutsideClickOnce = ref(false)
 const searchChipsEl = ref<HTMLElement | null>(null)
 const searchChipsDragState = ref<{
@@ -131,6 +136,32 @@ function syncSearchViewportState() {
   )
 }
 
+function toggleBrowseModeMenu() {
+  browseModeMenuOpen.value = !browseModeMenuOpen.value
+}
+
+function closeBrowseModeMenu() {
+  browseModeMenuOpen.value = false
+}
+
+function setBrowseMode(mode: GalleryBrowseMode) {
+  props.handlers.setGalleryBrowseMode(mode)
+  closeBrowseModeMenu()
+}
+
+function browseModeLabel(mode: GalleryBrowseMode) {
+  if (mode === 'sidebar-disabled') return '禁用侧栏'
+  if (mode === 'carousel') return '轮播模式'
+  return '默认模式'
+}
+
+function onWindowPointerDown(event: PointerEvent) {
+  if (!browseModeMenuOpen.value) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.gallery-search__browse-mode-wrap')) return
+  closeBrowseModeMenu()
+}
+
 onMounted(async () => {
   console.info(`[startup-prof] GalleryView mounted_ms=${performance.now().toFixed(1)}`)
   console.info(`[startup-prof] GalleryView first_setGalleryElement_before_ms=${performance.now().toFixed(1)}`)
@@ -154,6 +185,7 @@ onMounted(async () => {
   }
   window.addEventListener('resize', scheduleSearchViewportSync, { passive: true })
   window.addEventListener('pointermove', trackPointerPosition, { passive: true })
+  window.addEventListener('pointerdown', onWindowPointerDown, { passive: true })
   await nextTick()
   const firstScreenImgNodes = gallerySectionEl.value?.querySelectorAll('.masonry__item img').length ?? 0
   console.info(
@@ -171,6 +203,7 @@ onBeforeUnmount(() => {
   searchPanelResizeObserver.value = null
   window.removeEventListener('resize', scheduleSearchViewportSync)
   window.removeEventListener('pointermove', trackPointerPosition)
+  window.removeEventListener('pointerdown', onWindowPointerDown)
   props.handlers.setGalleryElement(null)
   props.handlers.setSearchPointerInside(false)
   props.handlers.setSearchFocus(false)
@@ -988,6 +1021,56 @@ function onSearchWheel(event: WheelEvent) {
             :fill="['currentColor']"
           />
         </button>
+        <div class="gallery-search__browse-mode-wrap">
+          <button
+            type="button"
+            class="gallery-search__browse-mode"
+            :class="{ 'is-active': galleryBrowseMode !== 'default' }"
+            :aria-label="`浏览模式：${browseModeLabel(galleryBrowseMode)}`"
+            aria-haspopup="menu"
+            :aria-expanded="browseModeMenuOpen"
+            @click.stop="toggleBrowseModeMenu"
+          >
+            <AppSwitch
+              class="gallery-search__browse-mode-icon"
+              theme="outline"
+              :size="18"
+              :stroke-width="3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              :fill="['currentColor']"
+            />
+          </button>
+          <div v-if="browseModeMenuOpen" class="gallery-search__browse-menu" role="menu" @click.stop>
+            <button
+              type="button"
+              class="gallery-search__browse-menu-item"
+              :class="{ 'is-active': galleryBrowseMode === 'default' }"
+              role="menuitem"
+              @click="setBrowseMode('default')"
+            >
+              默认模式
+            </button>
+            <button
+              type="button"
+              class="gallery-search__browse-menu-item"
+              :class="{ 'is-active': galleryBrowseMode === 'sidebar-disabled' }"
+              role="menuitem"
+              @click="setBrowseMode('sidebar-disabled')"
+            >
+              禁用侧栏
+            </button>
+            <button
+              type="button"
+              class="gallery-search__browse-menu-item"
+              :class="{ 'is-active': galleryBrowseMode === 'carousel' }"
+              role="menuitem"
+              @click="setBrowseMode('carousel')"
+            >
+              轮播模式
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

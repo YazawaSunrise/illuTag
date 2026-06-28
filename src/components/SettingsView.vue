@@ -1,9 +1,22 @@
 ﻿<script setup lang="ts">
+import { ref } from 'vue'
+
 type LibraryFolder = {
   path: string
 }
 
 type ThemeMode = 'light' | 'dark'
+type ExportDialogMode = 'migration' | 'organized' | null
+
+const exportDialogMode = ref<ExportDialogMode>(null)
+
+function openExportDialog(mode: Exclude<ExportDialogMode, null>) {
+  exportDialogMode.value = mode
+}
+
+function closeExportDialog() {
+  exportDialogMode.value = null
+}
 
 defineProps<{
   sidebarPinned: boolean
@@ -401,6 +414,15 @@ defineProps<{
       </ul>
     </div>
 
+    <div class="settings__export-actions">
+      <button class="secondary-button" type="button" @click="openExportDialog('migration')">
+        数据迁移备份
+      </button>
+      <button class="secondary-button" type="button" @click="openExportDialog('organized')">
+        整理结果导出
+      </button>
+    </div>
+
     <form class="folder-form" @submit.prevent>
       <input
         :value="folderPathInput"
@@ -431,5 +453,63 @@ defineProps<{
       </div>
     </div>
     <div v-else class="empty-panel">还没有图库文件夹。</div>
+
+    <div v-if="exportDialogMode" class="settings-export-dialog-layer" @click="closeExportDialog()">
+      <article class="settings-export-dialog" @click.stop>
+        <header class="settings-export-dialog__header">
+          <h3>{{ exportDialogMode === 'migration' ? '数据迁移备份' : '整理结果导出' }}</h3>
+          <button type="button" class="settings-export-dialog__close" @click="closeExportDialog()">×</button>
+        </header>
+
+        <div v-if="exportDialogMode === 'migration'" class="settings-export-dialog__body">
+          <p class="settings-export-dialog__lead">
+            用于换电脑、重装系统或迁移绿色版目录后继续使用 illuTag。该备份只导出软件配置和索引，不导出原图。
+          </p>
+          <section class="settings-export-dialog__section">
+            <h4>导出内容</h4>
+            <p>
+              图库路径、图片索引、用户文件夹树、图片-文件夹关系、收藏/回收站状态、自定义标签、标签管理、文件夹规则、参考板和设置。
+            </p>
+          </section>
+          <section class="settings-export-dialog__section">
+            <h4>导入方式</h4>
+            <p>
+              导入时会检查原图库路径是否仍然存在；如果路径变化，需要把旧路径重映射到新电脑上的实际图库路径。
+            </p>
+          </section>
+          <div class="settings-export-dialog__actions">
+            <button class="secondary-button" type="button" @click="handlers.importMigrationBackup()">
+              导入备份
+            </button>
+            <button class="primary-button" type="button" @click="handlers.exportMigrationBackup()">
+              导出备份
+            </button>
+          </div>
+        </div>
+
+        <div v-else class="settings-export-dialog__body">
+          <p class="settings-export-dialog__lead">
+            用于不继续使用 illuTag 时，导出一份普通文件夹结构，方便在系统文件管理器或其他软件中继续整理。
+          </p>
+          <section class="settings-export-dialog__section">
+            <h4>导出规则</h4>
+            <p>
+              根据软件内用户文件夹树创建本地目录，并把对应图片复制到目录。默认复制，不移动原图。
+            </p>
+          </section>
+          <section class="settings-export-dialog__section">
+            <h4>重复图片与清单</h4>
+            <p>
+              同一图片属于多个文件夹时默认复制多份；同时生成 _illuTag_export_manifest.json，记录原始路径、图片 id 和导出路径。
+            </p>
+          </section>
+          <div class="settings-export-dialog__actions">
+            <button class="primary-button" type="button" @click="handlers.exportOrganizedFolderResult()">
+              选择导出目录
+            </button>
+          </div>
+        </div>
+      </article>
+    </div>
   </section>
 </template>
