@@ -1161,6 +1161,51 @@ fn open_gallery_image_with_default_app_command(
     open_path_with_default_app(&image.path)
 }
 
+#[tauri::command]
+fn open_external_url_command(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    let allowed = trimmed.starts_with("https://github.com/YazawaSunrise/illuTag")
+        || trimmed.starts_with("http://github.com/YazawaSunrise/illuTag");
+    if !allowed {
+        return Err("Unsupported external URL".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|error| format!("Failed to open URL: {error}"))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(trimmed)
+            .status()
+            .map_err(|error| format!("Failed to open URL: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Failed to open URL. status={status}"))
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let status = Command::new("xdg-open")
+            .arg(trimmed)
+            .status()
+            .map_err(|error| format!("Failed to open URL: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Failed to open URL. status={status}"))
+        }
+    }
+}
+
 fn open_path_with_default_app(path: &str) -> Result<(), String> {
     let normalized_path = path.strip_prefix(r"\\?\").unwrap_or(path);
 
@@ -1385,6 +1430,7 @@ fn main() {
             window_is_always_on_top_command,
             window_start_dragging_command,
             open_gallery_image_with_default_app_command,
+            open_external_url_command,
             window_close_command
         ])
         .run(tauri::generate_context!())

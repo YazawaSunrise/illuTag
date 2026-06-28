@@ -49,6 +49,11 @@ defineProps<{
   naturalLanguageScanProgressText: string
   naturalLanguageScanRecentErrors: string[]
   themeMode: ThemeMode
+  appVersion: string
+  updateChecking: boolean
+  updateAvailable: boolean
+  updateLatestVersion: string
+  updateStatusText: string
   folderPathInput: string
   isPickingFolder: boolean
   isAddingFolder: boolean
@@ -421,6 +426,25 @@ defineProps<{
       <button class="secondary-button" type="button" @click="openExportDialog('organized')">
         整理结果导出
       </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="updateChecking"
+        @click="handlers.checkForUpdates()"
+      >
+        {{ updateChecking ? '检查中…' : '检查更新' }}
+      </button>
+      <button
+        v-if="updateAvailable"
+        class="primary-button"
+        type="button"
+        @click="handlers.openLatestRelease()"
+      >
+        打开 GitHub
+      </button>
+      <span class="settings__update-status">
+        {{ updateStatusText || `当前版本 ${appVersion}` }}
+      </span>
     </div>
 
     <form class="folder-form" @submit.prevent>

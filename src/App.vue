@@ -5,6 +5,7 @@ import FolderClose from '@icon-park/vue-next/es/icons/FolderClose'
 import FolderOpen from '@icon-park/vue-next/es/icons/FolderOpen'
 import MoreApp from '@icon-park/vue-next/es/icons/MoreApp'
 import Pushpin from '@icon-park/vue-next/es/icons/Pushpin'
+import UpdateRotation from '@icon-park/vue-next/es/icons/UpdateRotation'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import GalleryView from './components/GalleryView.vue'
 import AppOverlayLayer from './components/AppOverlayLayer.vue'
@@ -69,9 +70,19 @@ type OrganizedExportManifest = {
   }>
 }
 
+type GithubLatestRelease = {
+  tag_name?: string
+  html_url?: string
+  name?: string
+}
+
 const appSetupStartMs = performance.now()
 console.info(`[startup-prof] App.vue setup_start_ms=${appSetupStartMs.toFixed(1)}`)
 
+const currentAppVersion = __APP_VERSION__
+const updateCheckDelayMs = 8000
+const githubRepoUrl = 'https://github.com/YazawaSunrise/illuTag'
+const githubLatestReleaseApiUrl = 'https://api.github.com/repos/YazawaSunrise/illuTag/releases/latest'
 const expandedReferenceBoardFolderIdsStorageKey = 'illutag.expandedReferenceBoardFolderIds'
 const previewReferenceBoardIdsStorageKey = 'illutag.previewReferenceBoardIds'
 const lastWorkspaceStateStorageKey = 'illutag.lastWorkspaceState'
@@ -117,6 +128,11 @@ const isPickingFolder = ref(false)
 const isAddingFolder = ref(false)
 const statusText = ref('还没有添加图库文件夹')
 const errorText = ref('')
+const updateChecking = ref(false)
+const updateLatestVersion = ref('')
+const updateReleaseUrl = ref('')
+const updateStatusText = ref('')
+const updateErrorText = ref('')
 const folderPathInput = ref('')
 const removeFolderConfirmPath = ref<string | null>(null)
 const removeFromFolderConfirmState = ref<null | {
@@ -172,6 +188,10 @@ const galleryScopeTransitionKey = computed(() => `gallery:${galleryScrollScopeKe
 const workspaceTransitionKey = computed(() =>
   viewMode.value === 'gallery' ? galleryScopeTransitionKey.value : viewMode.value,
 )
+const updateAvailable = computed(
+  () => Boolean(updateLatestVersion.value && updateReleaseUrl.value && compareVersions(updateLatestVersion.value, currentAppVersion) > 0),
+)
+const updateDisplayText = computed(() => updateErrorText.value || updateStatusText.value)
 
 const activeReferenceBoard = computed(() =>
   library.value.referenceBoards.find((board) => board.id === activeReferenceBoardId.value) ?? null,
@@ -1662,6 +1682,69 @@ const {
   },
 })
 
+function normalizeVersion(value: string) {
+  return value.trim().replace(/^v/i, '').split(/[+-]/)[0]
+}
+
+function compareVersions(left: string, right: string) {
+  const leftParts = normalizeVersion(left).split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const rightParts = normalizeVersion(right).split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const length = Math.max(leftParts.length, rightParts.length)
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
+async function checkForUpdates(options: { silent?: boolean } = {}) {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  updateErrorText.value = ''
+  if (!options.silent) {
+    updateStatusText.value = '正在检查更新…'
+  }
+  try {
+    const response = await fetch(githubLatestReleaseApiUrl, {
+      headers: { Accept: 'application/vnd.github+json' },
+      cache: 'no-store',
+    })
+    if (!response.ok) {
+      throw new Error(`GitHub 返回 ${response.status}`)
+    }
+    const release = (await response.json()) as GithubLatestRelease
+    const latestVersion = normalizeVersion(release.tag_name ?? '')
+    if (!latestVersion || !release.html_url) {
+      throw new Error('GitHub Release 信息不完整')
+    }
+    updateLatestVersion.value = latestVersion
+    updateReleaseUrl.value = release.html_url
+    if (compareVersions(latestVersion, currentAppVersion) > 0) {
+      updateStatusText.value = `发现新版本 ${latestVersion}`
+    } else if (!options.silent) {
+      updateStatusText.value = `当前已是最新版本 ${currentAppVersion}`
+    } else {
+      updateStatusText.value = ''
+    }
+  } catch (error) {
+    if (!options.silent) {
+      updateErrorText.value = `检查更新失败：${formatError(error)}`
+    }
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+async function openLatestRelease() {
+  const targetUrl = updateReleaseUrl.value || githubRepoUrl
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_external_url_command', { url: targetUrl })
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
 onMounted(async () => {
   const mountedStart = performance.now()
   console.info(`[startup-prof] App.vue onMounted_start_ms=${mountedStart.toFixed(1)}`)
@@ -1704,6 +1787,9 @@ onMounted(async () => {
   if (thumbnailCacheEnabled.value && !isBackgroundScanRunning.value && !autoScanOnStartup.value) {
     void startThumbnailGeneration()
   }
+  window.setTimeout(() => {
+    void checkForUpdates({ silent: true })
+  }, updateCheckDelayMs)
   console.info(`[startup-prof] App.vue onMounted_end_ms=${performance.now().toFixed(1)}`)
 })
 
@@ -3655,6 +3741,8 @@ const settingsViewHandlers = {
   exportMigrationBackup,
   importMigrationBackup,
   exportOrganizedFolderResult,
+  checkForUpdates,
+  openLatestRelease,
   startThumbnailGeneration,
   pauseThumbnailGeneration,
   resumeThumbnailGeneration,
@@ -4097,6 +4185,22 @@ console.info(
       />
       <div class="app-titlebar__right">
         <button
+          v-if="updateAvailable"
+          class="app-titlebar__button app-titlebar__button--win app-titlebar__button--update"
+          type="button"
+          :aria-label="`发现新版本 ${updateLatestVersion}`"
+          :title="`发现新版本 ${updateLatestVersion}，打开 GitHub Releases`"
+          @click="openLatestRelease"
+        >
+          <UpdateRotation
+            class="app-titlebar__button--update-icon"
+            theme="outline"
+            :size="15"
+            :fill="['currentColor']"
+            aria-hidden="true"
+          />
+        </button>
+        <button
           class="app-titlebar__button app-titlebar__button--win app-titlebar__button--pin"
           :class="{ 'is-active': isWindowAlwaysOnTop }"
           type="button"
@@ -4233,6 +4337,11 @@ console.info(
             :natural-language-scan-progress-text="naturalLanguageScanProgressText"
             :natural-language-scan-recent-errors="naturalLanguageScanRecentErrors"
             :theme-mode="themeMode"
+            :app-version="currentAppVersion"
+            :update-checking="updateChecking"
+            :update-available="updateAvailable"
+            :update-latest-version="updateLatestVersion"
+            :update-status-text="updateDisplayText"
             :folder-path-input="folderPathInput"
             :is-picking-folder="isPickingFolder"
             :is-adding-folder="isAddingFolder"

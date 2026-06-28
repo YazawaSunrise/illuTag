@@ -1197,6 +1197,21 @@ button {
   color: currentColor;
 }
 
+.app-titlebar__button--update {
+  color: #f8fbff;
+  background: linear-gradient(135deg, #2f8dff, #69b7ff);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.22), 0 4px 14px rgb(47 141 255 / 0.26);
+}
+
+.app-titlebar__button--update:hover {
+  background: linear-gradient(135deg, #257fe9, #5babf4);
+}
+
+.app-titlebar__button--update-icon {
+  display: block;
+  color: currentColor;
+}
+
 .app-titlebar__button--pin.is-active {
   color: #82d5b8;
   background: rgb(130 213 184 / 0.24);
@@ -2473,8 +2488,17 @@ button {
 .settings__export-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   max-width: 920px;
+}
+
+.settings__update-status {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  color: #9aa7b5;
+  font-size: 12px;
 }
 
 .settings-export-dialog-layer {
@@ -4300,6 +4324,16 @@ button {
 .app-shell.theme-light .app-titlebar__button--pin.is-active {
   color: #2c7a63;
   background: rgb(130 213 184 / 0.24);
+}
+
+.app-shell.theme-light .app-titlebar__button--update {
+  color: #ffffff;
+  background: linear-gradient(135deg, #257fe9, #5daeff);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.45), 0 4px 12px rgb(37 127 233 / 0.22);
+}
+
+.app-shell.theme-light .app-titlebar__button--update:hover {
+  background: linear-gradient(135deg, #1f73d4, #4f9eec);
 }
 
 .app-shell.theme-light .sidebar.is-pinned {
