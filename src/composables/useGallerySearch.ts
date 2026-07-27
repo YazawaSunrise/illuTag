@@ -14,6 +14,9 @@ type GallerySearchFilters = {
   fileNameQuery: string
   confidenceMin: number
   confidenceMax: number
+  scope?: string
+  folderId?: number | null
+  unclassifiedOnlyParentFolderId?: number | null
 }
 
 type ImageTagRecord = {
@@ -52,6 +55,9 @@ type UseGallerySearchOptions<TLibraryStore extends LibraryStoreLike> = {
   clamp: (value: number, min: number, max: number) => number
   toFileSrc?: (path: string) => string
   pickExternalImagePath?: () => Promise<string | null>
+  getSearchScope?: () => Pick<GallerySearchFilters, 'scope' | 'folderId' | 'unclassifiedOnlyParentFolderId'>
+  getSearchCandidateImageIds?: () => Promise<string[] | null>
+  onSearchResultImageIds?: (imageIds: string[] | null) => void | Promise<void>
   onBeforeRunSearch?: () => void
   onOpenImageDetail?: () => void
   onCloseImageDetail?: () => void
@@ -551,6 +557,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     clearImageSearchInputs()
     searchMode.value = 'text'
     searchError.value = ''
+    void options.onSearchResultImageIds?.(null)
   }
 
   function clearAllSearchInputs() {
@@ -560,6 +567,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
     clearTextSearchInputs()
     clearImageSearchInputs()
     searchMode.value = 'text'
+    void options.onSearchResultImageIds?.(null)
   }
 
   function setExternalImageSearchType(value: 'default' | 'atmosphere' | 'color') {
@@ -712,9 +720,10 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
         }
         const { invoke } = await import('@tauri-apps/api/core')
         const candidateImageIds =
-          options.activeUserFolderId.value === 'trash'
+          (await options.getSearchCandidateImageIds?.()) ??
+          (options.activeUserFolderId.value === 'trash'
             ? []
-            : options.folderScopedImages.value.map((image) => image.id)
+            : options.folderScopedImages.value.map((image) => image.id))
         const rankedIds = await invoke<string[]>('search_gallery_image_ids_by_external_image_command', {
           imagePath: queryPath || null,
           imageUrl: queryPath ? null : queryUrl || null,
@@ -728,6 +737,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
         externalImageRankedImageIds.value = rankedIds
         searchResultImageIds.value = null
         naturalLanguageRankedImageIds.value = null
+        await options.onSearchResultImageIds?.(rankedIds)
       } catch (error) {
         if (token !== searchRequestToken.value) return
         searchError.value = options.formatError(error)
@@ -751,6 +761,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       naturalLanguageRankedImageIds.value = null
       searchRunning.value = false
       searchError.value = ''
+      await options.onSearchResultImageIds?.(null)
       return
     }
 
@@ -760,6 +771,7 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       fileNameQuery: searchFileNameQuery.value,
       confidenceMin: 0,
       confidenceMax: 1,
+      ...(options.getSearchScope?.() ?? {}),
     }
 
     const token = searchRequestToken.value + 1
@@ -778,14 +790,18 @@ export function useGallerySearch<TLibraryStore extends LibraryStoreLike>(
       searchResultImageIds.value = structuredIds ? new Set(structuredIds) : null
 
       if (hasNaturalLanguageQuery) {
+        const candidateImageIds =
+          structuredIds ?? (await options.getSearchCandidateImageIds?.()) ?? null
         const rankedIds = await invoke<string[]>('search_gallery_image_ids_by_natural_language_command', {
           query: naturalLanguageQuery,
-          candidateImageIds: structuredIds,
+          candidateImageIds,
         })
         if (token !== searchRequestToken.value) return
         naturalLanguageRankedImageIds.value = rankedIds
+        await options.onSearchResultImageIds?.(rankedIds)
       } else {
         naturalLanguageRankedImageIds.value = null
+        await options.onSearchResultImageIds?.(structuredIds)
       }
     } catch (error) {
       if (token !== searchRequestToken.value) return

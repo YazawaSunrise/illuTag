@@ -107,6 +107,7 @@ function onBoardClick(boardId: number) {
       class="right-sidebar"
       :class="{ 'is-pinned': rightSidebarPinned }"
       @mouseleave="handlers.closeHover($event)"
+      @contextmenu="handlers.openBoardSpaceMenu(null, $event)"
     >
       <div class="right-sidebar__header">
         <div class="right-sidebar__section-title">
@@ -342,7 +343,7 @@ function onBoardClick(boardId: number) {
         class="context-menu right-sidebar__context-menu"
         :style="boardContextMenuStyle"
         @click.stop
-        @contextmenu.prevent
+        @contextmenu.stop.prevent
       >
         <template v-if="boardContextMenu.kind === 'space'">
           <button
@@ -396,7 +397,7 @@ function onBoardClick(boardId: number) {
         :style="boardDraftStyle"
         @submit.prevent="handlers.commitBoardDraft()"
         @click.stop
-        @contextmenu.prevent
+        @contextmenu.stop.prevent
       >
         <input
           data-board-draft-input

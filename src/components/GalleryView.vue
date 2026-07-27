@@ -61,6 +61,11 @@ const props = defineProps<{
   searchError: string
   galleryBrowseMode: GalleryBrowseMode
   isLoading: boolean
+  largeLibraryMode: boolean
+  galleryLoadedImageCount: number
+  galleryTotalImageCount: number
+  canLoadMoreGalleryImages: boolean
+  isGalleryPageLoading: boolean
   showUnclassifiedToggle: boolean
   isUnclassifiedOnly: boolean
   favoriteImageIds: string[]
@@ -1105,6 +1110,19 @@ function onSearchWheel(event: WheelEvent) {
       @image-click="onMasonryImageClick"
       @image-context-menu="onMasonryImageContextMenu"
     />
+
+    <div v-if="largeLibraryMode" class="gallery-page-footer">
+      <span>已显示 {{ galleryLoadedImageCount }} / {{ galleryTotalImageCount }}</span>
+      <button
+        v-if="galleryLoadedImageCount < galleryTotalImageCount"
+        class="secondary-button"
+        type="button"
+        :disabled="!canLoadMoreGalleryImages || isGalleryPageLoading"
+        @click="handlers.loadMoreGalleryImages()"
+      >
+        {{ isGalleryPageLoading ? '加载中…' : '加载更多' }}
+      </button>
+    </div>
 
     <div v-if="isBatchMode" class="gallery-batch-actions" @click.stop @pointerdown.stop>
       <span class="gallery-batch-actions__count">已选 {{ batchSelectedImageIds.length }}</span>

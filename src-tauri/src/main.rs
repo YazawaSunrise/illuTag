@@ -45,9 +45,11 @@ use illutag_core::library::{
     add_image_user_supplement_tag, remove_image_user_supplement_tag,
     list_tag_management_state, create_user_tag_folder, rename_user_tag_folder, delete_user_tag_folder,
     assign_user_tag_to_folder, unassign_user_tag_from_folder, create_user_custom_tag, delete_user_custom_tag,
+    dev_cleanup_stress_test_data, dev_create_fake_gallery_data, dev_create_small_file_test_set,
     export_data_migration_backup, export_organized_folder_result, inspect_data_migration_backup, import_data_migration_backup,
-    search_gallery_image_ids, start_startup_cleanup, startup_cleanup_status, suggest_known_auto_tags,
-    move_reference_board_to_folder, paste_image_to_reference_board, read_image_bytes,
+    list_gallery_image_ids_for_scope, list_gallery_images_by_ids_page, list_gallery_images_page, search_gallery_image_ids, start_startup_cleanup, startup_cleanup_status, suggest_known_auto_tags,
+    move_reference_board_to_folder, paste_image_to_reference_board, paste_images_to_reference_board,
+    read_image_bytes,
     remove_gallery_folder, remove_image_from_index, remove_image_from_user_folder, remove_reference_board_item,
     restore_image_from_trash,
     remove_images_from_index, restore_images_from_trash, set_images_favorite,
@@ -59,11 +61,12 @@ use illutag_core::library::{
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_collect_only, start_scan_all_folders_with_tagging, start_tag_pending_images_only, test_wd_swinv2_tagger,
-    AppState, AtmosphereGenerationProgress, BackupPathMapping, BackgroundScanProgress, BackgroundScanStatus, BatchSupplementTagInput, BatchSystemTrashResult, ColorSignatureGenerationProgress, DataMigrationBackupInspection, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, OrganizedExportManifest, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
+    AppState, AtmosphereGenerationProgress, BackupPathMapping, BackgroundScanProgress, BackgroundScanStatus, BatchSupplementTagInput, BatchSystemTrashResult, ColorSignatureGenerationProgress, DataMigrationBackupInspection, DevFakeGalleryOptions, DevSmallFileSetOptions, DevStressToolResult, GalleryImagePage, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, OrganizedExportManifest, ReferenceBoardPasteImageInput, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
 use std::{
-    fs,
+    collections::HashSet,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -74,7 +77,36 @@ use std::{
     time::{Duration, Instant},
 };
 use serde::{Deserialize, Serialize};
+use rusqlite::{params, Connection};
 use tauri::{Manager, PhysicalPosition, PhysicalSize, Position, Size, State, WebviewWindow, WindowEvent};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DataDirectoryInfo {
+    data_dir: String,
+    using_fallback: bool,
+    fallback_message: Option<String>,
+    legacy_data_dir: Option<String>,
+    legacy_database_detected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PortableConfig {
+    data_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DataDirectoryMigrationResult {
+    source_dir: String,
+    target_dir: String,
+    config_path: String,
+    copied_files: u64,
+    copied_bytes: u64,
+    restart_required: bool,
+    message: String,
+}
 
 #[tauri::command]
 fn list_library(state: State<AppState>) -> Result<LibraryStore, String> {
@@ -86,6 +118,90 @@ fn list_library(state: State<AppState>) -> Result<LibraryStore, String> {
         started.elapsed().as_millis()
     );
     result
+}
+
+#[tauri::command]
+fn data_directory_info_command(state: State<AppState>) -> Result<DataDirectoryInfo, String> {
+    let legacy_data_dir = state.legacy_data_dir.as_ref().map(|path| path.to_string_lossy().to_string());
+    let legacy_database_detected = state
+        .legacy_data_dir
+        .as_ref()
+        .map(|path| path.join("illutag.sqlite").is_file())
+        .unwrap_or(false);
+    Ok(DataDirectoryInfo {
+        data_dir: state.data_dir.to_string_lossy().to_string(),
+        using_fallback: state.data_dir_fallback_message.is_some(),
+        fallback_message: state.data_dir_fallback_message.clone(),
+        legacy_data_dir,
+        legacy_database_detected,
+    })
+}
+
+#[tauri::command]
+fn list_gallery_images_page_command(
+    scope: String,
+    folder_id: Option<i64>,
+    unclassified_only_parent_folder_id: Option<i64>,
+    offset: i64,
+    limit: i64,
+    state: State<AppState>,
+) -> Result<GalleryImagePage, String> {
+    list_gallery_images_page(
+        scope,
+        folder_id,
+        unclassified_only_parent_folder_id,
+        offset,
+        limit,
+        &state,
+    )
+}
+
+#[tauri::command]
+fn list_gallery_image_ids_for_scope_command(
+    scope: String,
+    folder_id: Option<i64>,
+    unclassified_only_parent_folder_id: Option<i64>,
+    state: State<AppState>,
+) -> Result<Vec<String>, String> {
+    list_gallery_image_ids_for_scope(
+        scope,
+        folder_id,
+        unclassified_only_parent_folder_id,
+        &state,
+    )
+}
+
+#[tauri::command]
+fn list_gallery_images_by_ids_page_command(
+    image_ids: Vec<String>,
+    offset: i64,
+    limit: i64,
+    state: State<AppState>,
+) -> Result<GalleryImagePage, String> {
+    list_gallery_images_by_ids_page(image_ids, offset, limit, &state)
+}
+
+#[tauri::command]
+fn dev_create_fake_gallery_data_command(
+    options: DevFakeGalleryOptions,
+    state: State<AppState>,
+) -> Result<DevStressToolResult, String> {
+    dev_create_fake_gallery_data(options, &state)
+}
+
+#[tauri::command]
+fn dev_create_small_file_test_set_command(
+    options: DevSmallFileSetOptions,
+    state: State<AppState>,
+) -> Result<DevStressToolResult, String> {
+    dev_create_small_file_test_set(options, &state)
+}
+
+#[tauri::command]
+fn dev_cleanup_stress_test_data_command(
+    state: State<AppState>,
+) -> Result<DevStressToolResult, String> {
+    dev_cleanup_stress_test_data(&state)
 }
 
 #[tauri::command]
@@ -728,6 +844,18 @@ fn paste_image_to_reference_board_command(
 }
 
 #[tauri::command]
+fn paste_images_to_reference_board_command(
+    board_id: i64,
+    images: Vec<ReferenceBoardPasteImageInput>,
+    x: f32,
+    y: f32,
+    stack_offset: f32,
+    state: State<AppState>,
+) -> Result<LibraryStore, String> {
+    paste_images_to_reference_board(board_id, images, x, y, stack_offset, &state)
+}
+
+#[tauri::command]
 fn duplicate_reference_board_item_command(
     item_id: i64,
     x: Option<f32>,
@@ -949,6 +1077,7 @@ struct WindowMemoryState {
 }
 
 const WINDOW_MEMORY_FILE_NAME: &str = "window-state.json";
+const PORTABLE_CONFIG_FILE_NAME: &str = "illutag.portable.json";
 const WINDOW_STATE_SAVE_DEBOUNCE_MS: u64 = 350;
 
 fn capture_window_memory_state(window: &WebviewWindow) -> Result<WindowMemoryState, String> {
@@ -1206,6 +1335,11 @@ fn open_external_url_command(url: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn open_data_directory_command(state: State<AppState>) -> Result<(), String> {
+    open_path_with_default_app(&state.data_dir.to_string_lossy())
+}
+
 fn open_path_with_default_app(path: &str) -> Result<(), String> {
     let normalized_path = path.strip_prefix(r"\\?\").unwrap_or(path);
 
@@ -1249,6 +1383,452 @@ fn open_path_with_default_app(path: &str) -> Result<(), String> {
     }
 }
 
+fn exe_dir() -> Result<PathBuf, String> {
+    let exe_path = env::current_exe().map_err(|error| format!("Failed to resolve exe path: {error}"))?;
+    exe_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Failed to resolve exe directory".to_string())
+}
+
+fn portable_config_path() -> Result<PathBuf, String> {
+    Ok(exe_dir()?.join(PORTABLE_CONFIG_FILE_NAME))
+}
+
+fn read_portable_config(path: &Path) -> Result<PortableConfig, String> {
+    if !path.is_file() {
+        return Ok(PortableConfig::default());
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read portable config {}: {error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("Failed to parse portable config {}: {error}", path.display()))
+}
+
+fn write_portable_config(path: &Path, config: &PortableConfig) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create portable config directory: {error}"))?;
+    }
+    let text = serde_json::to_string_pretty(config)
+        .map_err(|error| format!("Failed to serialize portable config: {error}"))?;
+    fs::write(path, text).map_err(|error| format!("Failed to write portable config: {error}"))
+}
+
+fn request_stop_background_tasks(state: &AppState) {
+    if let Ok(mut value) = state.background_scan_stop_requested.lock() {
+        *value = true;
+    }
+    if let Ok(mut value) = state.background_scan_pause_requested.lock() {
+        *value = false;
+    }
+    if let Ok(mut value) = state.thumbnail_generation_stop_requested.lock() {
+        *value = true;
+    }
+    if let Ok(mut value) = state.thumbnail_generation_pause_requested.lock() {
+        *value = false;
+    }
+    if let Ok(mut value) = state.natural_language_scan_stop_requested.lock() {
+        *value = true;
+    }
+    if let Ok(mut value) = state.natural_language_scan_pause_requested.lock() {
+        *value = false;
+    }
+    if let Ok(mut value) = state.atmosphere_generation_stop_requested.lock() {
+        *value = true;
+    }
+    if let Ok(mut value) = state.atmosphere_generation_pause_requested.lock() {
+        *value = false;
+    }
+    if let Ok(mut value) = state.color_signature_generation_stop_requested.lock() {
+        *value = true;
+    }
+    if let Ok(mut value) = state.color_signature_generation_pause_requested.lock() {
+        *value = false;
+    }
+}
+
+fn background_tasks_running(state: &AppState) -> bool {
+    state.background_scan_running.lock().map(|value| *value).unwrap_or(false)
+        || state.thumbnail_generation_running.lock().map(|value| *value).unwrap_or(false)
+        || state.natural_language_scan_running.lock().map(|value| *value).unwrap_or(false)
+        || state.atmosphere_generation_running.lock().map(|value| *value).unwrap_or(false)
+        || state.color_signature_generation_running.lock().map(|value| *value).unwrap_or(false)
+        || state.startup_cleanup_running.lock().map(|value| *value).unwrap_or(false)
+}
+
+fn stop_background_tasks_before_migration(state: &AppState) -> Result<(), String> {
+    request_stop_background_tasks(state);
+    let started = Instant::now();
+    while background_tasks_running(state) {
+        if started.elapsed() > Duration::from_secs(20) {
+            return Err("Background tasks are still running. Please try migration again later.".to_string());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+fn copy_directory_recursive(source: &Path, target: &Path) -> Result<(u64, u64), String> {
+    fs::create_dir_all(target)
+        .map_err(|error| format!("Failed to create target data directory {}: {error}", target.display()))?;
+    let mut copied_files = 0u64;
+    let mut copied_bytes = 0u64;
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("Failed to read data directory {}: {error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| format!("Failed to read data directory entry: {error}"))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("Failed to read metadata {}: {error}", source_path.display()))?;
+        if metadata.is_dir() {
+            let (nested_files, nested_bytes) = copy_directory_recursive(&source_path, &target_path)?;
+            copied_files += nested_files;
+            copied_bytes += nested_bytes;
+        } else if metadata.is_file() {
+            fs::copy(&source_path, &target_path).map_err(|error| {
+                format!(
+                    "Failed to copy {} to {}: {error}",
+                    source_path.display(),
+                    target_path.display()
+                )
+            })?;
+            copied_files += 1;
+            copied_bytes += metadata.len();
+        }
+    }
+    Ok((copied_files, copied_bytes))
+}
+
+fn validate_migrated_data_directory(source: &Path, target: &Path) -> Result<(), String> {
+    for file_name in ["illutag.sqlite", "illutag.test.sqlite"] {
+        let source_file = source.join(file_name);
+        if !source_file.is_file() {
+            continue;
+        }
+        let target_file = target.join(file_name);
+        if !target_file.is_file() {
+            return Err(format!("迁移校验失败：目标目录缺少 {file_name}"));
+        }
+        let source_size = source_file
+            .metadata()
+            .map_err(|error| format!("Failed to inspect source database: {error}"))?
+            .len();
+        let target_size = target_file
+            .metadata()
+            .map_err(|error| format!("Failed to inspect target database: {error}"))?
+            .len();
+        if source_size != target_size {
+            return Err(format!("迁移校验失败：{file_name} 文件大小不一致"));
+        }
+    }
+    Ok(())
+}
+
+fn strip_windows_long_path_prefix(path: &str) -> &str {
+    path.strip_prefix(r"\\?\").unwrap_or(path)
+}
+
+fn path_prefix_variants(paths: &[PathBuf]) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut variants = Vec::<String>::new();
+    for path in paths {
+        let value = path.to_string_lossy().to_string();
+        for candidate in [
+            value.clone(),
+            strip_windows_long_path_prefix(&value).to_string(),
+            value.replace('\\', "/"),
+            strip_windows_long_path_prefix(&value).replace('\\', "/"),
+        ] {
+            if candidate.is_empty() {
+                continue;
+            }
+            let key = candidate.to_ascii_lowercase();
+            if seen.insert(key) {
+                variants.push(candidate);
+            }
+        }
+    }
+    variants.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    variants
+}
+
+fn target_prefix_for_source_variant(source_variant: &str, target_dir: &Path) -> String {
+    let target = target_dir.to_string_lossy().to_string();
+    if source_variant.contains('/') && !source_variant.contains('\\') {
+        strip_windows_long_path_prefix(&target).replace('\\', "/")
+    } else if source_variant.starts_with(r"\\?\") {
+        target
+    } else {
+        strip_windows_long_path_prefix(&target).to_string()
+    }
+}
+
+fn replace_path_prefix(value: &str, source_prefixes: &[String], target_dir: &Path) -> Option<String> {
+    for source_prefix in source_prefixes {
+        let Some(head) = value.get(..source_prefix.len()) else {
+            continue;
+        };
+        let Some(tail) = value.get(source_prefix.len()..) else {
+            continue;
+        };
+        if head.eq_ignore_ascii_case(source_prefix) {
+            let target_prefix = target_prefix_for_source_variant(source_prefix, target_dir);
+            return Some(format!("{target_prefix}{tail}"));
+        }
+    }
+    None
+}
+
+fn rewrite_path_prefix_in_table(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+    source_prefixes: &[String],
+    target_dir: &Path,
+) -> Result<(), String> {
+    let select_sql = format!("SELECT rowid, {column_name} FROM {table_name}");
+    let mut stmt = conn
+        .prepare(&select_sql)
+        .map_err(|error| format!("Failed to prepare {table_name}.{column_name} rewrite query: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|error| format!("Failed to query {table_name}.{column_name}: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect {table_name}.{column_name}: {error}"))?;
+    drop(stmt);
+
+    let update_sql = format!("UPDATE {table_name} SET {column_name} = ?1 WHERE rowid = ?2");
+    for (rowid, current_path) in rows {
+        let Some(next_path) = replace_path_prefix(&current_path, source_prefixes, target_dir) else {
+            continue;
+        };
+        if next_path == current_path {
+            continue;
+        }
+        conn.execute(&update_sql, params![next_path, rowid])
+            .map_err(|error| format!("Failed to rewrite {table_name}.{column_name}: {error}"))?;
+    }
+    Ok(())
+}
+
+fn rewrite_image_id_references(
+    conn: &Connection,
+    old_image_id: &str,
+    new_image_id: &str,
+) -> Result<(), String> {
+    for table_name in [
+        "reference_board_items",
+        "image_thumbnails",
+        "image_clip_embeddings",
+        "image_atmosphere_signatures",
+        "image_color_signatures",
+        "image_user_folders",
+        "image_auto_tags",
+        "image_user_custom_tags",
+        "image_user_supplement_tags",
+        "image_tags",
+        "image_ai_state",
+    ] {
+        let sql = format!("UPDATE {table_name} SET image_id = ?1 WHERE image_id = ?2");
+        conn.execute(&sql, params![new_image_id, old_image_id])
+            .map_err(|error| format!("Failed to rewrite {table_name}.image_id: {error}"))?;
+    }
+    Ok(())
+}
+
+fn rewrite_migrated_database_paths(
+    source_dirs: &[PathBuf],
+    target_dir: &Path,
+) -> Result<(), String> {
+    let source_prefixes = path_prefix_variants(source_dirs);
+    for database_name in ["illutag.sqlite", "illutag.test.sqlite"] {
+        let database_path = target_dir.join(database_name);
+        if !database_path.is_file() {
+            continue;
+        }
+
+        let mut conn = Connection::open(&database_path)
+            .map_err(|error| format!("Failed to open migrated database {}: {error}", database_path.display()))?;
+        conn.execute("PRAGMA foreign_keys = OFF", [])
+            .map_err(|error| format!("Failed to disable foreign keys for migration rewrite: {error}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| format!("Failed to open migration rewrite transaction: {error}"))?;
+
+        rewrite_path_prefix_in_table(&tx, "image_thumbnails", "thumb_path", &source_prefixes, target_dir)?;
+        rewrite_path_prefix_in_table(&tx, "folders", "path", &source_prefixes, target_dir)?;
+
+        let mut stmt = tx
+            .prepare(
+                "
+                SELECT id, path
+                FROM images
+                WHERE COALESCE(source, '') = 'reference'
+                ",
+            )
+            .map_err(|error| format!("Failed to prepare reference image rewrite query: {error}"))?;
+        let reference_images = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("Failed to query reference images for migration rewrite: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect reference images for migration rewrite: {error}"))?;
+        drop(stmt);
+
+        for (old_id, old_path) in reference_images {
+            let new_id = replace_path_prefix(&old_id, &source_prefixes, target_dir)
+                .unwrap_or_else(|| old_id.clone());
+            let new_path = replace_path_prefix(&old_path, &source_prefixes, target_dir)
+                .unwrap_or_else(|| old_path.clone());
+            if new_id == old_id && new_path == old_path {
+                continue;
+            }
+            if new_id != old_id {
+                rewrite_image_id_references(&tx, &old_id, &new_id)?;
+            }
+            tx.execute(
+                "UPDATE images SET id = ?1, path = ?2 WHERE id = ?3",
+                params![new_id, new_path, old_id],
+            )
+            .map_err(|error| format!("Failed to rewrite reference image path: {error}"))?;
+        }
+
+        tx.commit()
+            .map_err(|error| format!("Failed to commit migration path rewrite: {error}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn migrate_data_directory_command(
+    target_dir: String,
+    state: State<AppState>,
+) -> Result<DataDirectoryMigrationResult, String> {
+    let trimmed = target_dir.trim();
+    if trimmed.is_empty() {
+        return Err("请选择目标数据目录".to_string());
+    }
+
+    let raw_source_dir = state.data_dir.clone();
+    let source_dir = raw_source_dir
+        .canonicalize()
+        .unwrap_or_else(|_| state.data_dir.clone());
+    let target_dir = PathBuf::from(trimmed);
+    fs::create_dir_all(&target_dir)
+        .map_err(|error| format!("Failed to create target data directory {}: {error}", target_dir.display()))?;
+    let target_dir = target_dir
+        .canonicalize()
+        .map_err(|error| format!("Failed to read target data directory {}: {error}", target_dir.display()))?;
+
+    if source_dir == target_dir {
+        return Err("目标目录与当前数据目录相同".to_string());
+    }
+    if target_dir.starts_with(&source_dir) {
+        return Err("目标目录不能位于当前数据目录内部".to_string());
+    }
+
+    let config_path = portable_config_path()?;
+    stop_background_tasks_before_migration(&state)?;
+    let (copied_files, copied_bytes) = copy_directory_recursive(&source_dir, &target_dir)?;
+    validate_migrated_data_directory(&source_dir, &target_dir)?;
+    rewrite_migrated_database_paths(&[raw_source_dir, source_dir.clone()], &target_dir)?;
+    write_portable_config(
+        &config_path,
+        &PortableConfig {
+            data_dir: Some(target_dir.to_string_lossy().to_string()),
+        },
+    )?;
+
+    Ok(DataDirectoryMigrationResult {
+        source_dir: source_dir.to_string_lossy().to_string(),
+        target_dir: target_dir.to_string_lossy().to_string(),
+        config_path: config_path.to_string_lossy().to_string(),
+        copied_files,
+        copied_bytes,
+        restart_required: true,
+        message: "数据目录迁移完成。旧目录不会自动删除，请重启 illuTag，确认新目录正常后再按需手动清理旧目录。".to_string(),
+    })
+}
+fn resolve_portable_data_dir(system_app_data_dir: PathBuf) -> (PathBuf, Option<String>) {
+    if let Ok(config_path) = portable_config_path() {
+        match read_portable_config(&config_path) {
+            Ok(config) => {
+                if let Some(configured_data_dir) = config
+                    .data_dir
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    let configured_data_dir = PathBuf::from(configured_data_dir);
+                    match fs::create_dir_all(&configured_data_dir) {
+                        Ok(()) => return (configured_data_dir, None),
+                        Err(error) => {
+                            let message = format!(
+                                "配置的数据目录 {} 无法创建：{error}。已回退到默认数据目录。",
+                                configured_data_dir.display()
+                            );
+                            eprintln!("[data-dir] {message}");
+                        }
+                    }
+                }
+            }
+            Err(error) => eprintln!("[data-dir] {error}"),
+        }
+    }
+
+    let exe_data_dir_result = exe_dir().map(|dir| dir.join("data"));
+
+    match exe_data_dir_result {
+        Ok(data_dir) => match fs::create_dir_all(&data_dir) {
+            Ok(()) => {
+                let portable_database_exists = data_dir.join("illutag.sqlite").is_file();
+                let legacy_database_exists = system_app_data_dir.join("illutag.sqlite").is_file();
+                if !portable_database_exists && legacy_database_exists {
+                    let message = format!(
+                        "检测到旧版 AppData 数据库，当前暂时使用旧数据目录 {}。可在设置中迁移数据目录。",
+                        system_app_data_dir.display()
+                    );
+                    eprintln!("[data-dir] {message}");
+                    return (system_app_data_dir, Some(message));
+                }
+                (data_dir, None)
+            }
+            Err(error) => {
+                let message = format!(
+                    "无法创建 exe 同级 data 目录 {}：{error}。已改用系统数据目录 {}",
+                    data_dir.display(),
+                    system_app_data_dir.display()
+                );
+                eprintln!("[data-dir] {message}");
+                if let Err(fallback_error) = fs::create_dir_all(&system_app_data_dir) {
+                    eprintln!(
+                        "[data-dir] failed to create fallback data directory {}: {fallback_error}",
+                        system_app_data_dir.display()
+                    );
+                }
+                (system_app_data_dir, Some(message))
+            }
+        },
+        Err(error) => {
+            let message = format!(
+                "无法定位 exe 数据目录：{error}。已改用系统数据目录 {}",
+                system_app_data_dir.display()
+            );
+            eprintln!("[data-dir] {message}");
+            if let Err(fallback_error) = fs::create_dir_all(&system_app_data_dir) {
+                eprintln!(
+                    "[data-dir] failed to create fallback data directory {}: {fallback_error}",
+                    system_app_data_dir.display()
+                );
+            }
+            (system_app_data_dir, Some(message))
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1257,11 +1837,9 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            let app_config_dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            let window_memory_state_path = app_config_dir.join(WINDOW_MEMORY_FILE_NAME);
+            let legacy_data_dir = app_data_dir.clone();
+            let (data_dir, data_dir_fallback_message) = resolve_portable_data_dir(app_data_dir);
+            let window_memory_state_path = data_dir.join(WINDOW_MEMORY_FILE_NAME);
 
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(error) =
@@ -1275,8 +1853,21 @@ fn main() {
                     .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             }
 
+            let database_file_name = if env::var("ILLUTAG_USE_TEST_DB")
+                .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false)
+            {
+                "illutag.test.sqlite"
+            } else {
+                "illutag.sqlite"
+            };
+            let database_path = data_dir.join(database_file_name);
+            eprintln!("[database] using {}", database_path.display());
             let app_state = AppState {
-                database_path: app_data_dir.join("illutag.sqlite"),
+                database_path,
+                data_dir,
+                data_dir_fallback_message,
+                legacy_data_dir: Some(legacy_data_dir),
                 library: Arc::new(Mutex::new(None)),
                 background_scan_running: Arc::new(Mutex::new(false)),
                 background_scan_pending: Arc::new(Mutex::new(false)),
@@ -1321,6 +1912,14 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_library,
+            data_directory_info_command,
+            migrate_data_directory_command,
+            list_gallery_images_page_command,
+            list_gallery_image_ids_for_scope_command,
+            list_gallery_images_by_ids_page_command,
+            dev_create_fake_gallery_data_command,
+            dev_create_small_file_test_set_command,
+            dev_cleanup_stress_test_data_command,
             add_gallery_folder_command,
             remove_gallery_folder_command,
             remove_image_from_index_command,
@@ -1407,6 +2006,7 @@ fn main() {
             create_reference_board_command,
             add_image_to_reference_board_command,
             paste_image_to_reference_board_command,
+            paste_images_to_reference_board_command,
             duplicate_reference_board_item_command,
             restore_reference_board_item_command,
             import_reference_board_item_to_library_command,
@@ -1430,6 +2030,7 @@ fn main() {
             window_is_always_on_top_command,
             window_start_dragging_command,
             open_gallery_image_with_default_app_command,
+            open_data_directory_command,
             open_external_url_command,
             window_close_command
         ])

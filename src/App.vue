@@ -34,6 +34,7 @@ import { useTagManagement } from './composables/useTagManagement'
 import type { GalleryImage, GalleryLayoutItem } from './types/gallery'
 import type {
   BoardWorldBounds,
+  GalleryImagePage,
   LibraryStore,
   ReferenceBoard,
   ReferenceBoardItem,
@@ -74,6 +75,24 @@ type GithubLatestRelease = {
   tag_name?: string
   html_url?: string
   name?: string
+}
+
+type DataDirectoryInfo = {
+  dataDir: string
+  usingFallback: boolean
+  fallbackMessage?: string | null
+  legacyDataDir?: string | null
+  legacyDatabaseDetected: boolean
+}
+
+type DataDirectoryMigrationResult = {
+  sourceDir: string
+  targetDir: string
+  configPath: string
+  copiedFiles: number
+  copiedBytes: number
+  restartRequired: boolean
+  message: string
 }
 
 const appSetupStartMs = performance.now()
@@ -117,6 +136,10 @@ const viewMode = ref<ViewMode>(initialReferenceBoardId !== null ? 'board' : 'gal
 const library = ref<LibraryStore>({
   folders: [],
   images: [],
+  totalImageCount: 0,
+  largeLibraryMode: false,
+  imageOffset: 0,
+  imageLimit: 5000,
   userFolders: [],
   imageFolders: [],
   referenceBoardFolders: [],
@@ -128,11 +151,18 @@ const isPickingFolder = ref(false)
 const isAddingFolder = ref(false)
 const statusText = ref('还没有添加图库文件夹')
 const errorText = ref('')
+const galleryPageSize = 5000
+const isGalleryPageLoading = ref(false)
+const galleryCurrentQueryTotalCount = ref(0)
+const largeLibrarySearchResultIds = ref<string[] | null>(null)
 const updateChecking = ref(false)
 const updateLatestVersion = ref('')
 const updateReleaseUrl = ref('')
 const updateStatusText = ref('')
 const updateErrorText = ref('')
+const dataDirectoryInfo = ref<DataDirectoryInfo | null>(null)
+const isMigratingDataDirectory = ref(false)
+const dataDirectoryRestartRequired = ref(false)
 const folderPathInput = ref('')
 const removeFolderConfirmPath = ref<string | null>(null)
 const removeFromFolderConfirmState = ref<null | {
@@ -172,6 +202,15 @@ const pendingWorkspaceRestore = ref<LastWorkspaceState | null>(initialWorkspaceS
 const pendingReferenceBoardMemoryRestore = ref<ReferenceBoardMemoryState | null>(initialReferenceBoardMemoryState)
 const workspaceRestoreApplied = ref(false)
 const isSettingsView = computed(() => viewMode.value === 'settings')
+const dataDirectoryWarningText = computed(() => {
+  const info = dataDirectoryInfo.value
+  if (!info) return ''
+  if (info.fallbackMessage) return info.fallbackMessage
+  if (info.legacyDatabaseDetected && info.legacyDataDir && info.legacyDataDir !== info.dataDir) {
+    return `检测到旧版 AppData 数据：${info.legacyDataDir}。旧数据不会自动迁移，可通过迁移工具手动处理。`
+  }
+  return ''
+})
 const sidebarPinnedEffective = computed(() => isSettingsView.value || sidebarPinned.value)
 const gallerySidebarsDisabled = computed(
   () => viewMode.value === 'gallery' && (galleryBrowseMode.value === 'sidebar-disabled' || slideshowOpen.value),
@@ -586,8 +625,14 @@ const {
   clamp,
   toFileSrc: convertFileSrc,
   pickExternalImagePath: pickExternalImageSearchFilePath,
+  getSearchScope: currentGallerySearchScopeFilter,
+  getSearchCandidateImageIds: getGallerySearchScopeCandidateImageIds,
+  onSearchResultImageIds: applyLargeLibrarySearchResultImageIds,
   onBeforeRunSearch() {
     scrollGalleryToTop(galleryScrollScopeKeyOf(activeUserFolderId.value))
+    if (library.value.largeLibraryMode && library.value.images.length > galleryPageSize) {
+      void resetGalleryImagePage()
+    }
   },
   onOpenImageDetail() {
     imageDetailContextMenu.value = null
@@ -598,6 +643,118 @@ const {
     resetImageDetailMediaTransform()
   },
 })
+
+const galleryLoadedImageCount = computed(() => library.value.images.length)
+const galleryTotalImageCount = computed(() => {
+  if (!library.value.largeLibraryMode) return visibleImages.value.length
+  if (largeLibrarySearchResultIds.value) return largeLibrarySearchResultIds.value.length
+  return galleryCurrentQueryTotalCount.value || library.value.totalImageCount || library.value.images.length
+})
+const canLoadMoreGalleryImages = computed(
+  () =>
+    library.value.largeLibraryMode &&
+    !isGalleryPageLoading.value &&
+    library.value.images.length < galleryTotalImageCount.value,
+)
+
+function currentGalleryPageQuery() {
+  const scope = activeUserFolderId.value
+  const unclassifiedOnlyParentFolderIdForQuery =
+    typeof scope === 'number' && unclassifiedOnlyParentFolderId.value === scope ? scope : null
+  return {
+    scope: typeof scope === 'string' ? scope : 'folder',
+    folderId: typeof scope === 'number' ? scope : null,
+    unclassifiedOnlyParentFolderId: unclassifiedOnlyParentFolderIdForQuery,
+  }
+}
+
+async function getGallerySearchScopeCandidateImageIds() {
+  if (!library.value.largeLibraryMode) return null
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return await invoke<string[]>('list_gallery_image_ids_for_scope_command', currentGalleryPageQuery())
+  } catch (error) {
+    errorText.value = formatError(error)
+    return null
+  }
+}
+
+function currentGallerySearchScopeFilter() {
+  return currentGalleryPageQuery()
+}
+
+function hasAnyActiveSearch() {
+  return (
+    searchMode.value === 'image' ||
+    searchZhSelected.value.length > 0 ||
+    searchEnQuery.value.trim().length > 0 ||
+    searchFileNameQuery.value.trim().length > 0 ||
+    searchNaturalLanguageQuery.value.trim().length > 0
+  )
+}
+
+async function loadGalleryImagePage(offset: number, mode: 'replace' | 'append') {
+  if (!library.value.largeLibraryMode || isGalleryPageLoading.value) return
+  isGalleryPageLoading.value = true
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const searchResultIds = largeLibrarySearchResultIds.value
+    const searchPageIds = searchResultIds
+      ? searchResultIds.slice(Math.max(0, offset), Math.max(0, offset) + galleryPageSize)
+      : null
+    const page = searchPageIds
+      ? await invoke<GalleryImagePage>('list_gallery_images_by_ids_page_command', {
+          imageIds: searchPageIds,
+          offset: 0,
+          limit: galleryPageSize,
+        })
+      : await invoke<GalleryImagePage>('list_gallery_images_page_command', {
+          ...currentGalleryPageQuery(),
+          offset,
+          limit: galleryPageSize,
+        })
+    const totalImageCount = searchResultIds ? searchResultIds.length : page.totalImageCount
+    galleryCurrentQueryTotalCount.value = totalImageCount
+    const existingById = new Map(library.value.images.map((image) => [image.id, image]))
+    const images =
+      mode === 'append'
+        ? [...library.value.images, ...page.images.filter((image) => !existingById.has(image.id))]
+        : page.images
+    library.value = {
+      ...library.value,
+      images,
+      totalImageCount,
+      imageOffset: 0,
+      imageLimit: Math.max(images.length, page.limit),
+    }
+    if (mode === 'replace') {
+      scrollGalleryToTop()
+    }
+  } catch (error) {
+    errorText.value = formatError(error)
+  } finally {
+    isGalleryPageLoading.value = false
+  }
+}
+
+async function loadMoreGalleryImages() {
+  await loadGalleryImagePage(library.value.images.length, 'append')
+}
+
+async function resetGalleryImagePage() {
+  largeLibrarySearchResultIds.value = null
+  await loadGalleryImagePage(0, 'replace')
+}
+
+async function applyLargeLibrarySearchResultImageIds(imageIds: string[] | null) {
+  if (!library.value.largeLibraryMode) return
+  largeLibrarySearchResultIds.value = imageIds
+  if (!imageIds) {
+    await loadGalleryImagePage(0, 'replace')
+    return
+  }
+  await loadGalleryImagePage(0, 'replace')
+}
 
 type KnownAutoTagSuggestion = {
   tagEn: string
@@ -1745,6 +1902,49 @@ async function openLatestRelease() {
   }
 }
 
+async function refreshDataDirectoryInfo() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    dataDirectoryInfo.value = await invoke<DataDirectoryInfo>('data_directory_info_command')
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function openDataDirectory() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_data_directory_command')
+  } catch (error) {
+    errorText.value = formatError(error)
+  }
+}
+
+async function migrateDataDirectory() {
+  const target = await open({
+    title: '选择新的数据目录',
+    directory: true,
+    multiple: false,
+  })
+  if (!target || Array.isArray(target)) return
+  isMigratingDataDirectory.value = true
+  statusText.value = '正在迁移数据目录...'
+  errorText.value = ''
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const result = await invoke<DataDirectoryMigrationResult>('migrate_data_directory_command', {
+      targetDir: target,
+    })
+    dataDirectoryRestartRequired.value = true
+    statusText.value = `数据目录迁移完成，已复制 ${result.copiedFiles} 个文件。请重启 illuTag 后确认新目录正常；旧目录不会自动删除。`
+    await refreshDataDirectoryInfo()
+  } catch (error) {
+    errorText.value = formatError(error)
+  } finally {
+    isMigratingDataDirectory.value = false
+  }
+}
+
 onMounted(async () => {
   const mountedStart = performance.now()
   console.info(`[startup-prof] App.vue onMounted_start_ms=${mountedStart.toFixed(1)}`)
@@ -1752,6 +1952,7 @@ onMounted(async () => {
   expandedReferenceBoardFolderIds.value = readStoredIdSet(expandedReferenceBoardFolderIdsStorageKey)
   previewReferenceBoardIds.value = readStoredIdSet(previewReferenceBoardIdsStorageKey)
   initAutoScanOnStartupFromStorage()
+  void refreshDataDirectoryInfo()
   void loadLibrary()
   handleWindowResize()
   window.addEventListener('resize', handleWindowResize)
@@ -1784,7 +1985,12 @@ onMounted(async () => {
     await nextTick()
     scheduleStartupAutoScanPipeline()
   }
-  if (thumbnailCacheEnabled.value && !isBackgroundScanRunning.value && !autoScanOnStartup.value) {
+  if (
+    thumbnailCacheEnabled.value &&
+    !isBackgroundScanRunning.value &&
+    !autoScanOnStartup.value &&
+    !dataDirectoryRestartRequired.value
+  ) {
     void startThumbnailGeneration()
   }
   window.setTimeout(() => {
@@ -2020,7 +2226,7 @@ watch(batchTagDraft, () => {
 })
 
 watch(
-  [viewMode, activeUserFolderId],
+  [viewMode, activeUserFolderId, unclassifiedOnlyParentFolderId],
   async ([nextViewMode, nextFolderId], [prevViewMode, prevFolderId]) => {
     if (
       isGalleryBatchMode.value &&
@@ -2031,6 +2237,9 @@ watch(
 
     if (nextViewMode === 'gallery' && prevFolderId !== nextFolderId) {
       clearAllSearchInputs()
+    }
+    if (nextViewMode === 'gallery' && library.value.largeLibraryMode) {
+      await resetGalleryImagePage()
     }
 
     const prevScopeKey = galleryScrollScopeKeyOf(prevFolderId)
@@ -2053,6 +2262,7 @@ watch(
 
 watch(thumbnailCacheEnabled, (enabled) => {
   if (!enabled) return
+  if (dataDirectoryRestartRequired.value) return
   if (startupAutoScanPipelineRunning.value) return
   if (isBackgroundScanRunning.value) return
   void startThumbnailGeneration()
@@ -2060,6 +2270,7 @@ watch(thumbnailCacheEnabled, (enabled) => {
 
 watch(isBackgroundScanRunning, (running, wasRunning) => {
   if (!wasRunning || running) return
+  if (dataDirectoryRestartRequired.value) return
   if (startupAutoScanPipelineRunning.value) return
   if (!thumbnailCacheEnabled.value) return
   void startThumbnailGeneration()
@@ -2083,12 +2294,20 @@ async function loadLibrary(options?: { silent?: boolean }) {
       `[startup-prof] loadLibrary invoke_return_ms=${performance.now().toFixed(1)} silent=${silent} images=${nextLibrary.images.length}`,
     )
     library.value = nextLibrary
+    galleryCurrentQueryTotalCount.value = nextLibrary.totalImageCount || nextLibrary.images.length
     assigned = true
     console.info(
       `[startup-prof] loadLibrary assigned_ms=${performance.now().toFixed(1)} silent=${silent} images=${library.value.images.length}`,
     )
     for (const board of library.value.referenceBoards) {
       ensureBoardCanvasBoundsFor(board.id)
+    }
+    if (
+      library.value.largeLibraryMode &&
+      viewMode.value === 'gallery' &&
+      (activeUserFolderId.value !== 'all' || unclassifiedOnlyParentFolderId.value !== null)
+    ) {
+      await resetGalleryImagePage()
     }
     restorePendingWorkspaceState()
     updateStatus()
@@ -2410,6 +2629,11 @@ function guessImageMimeTypeFromName(fileName: string) {
   return 'application/octet-stream'
 }
 
+function isImageDragFile(file: File) {
+  if (file.type.startsWith('image/')) return true
+  return guessImageMimeTypeFromName(file.name).startsWith('image/')
+}
+
 function referenceBoardWorldPointFromClient(clientX: number, clientY: number, container: HTMLElement) {
   const rect = container.getBoundingClientRect()
   return {
@@ -2421,7 +2645,7 @@ function referenceBoardWorldPointFromClient(clientX: number, clientY: number, co
 function onReferenceBoardExternalImageDragOver(event: DragEvent) {
   if (!activeReferenceBoard.value) return
   const files = Array.from(event.dataTransfer?.files ?? [])
-  const hasImage = files.some((file) => file.type.startsWith('image/'))
+  const hasImage = files.some((file) => isImageDragFile(file))
   if (!hasImage) return
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = 'copy'
@@ -2433,29 +2657,39 @@ async function onReferenceBoardExternalImageDrop(event: DragEvent) {
   const container = event.currentTarget as HTMLElement | null
   if (!container) return
   const files = Array.from(event.dataTransfer?.files ?? [])
-  const imageFile = files.find((file) => file.type.startsWith('image/'))
-  if (!imageFile) return
+  const imageFiles = files.filter((file) => isImageDragFile(file))
+  if (imageFiles.length === 0) return
 
   try {
-    const mimeType =
-      imageFile.type && imageFile.type.startsWith('image/')
-        ? imageFile.type
-        : guessImageMimeTypeFromName(imageFile.name)
-    if (!mimeType.startsWith('image/')) {
-      errorText.value = '仅支持拖入图片文件'
-      return
-    }
-    const bytes = Array.from(new Uint8Array(await imageFile.arrayBuffer()))
     const world = referenceBoardWorldPointFromClient(event.clientX, event.clientY, container)
     const { invoke } = await import('@tauri-apps/api/core')
-    library.value = await invoke<LibraryStore>('paste_image_to_reference_board_command', {
-      boardId: activeReferenceBoard.value.id,
-      imageBytes: bytes,
-      mimeType,
+    const boardId = activeReferenceBoard.value.id
+    const stackOffset = 18
+    const images: Array<{ imageBytes: number[]; mimeType: string }> = []
+    for (const imageFile of imageFiles) {
+      const mimeType =
+        imageFile.type && imageFile.type.startsWith('image/')
+          ? imageFile.type
+          : guessImageMimeTypeFromName(imageFile.name)
+      if (!mimeType.startsWith('image/')) {
+        errorText.value = '仅支持拖入图片文件'
+        continue
+      }
+      const bytes = Array.from(new Uint8Array(await imageFile.arrayBuffer()))
+      images.push({
+        imageBytes: bytes,
+        mimeType,
+      })
+    }
+    if (images.length === 0) return
+    library.value = await invoke<LibraryStore>('paste_images_to_reference_board_command', {
+      boardId,
+      images,
       x: world.x,
       y: world.y,
+      stackOffset,
     })
-    ensureBoardCanvasBoundsFor(activeReferenceBoard.value.id)
+    ensureBoardCanvasBoundsFor(boardId)
   } catch (error) {
     errorText.value = formatError(error)
   }
@@ -3743,6 +3977,8 @@ const settingsViewHandlers = {
   exportOrganizedFolderResult,
   checkForUpdates,
   openLatestRelease,
+  openDataDirectory,
+  migrateDataDirectory,
   startThumbnailGeneration,
   pauseThumbnailGeneration,
   resumeThumbnailGeneration,
@@ -3922,6 +4158,7 @@ const galleryViewHandlers = {
   toggleGalleryBatchImageSelection,
   appendGalleryBatchImageSelection,
   setGalleryBrowseMode,
+  loadMoreGalleryImages,
 }
 
 const overlayHandlers = {
@@ -4342,6 +4579,10 @@ console.info(
             :update-available="updateAvailable"
             :update-latest-version="updateLatestVersion"
             :update-status-text="updateDisplayText"
+            :data-directory-path="dataDirectoryInfo?.dataDir ?? ''"
+            :data-directory-warning="dataDirectoryWarningText"
+            :is-migrating-data-directory="isMigratingDataDirectory"
+            :data-directory-restart-required="dataDirectoryRestartRequired"
             :folder-path-input="folderPathInput"
             :is-picking-folder="isPickingFolder"
             :is-adding-folder="isAddingFolder"
@@ -4387,6 +4628,11 @@ console.info(
             :search-error="searchError"
             :gallery-browse-mode="galleryBrowseMode"
             :is-loading="isLoading"
+            :large-library-mode="library.largeLibraryMode"
+            :gallery-loaded-image-count="galleryLoadedImageCount"
+            :gallery-total-image-count="galleryTotalImageCount"
+            :can-load-more-gallery-images="canLoadMoreGalleryImages"
+            :is-gallery-page-loading="isGalleryPageLoading"
             :show-unclassified-toggle="showGalleryUnclassifiedToggle"
             :is-unclassified-only="isGalleryUnclassifiedOnly"
             :favorite-image-ids="favoriteVisibleImageIds"

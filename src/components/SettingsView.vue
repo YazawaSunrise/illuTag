@@ -54,6 +54,10 @@ defineProps<{
   updateAvailable: boolean
   updateLatestVersion: string
   updateStatusText: string
+  dataDirectoryPath: string
+  dataDirectoryWarning: string
+  isMigratingDataDirectory: boolean
+  dataDirectoryRestartRequired: boolean
   folderPathInput: string
   isPickingFolder: boolean
   isAddingFolder: boolean
@@ -445,6 +449,28 @@ defineProps<{
       <span class="settings__update-status">
         {{ updateStatusText || `当前版本 ${appVersion}` }}
       </span>
+    </div>
+
+    <div class="settings__data-directory">
+      <div class="settings__data-directory-main">
+        <span class="settings__data-directory-label">当前数据目录</span>
+        <span class="settings__data-directory-path">{{ dataDirectoryPath || '读取中...' }}</span>
+      </div>
+      <button class="secondary-button" type="button" :disabled="!dataDirectoryPath" @click="handlers.openDataDirectory()">
+        打开数据目录
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="!dataDirectoryPath || isMigratingDataDirectory"
+        @click="handlers.migrateDataDirectory()"
+      >
+        {{ isMigratingDataDirectory ? '迁移中…' : '迁移数据目录' }}
+      </button>
+      <p v-if="dataDirectoryWarning" class="settings__data-directory-warning">{{ dataDirectoryWarning }}</p>
+      <p v-if="dataDirectoryRestartRequired" class="settings__data-directory-restart">
+        数据目录迁移已完成，请重启 illuTag。重启前不会切换到新目录，旧目录也不会自动删除。
+      </p>
     </div>
 
     <form class="folder-form" @submit.prevent>

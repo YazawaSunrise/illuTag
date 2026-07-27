@@ -1,9 +1,9 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use calamine::{Data as ExcelCell, Reader, open_workbook_auto};
-use image::ImageReader;
+use image::{ImageBuffer, ImageReader, Rgb};
 use image::imageops::FilterType;
 use image::GenericImageView;
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -107,9 +107,16 @@ const CLIP_IMAGE_SERVICE_IDLE_CHECK_INTERVAL_MS: u64 = 30_000;
 const USER_FOLDER_SOURCE_KIND_LIBRARY_DIR: &str = "library_dir";
 const TAG_DICTIONARY_SOURCE_SCHEMA_VERSION: &str = "csv-col2-col5-v1";
 const BATCH_SQL_VARIABLE_LIMIT_SAFE: usize = 900;
+const LARGE_LIBRARY_IMAGE_THRESHOLD: i64 = 30_000;
+const LARGE_LIBRARY_INITIAL_IMAGE_LIMIT: i64 = 5_000;
+const ACTIVE_GALLERY_IMAGE_WHERE: &str =
+    "COALESCE(i.source, '') <> 'reference' AND COALESCE(i.trashed, 0) = 0";
 
 pub struct AppState {
     pub database_path: PathBuf,
+    pub data_dir: PathBuf,
+    pub data_dir_fallback_message: Option<String>,
+    pub legacy_data_dir: Option<PathBuf>,
     pub library: Arc<Mutex<Option<LibraryStore>>>,
     pub background_scan_running: Arc<Mutex<bool>>,
     pub background_scan_pending: Arc<Mutex<bool>>,
@@ -187,6 +194,10 @@ pub struct WdTaggerService {
 pub struct LibraryStore {
     pub folders: Vec<LibraryFolder>,
     pub images: Vec<GalleryImage>,
+    pub total_image_count: i64,
+    pub large_library_mode: bool,
+    pub image_offset: i64,
+    pub image_limit: i64,
     pub user_folders: Vec<UserFolder>,
     pub image_folders: Vec<ImageFolderAssignment>,
     pub reference_board_folders: Vec<ReferenceBoardFolder>,
@@ -221,6 +232,49 @@ pub struct GalleryImage {
     pub trashed: bool,
     pub is_favorite: bool,
     pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GalleryImagePage {
+    pub images: Vec<GalleryImage>,
+    pub total_image_count: i64,
+    pub offset: i64,
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevFakeGalleryOptions {
+    pub count: i64,
+    pub source_folder: Option<String>,
+    pub sample_image_ids: Option<Vec<String>>,
+    pub randomize_dimensions: Option<bool>,
+    pub randomize_file_names: Option<bool>,
+    pub randomize_imported_at: Option<bool>,
+    pub randomize_folders: Option<bool>,
+    pub randomize_favorites: Option<bool>,
+    pub randomize_tags: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevSmallFileSetOptions {
+    pub count: i64,
+    pub root_dir: Option<String>,
+    pub format: Option<String>,
+    pub subfolder_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevStressToolResult {
+    pub created_images: i64,
+    pub created_files: i64,
+    pub deleted_images: i64,
+    pub deleted_files: i64,
+    pub root_path: Option<String>,
+    pub database_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,6 +339,13 @@ pub struct ImageBytes {
     pub bytes: Vec<u8>,
     pub mime_type: String,
     pub file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceBoardPasteImageInput {
+    pub image_bytes: Vec<u8>,
+    pub mime_type: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -529,6 +590,9 @@ pub struct GallerySearchFilters {
     pub file_name_query: String,
     pub confidence_min: f32,
     pub confidence_max: f32,
+    pub scope: Option<String>,
+    pub folder_id: Option<i64>,
+    pub unclassified_only_parent_folder_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -742,6 +806,7 @@ struct ScanCollectResult {
     tag_queue_image_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
 struct ThumbnailCandidate {
     image_id: String,
     image_path: String,
@@ -857,6 +922,217 @@ pub fn list_library_from_state(state: &AppState) -> Result<LibraryStore, String>
     );
 
     Ok(store)
+}
+
+fn gallery_scope_where_sql(
+    alias: &'static str,
+    scope: &str,
+    folder_id: Option<i64>,
+    unclassified_only_parent_folder_id: Option<i64>,
+) -> (Cow<'static, str>, Vec<Value>) {
+    let active_where = format!(
+        "COALESCE({alias}.source, '') <> 'reference' AND COALESCE({alias}.trashed, 0) = 0"
+    );
+    let trashed_where = format!(
+        "COALESCE({alias}.source, '') <> 'reference' AND COALESCE({alias}.trashed, 0) != 0"
+    );
+    if let Some(parent_folder_id) = unclassified_only_parent_folder_id {
+        return (
+            Cow::Owned(format!(
+                "
+                {active_where}
+                AND EXISTS (
+                  SELECT 1
+                  FROM image_user_folders direct
+                  WHERE direct.image_id = {alias}.id AND direct.folder_id = ?1
+                )
+                AND NOT EXISTS (
+                  WITH RECURSIVE descendants(id) AS (
+                    SELECT uf.id FROM user_folders uf WHERE uf.parent_id = ?1
+                    UNION ALL
+                    SELECT uf.id FROM user_folders uf
+                    JOIN descendants d ON uf.parent_id = d.id
+                  )
+                  SELECT 1
+                  FROM image_user_folders child_assignment
+                  JOIN descendants d ON d.id = child_assignment.folder_id
+                  WHERE child_assignment.image_id = {alias}.id
+                )
+                "
+            )),
+            vec![Value::Integer(parent_folder_id)],
+        );
+    }
+    if let Some(folder_id) = folder_id {
+        return (
+            Cow::Owned(format!(
+                "
+                {active_where}
+                AND EXISTS (
+                  WITH RECURSIVE folder_scope(id) AS (
+                    SELECT ?1
+                    UNION ALL
+                    SELECT uf.id FROM user_folders uf
+                    JOIN folder_scope fs ON uf.parent_id = fs.id
+                  )
+                  SELECT 1
+                  FROM image_user_folders assignment
+                  JOIN folder_scope fs ON fs.id = assignment.folder_id
+                  WHERE assignment.image_id = {alias}.id
+                )
+                "
+            )),
+            vec![Value::Integer(folder_id)],
+        );
+    }
+
+    match scope {
+        "favorites" => (
+            Cow::Owned(format!("{active_where} AND COALESCE({alias}.is_favorite, 0) != 0")),
+            Vec::new(),
+        ),
+        "trash" => (Cow::Owned(trashed_where), Vec::new()),
+        "unclassified" => (
+            Cow::Owned(format!(
+                "{active_where} AND NOT EXISTS (SELECT 1 FROM image_user_folders a WHERE a.image_id = {alias}.id)"
+            )),
+            Vec::new(),
+        ),
+        _ => (Cow::Owned(active_where), Vec::new()),
+    }
+}
+
+pub fn list_gallery_images_page(
+    scope: String,
+    folder_id: Option<i64>,
+    unclassified_only_parent_folder_id: Option<i64>,
+    offset: i64,
+    limit: i64,
+    state: &AppState,
+) -> Result<GalleryImagePage, String> {
+    let conn = open_database(&state.database_path)?;
+    let (where_sql, values) = gallery_scope_where_sql(
+        "i",
+        scope.trim(),
+        folder_id,
+        unclassified_only_parent_folder_id,
+    );
+
+    let total_image_count =
+        count_gallery_images_with_values(&conn, Some(where_sql.as_ref()), values.clone())?;
+    let images = load_images_page_with_values(
+        &conn,
+        Some(where_sql.as_ref()),
+        values,
+        offset.max(0),
+        limit.clamp(1, LARGE_LIBRARY_INITIAL_IMAGE_LIMIT),
+    )?;
+    Ok(GalleryImagePage {
+        images,
+        total_image_count,
+        offset: offset.max(0),
+        limit: limit.clamp(1, LARGE_LIBRARY_INITIAL_IMAGE_LIMIT),
+    })
+}
+
+pub fn list_gallery_image_ids_for_scope(
+    scope: String,
+    folder_id: Option<i64>,
+    unclassified_only_parent_folder_id: Option<i64>,
+    state: &AppState,
+) -> Result<Vec<String>, String> {
+    let conn = open_database(&state.database_path)?;
+    let (where_sql, values) = gallery_scope_where_sql(
+        "i",
+        scope.trim(),
+        folder_id,
+        unclassified_only_parent_folder_id,
+    );
+    let sql = format!(
+        "
+        SELECT i.id
+        FROM images i
+        WHERE {}
+        ORDER BY i.modified_at DESC, i.path ASC
+        ",
+        where_sql.as_ref()
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|error| format!("Failed to prepare gallery scope id query: {error}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Failed to query gallery scope ids: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect gallery scope ids: {error}"))
+}
+
+pub fn list_gallery_images_by_ids_page(
+    image_ids: Vec<String>,
+    offset: i64,
+    limit: i64,
+    state: &AppState,
+) -> Result<GalleryImagePage, String> {
+    let total_image_count = image_ids.len() as i64;
+    let offset = offset.max(0) as usize;
+    let limit = limit.clamp(1, LARGE_LIBRARY_INITIAL_IMAGE_LIMIT) as usize;
+    let page_ids = image_ids
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    if page_ids.is_empty() {
+        return Ok(GalleryImagePage {
+            images: Vec::new(),
+            total_image_count,
+            offset: offset as i64,
+            limit: limit as i64,
+        });
+    }
+
+    let conn = open_database(&state.database_path)?;
+    let mut by_id = HashMap::<String, GalleryImage>::new();
+    for chunk in page_ids.chunks(BATCH_SQL_VARIABLE_LIMIT_SAFE) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "
+            SELECT
+              i.id, i.path, t.thumb_path, i.file_name, i.ext, i.width, i.height, i.file_size, i.modified_at,
+              i.imported_at, i.folder_id, i.missing, i.trashed, i.is_favorite, i.source
+            FROM images i
+            LEFT JOIN image_thumbnails t ON t.image_id = i.id
+            WHERE i.id IN ({placeholders})
+            "
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|error| format!("Failed to prepare gallery images by ids query: {error}"))?;
+        let rows = stmt
+            .query_map(
+                params_from_iter(chunk.iter().map(|id| Value::Text(id.clone()))),
+                map_gallery_image_page_row,
+            )
+            .map_err(|error| format!("Failed to query gallery images by ids: {error}"))?;
+        for row in rows {
+            let image = row.map_err(|error| format!("Failed to collect gallery images by ids: {error}"))?;
+            by_id.insert(image.id.clone(), image);
+        }
+    }
+    let images = page_ids
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .collect::<Vec<_>>();
+    Ok(GalleryImagePage {
+        images,
+        total_image_count,
+        offset: offset as i64,
+        limit: limit as i64,
+    })
 }
 
 pub fn add_gallery_folder(folder_path: String, state: &AppState) -> Result<LibraryStore, String> {
@@ -4969,10 +5245,13 @@ fn remap_backup_path(path: &str, mappings: &[BackupPathMapping]) -> String {
     };
     let from = mapping.from.trim();
     let to = mapping.to.trim().trim_end_matches(['\\', '/']);
-    if path.len() <= from.len() {
+    let Some(suffix) = path.get(from.len()..) else {
+        return path.to_string();
+    };
+    if suffix.is_empty() {
         return to.to_string();
     }
-    let suffix = path[from.len()..].trim_start_matches(['\\', '/']);
+    let suffix = suffix.trim_start_matches(['\\', '/']);
     if suffix.is_empty() {
         to.to_string()
     } else {
@@ -5433,6 +5712,421 @@ pub fn unassign_user_tag_from_folder(tag_text: String, state: &AppState) -> Resu
     load_tag_management_state(&conn)
 }
 
+pub fn dev_create_fake_gallery_data(
+    options: DevFakeGalleryOptions,
+    state: &AppState,
+) -> Result<DevStressToolResult, String> {
+    let count = options.count.clamp(0, 200_000);
+    if count == 0 {
+        return Ok(dev_result(0, 0, 0, 0, None, state));
+    }
+    let mut conn = open_database(&state.database_path)?;
+    let now = now_ms();
+    let folder_id = upsert_hidden_folder(&conn, ".illutag-dev-test/fake-gallery", now)?;
+    let samples = collect_dev_fake_sample_images(&conn, options.source_folder.as_deref(), options.sample_image_ids.as_deref())?;
+    if samples.is_empty() {
+        return Err("No sample images available. Provide sourceFolder or sampleImageIds, or add real images first.".to_string());
+    }
+    let user_folder_ids = if options.randomize_folders.unwrap_or(false) {
+        ensure_dev_fake_user_folders(&conn, now)?
+    } else {
+        Vec::new()
+    };
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to open dev fake data transaction: {error}"))?;
+    let mut created = 0i64;
+    for index in 0..count {
+        let sample = &samples[index as usize % samples.len()];
+        let seed = dev_hash_i64(index + now);
+        let width = if options.randomize_dimensions.unwrap_or(true) {
+            320 + (seed % 1800) as u32
+        } else {
+            sample.width.max(1)
+        };
+        let height = if options.randomize_dimensions.unwrap_or(true) {
+            320 + ((seed / 17) % 1800) as u32
+        } else {
+            sample.height.max(1)
+        };
+        let file_name = if options.randomize_file_names.unwrap_or(true) {
+            format!("dev_fake_{index:06}_{}.{}", seed % 10_000, sample.ext)
+        } else {
+            format!("dev_fake_{index:06}_{}", sample.file_name)
+        };
+        let image_id = format!("illutag-dev-fake:{index:08}");
+        let fake_path = format!("{}#{}", sample.path, image_id);
+        let imported_at = if options.randomize_imported_at.unwrap_or(true) {
+            now - (seed % (180 * 24 * 60 * 60 * 1000))
+        } else {
+            now
+        };
+        tx.execute(
+            "
+            INSERT INTO images (
+              id, path, file_name, ext, width, height, file_size, modified_at, imported_at,
+              folder_id, missing, trashed, is_favorite, content_hash, source
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0, ?11, NULL, 'library')
+            ON CONFLICT(id) DO UPDATE SET
+              path = excluded.path,
+              file_name = excluded.file_name,
+              width = excluded.width,
+              height = excluded.height,
+              file_size = excluded.file_size,
+              modified_at = excluded.modified_at,
+              imported_at = excluded.imported_at,
+              is_favorite = excluded.is_favorite
+            ",
+            params![
+                image_id,
+                fake_path,
+                file_name,
+                sample.ext,
+                width,
+                height,
+                sample.file_size,
+                sample.modified_at,
+                imported_at,
+                folder_id,
+                if options.randomize_favorites.unwrap_or(false) && seed % 7 == 0 { 1 } else { 0 },
+            ],
+        )
+        .map_err(|error| format!("Failed to insert dev fake image: {error}"))?;
+        if !user_folder_ids.is_empty() {
+            let assigned_folder_id = user_folder_ids[seed as usize % user_folder_ids.len()];
+            tx.execute(
+                "
+                INSERT OR IGNORE INTO image_user_folders (image_id, folder_id, assigned_at)
+                VALUES (?1, ?2, ?3)
+                ",
+                params![image_id, assigned_folder_id, now],
+            )
+            .map_err(|error| format!("Failed to assign dev fake folder: {error}"))?;
+        }
+        if options.randomize_tags.unwrap_or(false) {
+            let tag = match seed % 5 {
+                0 => "dev_warm_color",
+                1 => "dev_cool_color",
+                2 => "dev_lineart",
+                3 => "dev_character",
+                _ => "dev_landscape",
+            };
+            tx.execute(
+                "
+                INSERT OR REPLACE INTO image_auto_tags (
+                  image_id, category, tag_en, tag_zh, confidence, model_name, updated_at
+                )
+                VALUES (?1, 'general', ?2, ?2, ?3, ?4, ?5)
+                ",
+                params![image_id, tag, 0.5 + ((seed % 45) as f64 / 100.0), WD_TAGGER_MODEL_NAME, now],
+            )
+            .map_err(|error| format!("Failed to insert dev fake tag: {error}"))?;
+        }
+        tx.execute(
+            "
+            INSERT INTO image_thumbnails (
+              image_id, thumb_path, source_modified_at, source_file_size, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(image_id) DO UPDATE SET
+              thumb_path = excluded.thumb_path,
+              source_modified_at = excluded.source_modified_at,
+              source_file_size = excluded.source_file_size,
+              updated_at = excluded.updated_at
+            ",
+            params![image_id, sample.path, sample.modified_at, sample.file_size, now],
+        )
+        .map_err(|error| format!("Failed to insert dev fake thumbnail: {error}"))?;
+        created += 1;
+    }
+    tx.commit()
+        .map_err(|error| format!("Failed to commit dev fake data: {error}"))?;
+    invalidate_library_cache(state);
+    Ok(dev_result(created, 0, 0, 0, None, state))
+}
+
+pub fn dev_create_small_file_test_set(
+    options: DevSmallFileSetOptions,
+    state: &AppState,
+) -> Result<DevStressToolResult, String> {
+    let count = options.count.clamp(0, 200_000);
+    let root = options
+        .root_dir
+        .as_deref()
+        .map(|path| PathBuf::from(path.trim()))
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| {
+            state
+                .database_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(".illutag-dev-test")
+                .join("small-files")
+        });
+    fs::create_dir_all(&root).map_err(|error| format!("Failed to create dev small file root: {error}"))?;
+    let format = options
+        .format
+        .as_deref()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| value == "jpg" || value == "jpeg" || value == "png")
+        .unwrap_or_else(|| "png".to_string());
+    let subfolder_count = options.subfolder_count.unwrap_or(1).clamp(1, 10_000);
+    let mut created = 0i64;
+    for index in 0..count {
+        let folder = root.join(format!("bucket_{:03}", index % subfolder_count));
+        fs::create_dir_all(&folder).map_err(|error| format!("Failed to create dev small file folder: {error}"))?;
+        let extension = if format == "jpeg" { "jpg" } else { format.as_str() };
+        let path = folder.join(format!("dev_small_{index:08}.{extension}"));
+        let seed = dev_hash_i64(index);
+        let image = ImageBuffer::from_fn(32, 32, |x, y| {
+            Rgb([
+                ((x as i64 * 7 + seed) % 255) as u8,
+                ((y as i64 * 11 + seed / 3) % 255) as u8,
+                (((x + y) as i64 * 5 + seed / 7) % 255) as u8,
+            ])
+        });
+        image
+            .save(&path)
+            .map_err(|error| format!("Failed to write dev small image {}: {error}", path.display()))?;
+        created += 1;
+    }
+    Ok(dev_result(0, created, 0, 0, Some(root), state))
+}
+
+pub fn dev_cleanup_stress_test_data(state: &AppState) -> Result<DevStressToolResult, String> {
+    let mut conn = open_database(&state.database_path)?;
+    let test_root = state
+        .database_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".illutag-dev-test");
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to open dev cleanup transaction: {error}"))?;
+    let deleted_images = tx
+        .execute(
+            "
+            DELETE FROM images
+            WHERE id LIKE 'illutag-dev-fake:%'
+               OR path LIKE '%.illutag-dev-test%'
+               OR path LIKE '%#illutag-dev-fake:%'
+            ",
+            [],
+        )
+        .map_err(|error| format!("Failed to delete dev fake images: {error}"))? as i64;
+    tx.execute(
+        "DELETE FROM user_folders WHERE name LIKE 'Dev Fake Folder %'",
+        [],
+    )
+    .map_err(|error| format!("Failed to delete dev fake user folders: {error}"))?;
+    tx.execute(
+        "DELETE FROM folders WHERE path LIKE '%.illutag-dev-test%'",
+        [],
+    )
+    .map_err(|error| format!("Failed to delete dev fake folders: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("Failed to commit dev cleanup: {error}"))?;
+    let deleted_files = remove_dev_test_files(&test_root)?;
+    invalidate_library_cache(state);
+    Ok(dev_result(0, 0, deleted_images, deleted_files, Some(test_root), state))
+}
+
+#[derive(Debug, Clone)]
+struct DevSampleImage {
+    path: String,
+    file_name: String,
+    ext: String,
+    width: u32,
+    height: u32,
+    file_size: i64,
+    modified_at: i64,
+}
+
+fn collect_dev_fake_sample_images(
+    conn: &Connection,
+    source_folder: Option<&str>,
+    sample_image_ids: Option<&[String]>,
+) -> Result<Vec<DevSampleImage>, String> {
+    let mut samples = Vec::<DevSampleImage>::new();
+    if let Some(ids) = sample_image_ids {
+        for id in ids.iter().map(|value| value.trim()).filter(|value| !value.is_empty()).take(100) {
+            if let Some(sample) = conn
+                .query_row(
+                    "
+                    SELECT path, file_name, ext, width, height, file_size, modified_at
+                    FROM images
+                    WHERE id = ?1
+                    ",
+                    params![id],
+                    dev_sample_image_from_row,
+                )
+                .optional()
+                .map_err(|error| format!("Failed to query dev sample image: {error}"))?
+            {
+                samples.push(sample);
+            }
+        }
+    }
+
+    if samples.is_empty() {
+        if let Some(folder) = source_folder.map(str::trim).filter(|value| !value.is_empty()) {
+            for entry in WalkDir::new(folder)
+                .max_depth(2)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .take(100)
+            {
+                let path = entry.path();
+                let ext = path
+                    .extension()
+                    .map(|value| value.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
+                if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "bmp") {
+                    continue;
+                }
+                let metadata = match fs::metadata(path) {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
+                let (width, height) = ImageReader::open(path)
+                    .ok()
+                    .and_then(|reader| reader.into_dimensions().ok())
+                    .unwrap_or((512, 512));
+                samples.push(DevSampleImage {
+                    path: path.to_string_lossy().to_string(),
+                    file_name: path
+                        .file_name()
+                        .map(|value| value.to_string_lossy().to_string())
+                        .unwrap_or_else(|| format!("sample.{ext}")),
+                    ext,
+                    width,
+                    height,
+                    file_size: metadata.len() as i64,
+                    modified_at: metadata.modified().ok().map(system_time_ms).unwrap_or_else(now_ms),
+                });
+            }
+        }
+    }
+
+    if samples.is_empty() {
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT path, file_name, ext, width, height, file_size, modified_at
+                FROM images
+                WHERE source = 'library'
+                  AND id NOT LIKE 'illutag-dev-fake:%'
+                ORDER BY imported_at DESC
+                LIMIT 100
+                ",
+            )
+            .map_err(|error| format!("Failed to prepare dev sample image query: {error}"))?;
+        samples = stmt
+            .query_map([], dev_sample_image_from_row)
+            .map_err(|error| format!("Failed to query dev sample images: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect dev sample images: {error}"))?;
+    }
+    Ok(samples)
+}
+
+fn dev_sample_image_from_row(row: &Row<'_>) -> rusqlite::Result<DevSampleImage> {
+    Ok(DevSampleImage {
+        path: row.get(0)?,
+        file_name: row.get(1)?,
+        ext: row.get(2)?,
+        width: row.get(3)?,
+        height: row.get(4)?,
+        file_size: row.get(5)?,
+        modified_at: row.get(6)?,
+    })
+}
+
+fn ensure_dev_fake_user_folders(conn: &Connection, now: i64) -> Result<Vec<i64>, String> {
+    let mut ids = Vec::new();
+    for index in 0..8 {
+        conn.execute(
+            "
+            INSERT INTO user_folders (parent_id, name, sort_order, source_kind, source_path, created_at, updated_at)
+            VALUES (NULL, ?1, ?2, 'dev_fake', NULL, ?3, ?3)
+            ON CONFLICT DO NOTHING
+            ",
+            params![format!("Dev Fake Folder {}", index + 1), index, now],
+        )
+        .map_err(|error| format!("Failed to create dev fake folder: {error}"))?;
+        let id = conn
+            .query_row(
+                "SELECT id FROM user_folders WHERE name = ?1 ORDER BY id DESC LIMIT 1",
+                params![format!("Dev Fake Folder {}", index + 1)],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Failed to query dev fake folder: {error}"))?;
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+fn dev_hash_i64(value: i64) -> i64 {
+    let mut x = value.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    x ^= x >> 33;
+    (x & i64::MAX).max(1)
+}
+
+fn remove_dev_test_files(root: &Path) -> Result<i64, String> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    if !root
+        .components()
+        .any(|component| component.as_os_str().to_string_lossy() == ".illutag-dev-test")
+    {
+        return Err(format!("Refusing to remove non-dev test directory: {}", root.display()));
+    }
+    let file_count = WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .count() as i64;
+    fs::remove_dir_all(root)
+        .map_err(|error| format!("Failed to remove dev test files {}: {error}", root.display()))?;
+    Ok(file_count)
+}
+
+fn invalidate_library_cache(state: &AppState) {
+    if let Ok(mut cache) = state.library.lock() {
+        *cache = None;
+    }
+    if let Ok(mut cache) = state.clip_vector_cache.lock() {
+        *cache = None;
+    }
+    if let Ok(mut cache) = state.atmosphere_signature_cache.lock() {
+        *cache = None;
+    }
+    if let Ok(mut cache) = state.color_signature_cache.lock() {
+        *cache = None;
+    }
+}
+
+fn dev_result(
+    created_images: i64,
+    created_files: i64,
+    deleted_images: i64,
+    deleted_files: i64,
+    root_path: Option<PathBuf>,
+    state: &AppState,
+) -> DevStressToolResult {
+    DevStressToolResult {
+        created_images,
+        created_files,
+        deleted_images,
+        deleted_files,
+        root_path: root_path.map(|path| path.to_string_lossy().to_string()),
+        database_path: state.database_path.to_string_lossy().to_string(),
+    }
+}
+
 pub fn suggest_known_auto_tags(
     query: String,
     limit: Option<i64>,
@@ -5567,15 +6261,20 @@ pub fn search_gallery_image_ids(
     state: &AppState,
 ) -> Result<Vec<String>, String> {
     let conn = open_database(&state.database_path)?;
-    let mut sql = String::from(
+    let (scope_where, mut params_values) = gallery_scope_where_sql(
+        "images",
+        filters.scope.as_deref().unwrap_or("all"),
+        filters.folder_id,
+        filters.unclassified_only_parent_folder_id,
+    );
+    let mut sql = format!(
         "
         SELECT images.id
         FROM images
-        WHERE images.source = 'library'
-          AND COALESCE(images.trashed, 0) = 0
+        WHERE {}
         ",
+        scope_where.as_ref()
     );
-    let mut params_values = Vec::<Value>::new();
 
     let file_name_query = filters.file_name_query.trim().to_lowercase();
     if !file_name_query.is_empty() {
@@ -6631,6 +7330,157 @@ pub fn paste_image_to_reference_board(
     Ok(store)
 }
 
+pub fn paste_images_to_reference_board(
+    board_id: i64,
+    images: Vec<ReferenceBoardPasteImageInput>,
+    x: f32,
+    y: f32,
+    stack_offset: f32,
+    state: &AppState,
+) -> Result<LibraryStore, String> {
+    if images.is_empty() {
+        return Err("No image data to paste".to_string());
+    }
+
+    struct PreparedImage {
+        image_bytes: Vec<u8>,
+        extension: &'static str,
+        source_width: u32,
+        source_height: u32,
+        item_width: f32,
+        item_height: f32,
+    }
+
+    let mut prepared_images = Vec::with_capacity(images.len());
+    for image in images {
+        if image.image_bytes.is_empty() {
+            return Err("No image data to paste".to_string());
+        }
+        let decoded = image::load_from_memory(&image.image_bytes)
+            .map_err(|error| format!("Failed to read pasted reference image: {error}"))?;
+        let source_width = decoded.width();
+        let source_height = decoded.height();
+        let (item_width, item_height) =
+            default_reference_board_item_size(source_width, source_height);
+        prepared_images.push(PreparedImage {
+            image_bytes: image.image_bytes,
+            extension: clipboard_image_extension(&image.mime_type),
+            source_width,
+            source_height,
+            item_width,
+            item_height,
+        });
+    }
+
+    let mut library = state
+        .library
+        .lock()
+        .map_err(|_| "Library state is busy, please try again later".to_string())?;
+    let mut conn = open_database(&state.database_path)?;
+    let app_data_dir = state
+        .database_path
+        .parent()
+        .ok_or_else(|| "Failed to resolve app data directory".to_string())?;
+    let clipboard_dir = app_data_dir.join("clipboard");
+    fs::create_dir_all(&clipboard_dir)
+        .map_err(|error| format!("Failed to create reference image directory: {error}"))?;
+
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to open reference board paste transaction: {error}"))?;
+    let now = now_ms();
+    let folder_path = clipboard_dir.to_string_lossy().to_string();
+    let folder_id = upsert_hidden_folder(&tx, &folder_path, now)?;
+    let next_index = tx
+        .query_row(
+            "
+            SELECT COALESCE(MAX(z_index), -1) + 1
+            FROM reference_board_items
+            WHERE board_id = ?1
+            ",
+            params![board_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Failed to read reference board z-index: {error}"))?;
+
+    for (index, prepared) in prepared_images.iter().enumerate() {
+        let item_time = now + index as i64;
+        let mut file_path = clipboard_dir.join(format!(
+            "clipboard-{now}-{index}.{}",
+            prepared.extension
+        ));
+        let mut suffix = 1;
+        while file_path.exists() {
+            file_path = clipboard_dir.join(format!(
+                "clipboard-{now}-{index}-{suffix}.{}",
+                prepared.extension
+            ));
+            suffix += 1;
+        }
+        fs::write(&file_path, &prepared.image_bytes)
+            .map_err(|error| format!("Failed to save pasted reference image: {error}"))?;
+
+        let file_name = file_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("clipboard.{}", prepared.extension));
+        let image_path = file_path.to_string_lossy().to_string();
+        let file_size = prepared.image_bytes.len() as i64;
+
+        tx.execute(
+            "
+            INSERT INTO images (
+              id, path, file_name, ext, width, height, file_size, modified_at,
+              imported_at, folder_id, missing
+            )
+            VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, 0)
+            ",
+            params![
+                image_path,
+                file_name,
+                prepared.extension,
+                prepared.source_width,
+                prepared.source_height,
+                file_size,
+                item_time,
+                folder_id,
+            ],
+        )
+        .map_err(|error| format!("Failed to save pasted reference image index: {error}"))?;
+        tx.execute(
+            "UPDATE images SET source = 'reference' WHERE id = ?1",
+            params![image_path],
+        )
+        .map_err(|error| format!("Failed to mark pasted reference image source: {error}"))?;
+
+        tx.execute(
+            "
+            INSERT INTO reference_board_items (
+              board_id, image_id, x, y, width, height, rotation, flip_x, flip_y, z_index, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 0, ?7, ?8)
+            ",
+            params![
+                board_id,
+                image_path,
+                x + index as f32 * stack_offset,
+                y + index as f32 * stack_offset,
+                prepared.item_width,
+                prepared.item_height,
+                next_index + index as i64,
+                item_time,
+            ],
+        )
+        .map_err(|error| format!("Failed to paste image into reference board: {error}"))?;
+    }
+
+    tx.commit()
+        .map_err(|error| format!("Failed to save reference board pasted images: {error}"))?;
+
+    let store = load_store(&conn)?;
+    *library = Some(store.clone());
+    Ok(store)
+}
 pub fn rename_reference_board(
     board_id: i64,
     name: String,
@@ -7903,7 +8753,21 @@ fn load_store(conn: &Connection) -> Result<LibraryStore, String> {
     let folders_ms = t0.elapsed().as_millis();
 
     let t1 = Instant::now();
-    let images = load_images(conn)?;
+    let mut total_image_count = count_gallery_images(conn, Some(ACTIVE_GALLERY_IMAGE_WHERE))?;
+    let large_library_mode = total_image_count > LARGE_LIBRARY_IMAGE_THRESHOLD;
+    let image_limit = if large_library_mode {
+        LARGE_LIBRARY_INITIAL_IMAGE_LIMIT
+    } else {
+        total_image_count
+    };
+    let images = if large_library_mode {
+        load_images_page(conn, Some(ACTIVE_GALLERY_IMAGE_WHERE), 0, image_limit)?
+    } else {
+        load_images(conn)?
+    };
+    if !large_library_mode {
+        total_image_count = images.len() as i64;
+    }
     let images_ms = t1.elapsed().as_millis();
 
     let t2 = Instant::now();
@@ -7927,7 +8791,7 @@ fn load_store(conn: &Connection) -> Result<LibraryStore, String> {
     let reference_board_items_ms = t6.elapsed().as_millis();
 
     eprintln!(
-        "[startup-prof] load_store folders_ms={} images_ms={} user_folders_ms={} image_folders_ms={} ref_folders_ms={} ref_boards_ms={} ref_items_ms={} total_ms={} counts=folders:{} images:{} user_folders:{} image_folders:{} ref_folders:{} ref_boards:{} ref_items:{}",
+        "[startup-prof] load_store folders_ms={} images_ms={} user_folders_ms={} image_folders_ms={} ref_folders_ms={} ref_boards_ms={} ref_items_ms={} total_ms={} counts=folders:{} images:{}/{} large_mode:{} user_folders:{} image_folders:{} ref_folders:{} ref_boards:{} ref_items:{}",
         folders_ms,
         images_ms,
         user_folders_ms,
@@ -7938,6 +8802,8 @@ fn load_store(conn: &Connection) -> Result<LibraryStore, String> {
         started.elapsed().as_millis(),
         folders.len(),
         images.len(),
+        total_image_count,
+        large_library_mode,
         user_folders.len(),
         image_folders.len(),
         reference_board_folders.len(),
@@ -7948,6 +8814,10 @@ fn load_store(conn: &Connection) -> Result<LibraryStore, String> {
     Ok(LibraryStore {
         folders,
         images,
+        total_image_count,
+        large_library_mode,
+        image_offset: 0,
+        image_limit,
         user_folders,
         image_folders,
         reference_board_folders,
@@ -8022,6 +8892,92 @@ fn load_images(conn: &Connection) -> Result<Vec<GalleryImage>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("读取图片索引失败：{error}"))?;
 
+    Ok(images)
+}
+
+fn map_gallery_image_page_row(row: &Row<'_>) -> rusqlite::Result<GalleryImage> {
+    Ok(GalleryImage {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        thumbnail_path: row.get(2)?,
+        file_name: row.get(3)?,
+        ext: row.get(4)?,
+        width: row.get(5)?,
+        height: row.get(6)?,
+        file_size: row.get(7)?,
+        modified_at: row.get(8)?,
+        imported_at: row.get(9)?,
+        folder_id: row.get(10)?,
+        missing: row.get::<_, i64>(11)? != 0,
+        trashed: row.get::<_, i64>(12)? != 0,
+        is_favorite: row.get::<_, i64>(13)? != 0,
+        source: row.get(14)?,
+    })
+}
+
+fn count_gallery_images(conn: &Connection, where_sql: Option<&str>) -> Result<i64, String> {
+    count_gallery_images_with_values(conn, where_sql, Vec::new())
+}
+
+fn count_gallery_images_with_values(
+    conn: &Connection,
+    where_sql: Option<&str>,
+    values: Vec<Value>,
+) -> Result<i64, String> {
+    let sql = match where_sql {
+        Some(where_sql) if !where_sql.trim().is_empty() => {
+            format!("SELECT COUNT(*) FROM images i WHERE {where_sql}")
+        }
+        _ => "SELECT COUNT(*) FROM images i".to_string(),
+    };
+    conn.query_row(&sql, params_from_iter(values), |row| row.get(0))
+        .map_err(|error| format!("Failed to count gallery images: {error}"))
+}
+
+fn load_images_page(
+    conn: &Connection,
+    where_sql: Option<&str>,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<GalleryImage>, String> {
+    load_images_page_with_values(conn, where_sql, Vec::new(), offset, limit)
+}
+
+fn load_images_page_with_values(
+    conn: &Connection,
+    where_sql: Option<&str>,
+    values: Vec<Value>,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<GalleryImage>, String> {
+    let where_clause = match where_sql {
+        Some(where_sql) if !where_sql.trim().is_empty() => format!("WHERE {where_sql}"),
+        _ => String::new(),
+    };
+    let limit_param_index = values.len() + 1;
+    let offset_param_index = values.len() + 2;
+    let sql = format!(
+        "
+        SELECT
+          i.id, i.path, t.thumb_path, i.file_name, i.ext, i.width, i.height, i.file_size, i.modified_at,
+          i.imported_at, i.folder_id, i.missing, i.trashed, i.is_favorite, i.source
+        FROM images i
+        LEFT JOIN image_thumbnails t ON t.image_id = i.id
+        {where_clause}
+        ORDER BY i.modified_at DESC, i.path ASC
+        LIMIT ?{limit_param_index} OFFSET ?{offset_param_index}
+        "
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|error| format!("Failed to prepare gallery image page query: {error}"))?;
+    let mut params = values;
+    params.push(Value::Integer(limit.max(0)));
+    params.push(Value::Integer(offset.max(0)));
+    let images = stmt.query_map(params_from_iter(params), map_gallery_image_page_row)
+        .map_err(|error| format!("Failed to query gallery image page: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect gallery image page: {error}"))?;
     Ok(images)
 }
 
@@ -9309,7 +10265,7 @@ fn generate_thumbnails_once(
             ",
         )
         .map_err(|error| format!("Failed to load thumbnail candidates: {error}"))?;
-    let candidates = stmt
+    let mut candidates = stmt
         .query_map([], |row| {
             Ok(ThumbnailCandidate {
                 image_id: row.get(0)?,
@@ -9326,10 +10282,11 @@ fn generate_thumbnails_once(
         .map_err(|error| format!("Failed to load thumbnail candidates: {error}"))?;
     drop(stmt);
 
+    let thumb_root = ensure_thumbnail_root_dir(database_path)?;
+    repair_thumbnail_paths_for_current_data_dir(&conn, &thumb_root, &mut candidates)?;
     set_thumbnail_progress_total(progress, candidates.len() as i64);
     set_thumbnail_progress_phase(progress, "generating");
 
-    let thumb_root = ensure_thumbnail_root_dir(database_path)?;
     let worker_count = THUMBNAIL_WORKER_COUNT.max(1);
     let queue_capacity = THUMBNAIL_WORKER_QUEUE_CAPACITY.max(1);
     let (result_tx, result_rx) = mpsc::channel::<ThumbnailWorkerResult>();
@@ -10370,39 +11327,42 @@ fn cleanup_orphan_thumbnail_files(conn: &Connection, thumb_root: &Path) -> Resul
         .map_err(|error| format!("Failed to query thumbnail paths: {error}"))?;
     drop(stmt);
 
-    let mut referenced_set = HashSet::<String>::new();
-    let mut stale_image_ids = Vec::<String>::new();
-    for (image_id, thumb_path) in rows {
-        if Path::new(&thumb_path).is_file() {
-            referenced_set.insert(thumb_path);
-        } else {
-            stale_image_ids.push(image_id);
-        }
-    }
-    for image_id in stale_image_ids {
-        conn.execute(
-            "DELETE FROM image_thumbnails WHERE image_id = ?1",
-            params![image_id],
-        )
-        .map_err(|error| format!("Failed to remove stale thumbnail record: {error}"))?;
-    }
+    let _ = rows;
+    let _ = thumb_root;
+    Ok(())
+}
 
-    if !thumb_root.exists() {
-        return Ok(());
-    }
+fn expected_thumbnail_path_for_image_id(thumb_root: &Path, image_id: &str) -> String {
+    thumb_root
+        .join(format!("{}.webp", stable_hash_hex(image_id)))
+        .to_string_lossy()
+        .to_string()
+}
 
-    for entry in WalkDir::new(thumb_root)
-        .min_depth(1)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        if !entry.file_type().is_file() {
+fn repair_thumbnail_paths_for_current_data_dir(
+    conn: &Connection,
+    thumb_root: &Path,
+    candidates: &mut [ThumbnailCandidate],
+) -> Result<(), String> {
+    for candidate in candidates {
+        let expected_thumb_path = expected_thumbnail_path_for_image_id(thumb_root, &candidate.image_id);
+        let expected_thumb_exists = Path::new(&expected_thumb_path).is_file();
+        if thumbnail_up_to_date(candidate) && candidate.current_thumb_path.as_deref() == Some(expected_thumb_path.as_str()) {
             continue;
         }
-        let path_str = entry.path().to_string_lossy().to_string();
-        if !referenced_set.contains(&path_str) {
-            let _ = fs::remove_file(entry.path());
+        if !expected_thumb_exists {
+            continue;
         }
+        upsert_thumbnail_record(
+            conn,
+            &candidate.image_id,
+            &expected_thumb_path,
+            candidate.modified_at,
+            candidate.file_size,
+        )?;
+        candidate.current_thumb_path = Some(expected_thumb_path);
+        candidate.current_source_modified_at = Some(candidate.modified_at);
+        candidate.current_source_file_size = Some(candidate.file_size);
     }
     Ok(())
 }
@@ -10559,8 +11519,7 @@ fn generate_single_thumbnail(
             .map_err(|error| format!("Failed to encode thumbnail webp: {error}"))?;
     }
 
-    let file_name = format!("{}.webp", stable_hash_hex(&candidate.image_id));
-    let thumb_path = thumb_root.join(file_name);
+    let thumb_path = PathBuf::from(expected_thumbnail_path_for_image_id(thumb_root, &candidate.image_id));
     fs::write(&thumb_path, encoded)
         .map_err(|error| format!("Failed to write thumbnail file: {error}"))?;
     Ok(thumb_path.to_string_lossy().to_string())

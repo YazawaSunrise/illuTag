@@ -1393,6 +1393,18 @@ button {
   color: #a2c8ff;
 }
 
+.gallery-page-footer {
+  width: min(920px, calc(100% - 84px));
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin: 18px auto 34px;
+  color: #9aa7b5;
+  font-size: 13px;
+}
+
 @keyframes gallery-search-summon {
   from {
     opacity: 0;
@@ -2499,6 +2511,55 @@ button {
   align-items: center;
   color: #9aa7b5;
   font-size: 12px;
+}
+
+.settings__data-directory {
+  max-width: 920px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid #2a3037;
+  border-radius: 8px;
+  background: #171d24;
+}
+
+.settings__data-directory-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.settings__data-directory-label {
+  color: #95a4b4;
+  font-size: 11px;
+}
+
+.settings__data-directory-path {
+  overflow: hidden;
+  color: #d6dde5;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings__data-directory-warning {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #f0c06d;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings__data-directory-restart {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #82d5b8;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
 }
 
 .settings-export-dialog-layer {
@@ -4503,6 +4564,7 @@ button {
 }
 
 .app-shell.theme-light .folder-list,
+.app-shell.theme-light .settings__data-directory,
 .app-shell.theme-light .empty-panel,
 .app-shell.theme-light .folder-drop-panel,
 .app-shell.theme-light .context-menu,
@@ -4510,6 +4572,22 @@ button {
   border-color: #d8e0ea;
   background: #ffffff;
   box-shadow: 0 16px 34px rgb(19 33 51 / 0.14);
+}
+
+.app-shell.theme-light .settings__data-directory-label {
+  color: #64748b;
+}
+
+.app-shell.theme-light .settings__data-directory-path {
+  color: #1f2937;
+}
+
+.app-shell.theme-light .settings__data-directory-warning {
+  color: #9a6700;
+}
+
+.app-shell.theme-light .settings__data-directory-restart {
+  color: #20785f;
 }
 
 .app-shell.theme-light .gallery-search {
@@ -4688,6 +4766,10 @@ button {
 
 .app-shell.theme-light .gallery-unclassified-toggle:hover {
   color: #4f86c3;
+}
+
+.app-shell.theme-light .gallery-page-footer {
+  color: #637185;
 }
 
 .app-shell.theme-light .gallery-search__mini-button {
@@ -5335,5 +5417,9 @@ button {
   .folder-form {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .settings__data-directory {
+    grid-template-columns: 1fr;
   }
 }

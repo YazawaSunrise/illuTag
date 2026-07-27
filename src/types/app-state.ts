@@ -56,11 +56,22 @@ export type ReferenceBoardItem = {
 export type LibraryStore = {
   folders: LibraryFolder[]
   images: GalleryImage[]
+  totalImageCount: number
+  largeLibraryMode: boolean
+  imageOffset: number
+  imageLimit: number
   userFolders: UserFolder[]
   imageFolders: ImageFolderAssignment[]
   referenceBoardFolders: ReferenceBoardFolder[]
   referenceBoards: ReferenceBoard[]
   referenceBoardItems: ReferenceBoardItem[]
+}
+
+export type GalleryImagePage = {
+  images: GalleryImage[]
+  totalImageCount: number
+  offset: number
+  limit: number
 }
 
 export type ViewMode = 'gallery' | 'settings' | 'board'
