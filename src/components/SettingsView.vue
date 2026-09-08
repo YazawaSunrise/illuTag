@@ -1,24 +1,36 @@
 ﻿<script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, toRefs } from 'vue'
 
 type LibraryFolder = {
   path: string
+}
+
+type UserFolder = {
+  id: number
+  parentId?: number | null
+  name: string
 }
 
 type ThemeMode = 'light' | 'dark'
 type ExportDialogMode = 'migration' | 'organized' | null
 
 const exportDialogMode = ref<ExportDialogMode>(null)
+const organizedExportScope = ref<'all' | 'selected'>('all')
+const selectedOrganizedFolderIds = ref<Set<number>>(new Set())
 
 function openExportDialog(mode: Exclude<ExportDialogMode, null>) {
   exportDialogMode.value = mode
+  if (mode === 'organized') {
+    organizedExportScope.value = 'all'
+    selectedOrganizedFolderIds.value = new Set()
+  }
 }
 
 function closeExportDialog() {
   exportDialogMode.value = null
 }
 
-defineProps<{
+const props = defineProps<{
   sidebarPinned: boolean
   autoHideTitlebarInWindowMode: boolean
   autoFixRightSidebarOnPreview: boolean
@@ -64,8 +76,119 @@ defineProps<{
   isLoading: boolean
   errorText: string
   folders: LibraryFolder[]
+  userFolders: UserFolder[]
   handlers: Record<string, (...args: any[]) => any>
 }>()
+
+const {
+  sidebarPinned, autoHideTitlebarInWindowMode, autoFixRightSidebarOnPreview, thumbnailCacheEnabled,
+  isThumbnailGenerationRunning, isThumbnailGenerationPaused, thumbnailProgressText, thumbnailProgressPercent, thumbnailRecentErrors,
+  isAtmosphereGenerationRunning, isAtmosphereGenerationPaused, atmosphereProgressText, atmosphereProgressPercent, atmosphereRecentErrors,
+  isColorSignatureGenerationRunning, isColorSignatureGenerationPaused, colorSignatureProgressText, colorSignatureProgressPercent, colorSignatureRecentErrors,
+  autoScanOnStartup, isOneClickScanRunning, isBackgroundScanRunning, isBackgroundScanPaused, scanProgressText, scanRecentErrors,
+  isNaturalLanguageScanRunning, isNaturalLanguageScanPaused, naturalLanguageScanProgressText, naturalLanguageScanRecentErrors,
+  themeMode, appVersion, updateChecking, updateAvailable, updateLatestVersion, updateStatusText,
+  dataDirectoryPath, dataDirectoryWarning, isMigratingDataDirectory, dataDirectoryRestartRequired,
+  folderPathInput, isPickingFolder, isAddingFolder, isLoading, errorText, folders, userFolders, handlers,
+} = toRefs(props)
+
+const userFolderChildren = computed(() => {
+  const children = new Map<number | null, UserFolder[]>()
+  for (const folder of userFolders.value) {
+    const parentId = folder.parentId ?? null
+    const list = children.get(parentId) ?? []
+    list.push(folder)
+    children.set(parentId, list)
+  }
+  return children
+})
+
+const orderedUserFolders = computed(() => {
+  const result: Array<UserFolder & { depth: number }> = []
+  const visited = new Set<number>()
+  const visit = (parentId: number | null, depth: number) => {
+    for (const folder of userFolderChildren.value.get(parentId) ?? []) {
+      if (visited.has(folder.id)) continue
+      visited.add(folder.id)
+      result.push({ ...folder, depth })
+      visit(folder.id, depth + 1)
+    }
+  }
+  visit(null, 0)
+  for (const folder of userFolders.value) {
+    if (visited.has(folder.id)) continue
+    visited.add(folder.id)
+    result.push({ ...folder, depth: 0 })
+    visit(folder.id, 1)
+  }
+  return result
+})
+
+function folderDescendantIds(folderId: number) {
+  const ids = [folderId]
+  const stack = [folderId]
+  while (stack.length > 0) {
+    const parentId = stack.pop()!
+    for (const child of userFolderChildren.value.get(parentId) ?? []) {
+      ids.push(child.id)
+      stack.push(child.id)
+    }
+  }
+  return ids
+}
+
+function folderSelectionState(folderId: number): 'checked' | 'partial' | 'unchecked' {
+  const subtree = folderDescendantIds(folderId)
+  const selectedCount = subtree.filter((id) => selectedOrganizedFolderIds.value.has(id)).length
+  if (selectedCount === 0) return 'unchecked'
+  if (selectedCount === subtree.length) return 'checked'
+  return 'partial'
+}
+
+function toggleOrganizedFolder(folderId: number) {
+  const next = new Set(selectedOrganizedFolderIds.value)
+  const state = folderSelectionState(folderId)
+  for (const id of folderDescendantIds(folderId)) {
+    if (state === 'checked') next.delete(id)
+    else next.add(id)
+  }
+  selectedOrganizedFolderIds.value = next
+}
+
+function selectedOrganizedFolderRoots() {
+  const selected = selectedOrganizedFolderIds.value
+  const selectedRoots: number[] = []
+  for (const folder of userFolders.value) {
+    if (!selected.has(folder.id)) continue
+    let parentId = folder.parentId ?? null
+    let hasSelectedAncestor = false
+    while (parentId !== null) {
+      if (selected.has(parentId)) { hasSelectedAncestor = true; break }
+      parentId = userFolders.value.find((candidate) => candidate.id === parentId)?.parentId ?? null
+    }
+    if (!hasSelectedAncestor) selectedRoots.push(folder.id)
+  }
+  return selectedRoots
+}
+
+function excludedOrganizedFolderRoots(selectedRoots: number[]) {
+  const selected = selectedOrganizedFolderIds.value
+  const excluded: number[] = []
+  const walk = (parentId: number) => {
+    for (const child of userFolderChildren.value.get(parentId) ?? []) {
+      if (!selected.has(child.id)) { excluded.push(child.id); continue }
+      walk(child.id)
+    }
+  }
+  for (const rootId of selectedRoots) walk(rootId)
+  return excluded
+}
+
+function organizedExportSelection() {
+  if (organizedExportScope.value === 'all') return { selectedFolderIds: null, excludedFolderIds: null }
+  const selectedFolderIds = selectedOrganizedFolderRoots()
+  return { selectedFolderIds, excludedFolderIds: excludedOrganizedFolderRoots(selectedFolderIds) }
+}
 </script>
 
 <template>
@@ -541,6 +664,28 @@ defineProps<{
           <p class="settings-export-dialog__lead">
             用于不继续使用 illuTag 时，导出一份普通文件夹结构，方便在系统文件管理器或其他软件中继续整理。
           </p>
+          <div class="settings-export-dialog__scope-switch">
+            <label><input v-model="organizedExportScope" type="radio" value="all" /><span>全部文件夹</span></label>
+            <label><input v-model="organizedExportScope" type="radio" value="selected" /><span>指定文件夹</span></label>
+          </div>
+          <div v-if="organizedExportScope === 'selected'" class="settings-export-dialog__folder-picker">
+            <p class="settings-export-dialog__folder-picker-hint">选择父文件夹会包含其子文件夹；取消部分子文件夹后，父文件夹会显示半选状态。</p>
+            <label
+              v-for="folder in orderedUserFolders"
+              :key="`export-folder-${folder.id}`"
+              class="settings-export-dialog__folder-row"
+              :style="{ paddingLeft: `${10 + folder.depth * 20}px` }"
+            >
+              <input
+                type="checkbox"
+                :checked="folderSelectionState(folder.id) === 'checked'"
+                :indeterminate="folderSelectionState(folder.id) === 'partial'"
+                @change="toggleOrganizedFolder(folder.id)"
+              />
+              <span>{{ folder.name }}</span>
+            </label>
+            <p v-if="userFolders.length === 0" class="settings-export-dialog__folder-picker-empty">还没有软件文件夹。</p>
+          </div>
           <section class="settings-export-dialog__section">
             <h4>导出规则</h4>
             <p>
@@ -554,7 +699,12 @@ defineProps<{
             </p>
           </section>
           <div class="settings-export-dialog__actions">
-            <button class="primary-button" type="button" @click="handlers.exportOrganizedFolderResult()">
+            <button
+              class="primary-button"
+              type="button"
+              :disabled="organizedExportScope === 'selected' && selectedOrganizedFolderIds.size === 0"
+              @click="handlers.exportOrganizedFolderResult(organizedExportSelection())"
+            >
               选择导出目录
             </button>
           </div>

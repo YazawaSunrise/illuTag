@@ -17,6 +17,7 @@ defineProps<{
   referenceBoardCanvasMenu: ReferenceBoardCanvasMenu
   referenceBoardCanvasMenuStyle: Record<string, string | undefined>
   referenceBoardSidebarsDisabled: boolean
+  isCopying: boolean
   dragState: DragState | null
   handlers: Record<string, (...args: any[]) => any>
 }>()
@@ -31,7 +32,11 @@ defineProps<{
     @contextmenu.prevent
   >
     <template v-if="referenceBoardCanvasMenu.kind === 'item'">
-      <button type="button" @click="handlers.copyReferenceBoardItemToClipboard(referenceBoardCanvasMenu.itemId)">
+      <button
+        type="button"
+        :disabled="isCopying"
+        @click="handlers.copyReferenceBoardItemToClipboard(referenceBoardCanvasMenu.itemId)"
+      >
         复制
       </button>
       <button

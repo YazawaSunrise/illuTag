@@ -25,6 +25,13 @@ type InternalBoardCopyRef = {
   height: number
   rotation: number
   copiedAt: number
+  clipboardSequenceNumber: number | null
+}
+
+type ClipboardWriteResult = {
+  imageFormatWritten: boolean
+  fileFormatWritten: boolean
+  clipboardSequenceNumber?: number | null
 }
 
 type ClipboardImagePayload = {
@@ -51,6 +58,7 @@ type UseReferenceBoardClipboardOptions<TLibraryStore extends LibraryStoreLike> =
   ensureBoardCanvasBoundsFor: (boardId: number) => void
   getReferenceBoardViewportMetrics: () => ViewportMetrics | null
   setErrorText: (value: string) => void
+  setStatusText?: (value: string) => void
   formatError: (error: unknown) => string
   internalBoardCopyMaxAgeMs?: number
 }
@@ -60,7 +68,8 @@ const defaultInternalBoardCopyMaxAgeMs = 10 * 60 * 1000
 export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLike>(
   options: UseReferenceBoardClipboardOptions<TLibraryStore>,
 ) {
-  const clipboardWriteTask = ref<Promise<void> | null>(null)
+  const clipboardWriteTask = ref<Promise<ClipboardWriteResult> | null>(null)
+  const isCopying = ref(false)
   const internalBoardCopyRef = ref<InternalBoardCopyRef | null>(null)
   const internalBoardCopyMaxAgeMs =
     options.internalBoardCopyMaxAgeMs ?? defaultInternalBoardCopyMaxAgeMs
@@ -76,12 +85,19 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
       height: boardItem.height,
       rotation: boardItem.rotation,
       copiedAt: Date.now(),
+      clipboardSequenceNumber: null,
     }
     options.closeReferenceBoardCanvasMenu()
     const task = copyImageToSystemClipboard(boardItem.imageId)
     clipboardWriteTask.value = task
     try {
-      await task
+      const result = await task
+      if (internalBoardCopyRef.value?.itemId === boardItem.id) {
+        internalBoardCopyRef.value.clipboardSequenceNumber = result.clipboardSequenceNumber ?? null
+      }
+      if (!result.fileFormatWritten) {
+        options.setErrorText('图片已复制，但文件复制格式写入失败')
+      }
     } catch (error) {
       options.setErrorText(buildClipboardCopyErrorText(error, '参考板复制'))
     } finally {
@@ -102,6 +118,29 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
         } catch {}
       }
       const { invoke } = await import('@tauri-apps/api/core')
+      const currentSequenceNumber = await invoke<number | null>('read_system_clipboard_sequence_number_command')
+      const copied = internalBoardCopyRef.value
+      if (
+        copied &&
+        currentSequenceNumber !== null &&
+        copied.clipboardSequenceNumber !== null &&
+        currentSequenceNumber === copied.clipboardSequenceNumber &&
+        Date.now() - copied.copiedAt <= internalBoardCopyMaxAgeMs
+      ) {
+        const sourceStillExists = options.library.value.referenceBoardItems.some((item) => item.id === copied.itemId)
+        if (sourceStillExists) {
+          options.library.value = await invoke<TLibraryStore>('duplicate_reference_board_item_command', {
+            itemId: copied.itemId,
+            x: pastePoint.x,
+            y: pastePoint.y,
+          })
+          options.ensureBoardCanvasBoundsFor(options.activeReferenceBoard.value.id)
+          return
+        }
+        internalBoardCopyRef.value = null
+      } else if (copied) {
+        internalBoardCopyRef.value = null
+      }
       const clipboardImage = await readClipboardImageForReferenceBoard()
       if (clipboardImage) {
         options.library.value = await invoke<TLibraryStore>('paste_image_to_reference_board_command', {
@@ -113,26 +152,6 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
         })
         options.ensureBoardCanvasBoundsFor(options.activeReferenceBoard.value.id)
         return
-      }
-
-      if (
-        internalBoardCopyRef.value &&
-        Date.now() - internalBoardCopyRef.value.copiedAt <= internalBoardCopyMaxAgeMs
-      ) {
-        const copied = internalBoardCopyRef.value
-        const sourceStillExists = options.library.value.referenceBoardItems.some(
-          (item) => item.id === copied.itemId,
-        )
-        if (sourceStillExists) {
-          options.library.value = await invoke<TLibraryStore>('duplicate_reference_board_item_command', {
-            itemId: copied.itemId,
-            x: pastePoint.x,
-            y: pastePoint.y,
-          })
-          options.ensureBoardCanvasBoundsFor(options.activeReferenceBoard.value.id)
-          return
-        }
-        internalBoardCopyRef.value = null
       }
 
       options.setErrorText('剪贴板中没有可粘贴的图片。')
@@ -189,33 +208,48 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
     }
   }
 
-  async function copyImageToSystemClipboard(imageId: string) {
+  async function copyImageToSystemClipboard(imageId: string): Promise<ClipboardWriteResult> {
+    if (isCopying.value) throw new Error('图片正在复制，请稍候。')
     const { invoke } = await import('@tauri-apps/api/core')
-    let backendError: unknown = null
+    isCopying.value = true
+    options.setStatusText?.('正在复制图片…')
     try {
-      await invoke('copy_image_to_system_clipboard_command', { imageId })
-      return
-    } catch (error) {
-      backendError = error
-    }
-
-    try {
-      await copyImageToSystemClipboardByWebApi(imageId)
-      return
-    } catch (error) {
-      const backendRaw = formatRawErrorNameMessage(backendError)
-      const fallbackRaw = formatRawErrorNameMessage(error)
-      throw new Error(
-        [
+      let backendError: unknown = null
+      try {
+        const result = await invoke<ClipboardWriteResult>('copy_image_to_system_clipboard_command', { imageId })
+        if (!result.imageFormatWritten) throw new Error('写入系统剪贴板图片格式失败')
+        return result
+      } catch (error) {
+        backendError = error
+        if (formatRawErrorNameMessage(error).includes('图片正在复制')) throw error
+      }
+      try {
+        return await copyImageToSystemClipboardByWebApi(imageId)
+      } catch (error) {
+        const backendRaw = formatRawErrorNameMessage(backendError)
+        const fallbackRaw = formatRawErrorNameMessage(error)
+        throw new Error([
           `后端系统剪贴板写入失败：${backendRaw}`,
           `Web Clipboard 回退失败：${fallbackRaw}`,
           `能力检测：${formatClipboardFeatureAvailability()}`,
-        ].join('\n'),
-      )
+        ].join('\n'))
+      }
+    } finally {
+      isCopying.value = false
+      options.setStatusText?.('')
     }
   }
 
-  async function copyImageToSystemClipboardByWebApi(imageId: string) {
+  async function prepareImageClipboardPayload(imageId: string) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('prepare_image_clipboard_payload_command', { imageId })
+    } catch {
+      // Prewarming is intentionally silent.
+    }
+  }
+
+  async function copyImageToSystemClipboardByWebApi(imageId: string): Promise<ClipboardWriteResult> {
     const { invoke } = await import('@tauri-apps/api/core')
     const payload = await invoke<{ bytes: number[]; mime_type?: string; mimeType?: string }>(
       'read_image_bytes_command',
@@ -258,6 +292,11 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
           .filter(Boolean)
           .join('\n'),
       )
+    }
+    return {
+      imageFormatWritten: true,
+      fileFormatWritten: false,
+      clipboardSequenceNumber: null,
     }
   }
 
@@ -345,6 +384,8 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
     copyReferenceBoardItemToClipboard,
     pasteReferenceBoardContent,
     copyImageToSystemClipboard,
+    prepareImageClipboardPayload,
+    isCopying,
     buildClipboardCopyErrorText,
     clearInternalBoardCopyRefForItem,
     clearInternalBoardCopyRefForItems,

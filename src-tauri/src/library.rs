@@ -1,6 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use calamine::{Data as ExcelCell, Reader, open_workbook_auto};
-use image::{ImageBuffer, ImageReader, Rgb};
+use image::{codecs::png::PngEncoder, ExtendedColorType, ImageBuffer, ImageEncoder, ImageReader, Rgb};
 use image::imageops::FilterType;
 use image::GenericImageView;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter, types::Value};
@@ -15,7 +15,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
-        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        Arc, Condvar, Mutex, OnceLock,
         mpsc::{self, TrySendError},
     },
     thread,
@@ -112,6 +113,7 @@ const LARGE_LIBRARY_INITIAL_IMAGE_LIMIT: i64 = 5_000;
 const ACTIVE_GALLERY_IMAGE_WHERE: &str =
     "COALESCE(i.source, '') <> 'reference' AND COALESCE(i.trashed, 0) = 0";
 
+#[derive(Clone)]
 pub struct AppState {
     pub database_path: PathBuf,
     pub data_dir: PathBuf,
@@ -153,6 +155,46 @@ pub struct AppState {
     pub clip_image_encoder_last_used_at: Arc<Mutex<i64>>,
     pub clip_image_encoder_release_worker_running: Arc<Mutex<bool>>,
     pub wd_tagger_service: Arc<Mutex<Option<WdTaggerService>>>,
+    pub clipboard_prepare_state: Arc<Mutex<ClipboardPrepareState>>,
+    pub clipboard_copy_busy: Arc<AtomicBool>,
+}
+
+const CLIPBOARD_PREPARED_CACHE_MAX_BYTES: usize = 192 * 1024 * 1024;
+
+pub struct PreparedClipboardImage {
+    pub image_id: String,
+    pub normalized_file_path: String,
+    pub source_file_size: u64,
+    pub source_modified_at: i64,
+    pub png_data: Vec<u8>,
+    pub dibv5_data: Vec<u8>,
+    pub hdrop_path: String,
+    pub memory_bytes: usize,
+}
+
+struct ClipboardPrepareCell {
+    result: Mutex<Option<Result<Arc<PreparedClipboardImage>, String>>>,
+    ready: Condvar,
+}
+
+struct ClipboardPrepareRequest {
+    image_id: String,
+    generation: u64,
+    cell: Arc<ClipboardPrepareCell>,
+}
+
+pub struct ClipboardPrepareState {
+    cache: Option<Arc<PreparedClipboardImage>>,
+    active: Option<ClipboardPrepareRequest>,
+    pending: Option<ClipboardPrepareRequest>,
+    generation: u64,
+    worker_running: bool,
+}
+
+impl Default for ClipboardPrepareState {
+    fn default() -> Self {
+        Self { cache: None, active: None, pending: None, generation: 0, worker_running: false }
+    }
 }
 
 pub struct ClipImageVectorCache {
@@ -339,6 +381,14 @@ pub struct ImageBytes {
     pub bytes: Vec<u8>,
     pub mime_type: String,
     pub file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardWriteResult {
+    pub image_format_written: bool,
+    pub file_format_written: bool,
+    pub clipboard_sequence_number: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2249,50 +2299,206 @@ pub fn read_image_bytes(image_id: String, state: &AppState) -> Result<ImageBytes
     })
 }
 
-pub fn copy_image_to_system_clipboard(image_id: String, state: &AppState) -> Result<(), String> {
-    let conn = open_database(&state.database_path)?;
-    let image = load_image_record(&conn, &image_id)?;
-    let image_path = PathBuf::from(&image.path);
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("访问系统剪贴板失败：{error}"))?;
+struct ClipboardSource {
+    image_id: String,
+    path: PathBuf,
+    file_size: u64,
+    modified_at: i64,
+}
 
-    // 优先写文件列表（Windows: CF_HDROP），速度更接近资源管理器复制文件行为。
-    let file_copy_result = clipboard.set().file_list(&[image_path.clone()]);
-    if file_copy_result.is_ok() {
-        return Ok(());
+fn clipboard_source_for_image(image_id: &str, database_path: &Path) -> Result<ClipboardSource, String> {
+    let conn = open_database(database_path)?;
+    let image = load_image_record(&conn, image_id)?;
+    let path = PathBuf::from(&image.path);
+    let metadata = fs::metadata(&path).map_err(|error| format!("读取图片文件信息失败：{error}"))?;
+    let modified_at = metadata.modified().ok().and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_millis().min(i64::MAX as u128) as i64).unwrap_or(image.modified_at);
+    Ok(ClipboardSource { image_id: image_id.to_string(), path, file_size: metadata.len(), modified_at })
+}
+
+fn prepared_clipboard_image_matches(source: &ClipboardSource, prepared: &PreparedClipboardImage) -> bool {
+    prepared.image_id == source.image_id
+        && prepared.source_file_size == source.file_size
+        && prepared.source_modified_at == source.modified_at
+        && prepared.normalized_file_path == normalize_windows_path_for_recycle_bin(&source.path).to_string_lossy()
+}
+
+fn new_clipboard_prepare_cell() -> Arc<ClipboardPrepareCell> {
+    Arc::new(ClipboardPrepareCell { result: Mutex::new(None), ready: Condvar::new() })
+}
+
+fn complete_clipboard_prepare_cell(cell: &Arc<ClipboardPrepareCell>, result: Result<Arc<PreparedClipboardImage>, String>) {
+    if let Ok(mut value) = cell.result.lock() {
+        *value = Some(result);
+        cell.ready.notify_all();
     }
-    let file_copy_error = file_copy_result
-        .err()
-        .map(|error| error.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+}
 
-    // 文件列表写入失败时，回退到像素写入，保证尽可能兼容图片粘贴目标。
-    let bytes = fs::read(&image_path).map_err(|error| {
-        format!(
-            "文件路径复制失败：{file_copy_error}\n图像像素 fallback 失败：读取图片文件失败：{error}"
-        )
-    })?;
-    let decoded = image::load_from_memory(&bytes).map_err(|error| {
-        format!(
-            "文件路径复制失败：{file_copy_error}\n图像像素 fallback 失败：解码图片失败：{error}"
-        )
-    })?;
+fn wait_for_clipboard_prepare_cell(cell: &Arc<ClipboardPrepareCell>) -> Result<Arc<PreparedClipboardImage>, String> {
+    let mut value = cell.result.lock().map_err(|_| "剪贴板预准备状态被占用".to_string())?;
+    while value.is_none() {
+        value = cell.ready.wait(value).map_err(|_| "等待剪贴板预准备失败".to_string())?;
+    }
+    value.as_ref().expect("clipboard prepare result must be present").clone()
+}
+
+fn prepare_clipboard_image_payload(image_id: &str, database_path: &Path) -> Result<Arc<PreparedClipboardImage>, String> {
+    let prepare_started = Instant::now();
+    let source = clipboard_source_for_image(image_id, database_path)?;
+    let read_started = Instant::now();
+    let bytes = fs::read(&source.path).map_err(|error| format!("读取图片文件失败：{error}"))?;
+    let read_ms = read_started.elapsed().as_millis();
+    let decode_started = Instant::now();
+    let decoded = image::load_from_memory(&bytes).map_err(|error| format!("解码图片失败：{error}"))?;
     let rgba = decoded.to_rgba8();
+    let rgba_ms = decode_started.elapsed().as_millis();
     let (width, height) = rgba.dimensions();
+    let png_started = Instant::now();
+    let mut png_data = Vec::new();
+    PngEncoder::new(&mut png_data).write_image(rgba.as_raw(), width, height, ExtendedColorType::Rgba8)
+        .map_err(|error| format!("编码 PNG 剪贴板格式失败：{error}"))?;
+    let png_ms = png_started.elapsed().as_millis();
+    let dib_started = Instant::now();
+    let dibv5_data = build_dibv5_data(width, height, rgba.as_raw())?;
+    let dib_ms = dib_started.elapsed().as_millis();
+    let normalized_file_path = normalize_windows_path_for_recycle_bin(&source.path).to_string_lossy().to_string();
+    let memory_bytes = png_data.len().saturating_add(dibv5_data.len()).saturating_add(normalized_file_path.len());
+    let prepared = Arc::new(PreparedClipboardImage {
+        image_id: source.image_id, normalized_file_path: normalized_file_path.clone(),
+        source_file_size: source.file_size, source_modified_at: source.modified_at,
+        png_data, dibv5_data, hdrop_path: normalized_file_path, memory_bytes,
+    });
+    #[cfg(debug_assertions)]
+    eprintln!("[clipboard-prof] prepare image={} read_ms={} decode_rgba_ms={} png_ms={} dibv5_ms={} total_ms={} bytes={}x{} memory_bytes={}", prepared.image_id, read_ms, rgba_ms, png_ms, dib_ms, prepare_started.elapsed().as_millis(), width, height, prepared.memory_bytes);
+    #[cfg(not(debug_assertions))]
+    let _ = (prepare_started, read_ms, rgba_ms, png_ms, dib_ms);
+    Ok(prepared)
+}
 
-    clipboard
-        .set_image(arboard::ImageData {
-            width: width as usize,
-            height: height as usize,
-            bytes: Cow::Owned(rgba.into_raw()),
-        })
-        .map_err(|error| {
-            format!(
-                "文件路径复制失败：{file_copy_error}\n图像像素 fallback 失败：写入系统剪贴板失败：{error}"
-            )
-        })?;
-
+fn request_clipboard_preparation(image_id: String, state: &AppState) -> Result<(), String> {
+    let (cell, should_spawn, replaced_cell) = {
+        let mut prepare_state = state.clipboard_prepare_state.lock().map_err(|_| "剪贴板预准备状态被占用".to_string())?;
+        if prepare_state.pending.as_ref().map(|request| request.image_id == image_id).unwrap_or(false)
+            || prepare_state.active.as_ref().map(|request| request.image_id == image_id).unwrap_or(false) { return Ok(()); }
+        prepare_state.generation = prepare_state.generation.wrapping_add(1);
+        let cell = new_clipboard_prepare_cell();
+        let replaced_cell = prepare_state.pending.take().map(|request| request.cell);
+        prepare_state.pending = Some(ClipboardPrepareRequest { image_id, generation: prepare_state.generation, cell: cell.clone() });
+        let should_spawn = !prepare_state.worker_running;
+        if should_spawn { prepare_state.worker_running = true; }
+        (cell, should_spawn, replaced_cell)
+    };
+    if let Some(replaced_cell) = replaced_cell { complete_clipboard_prepare_cell(&replaced_cell, Err("剪贴板预准备请求已更新".to_string())); }
+    if should_spawn {
+        let prepare_state = state.clipboard_prepare_state.clone();
+        let database_path = state.database_path.clone();
+        let spawn_result = thread::Builder::new().name("clipboard-prepare".to_string()).spawn(move || clipboard_prepare_worker(prepare_state, database_path));
+        if let Err(error) = spawn_result {
+            complete_clipboard_prepare_cell(&cell, Err(format!("启动剪贴板预准备失败：{error}")));
+            if let Ok(mut prepare_state) = state.clipboard_prepare_state.lock() { prepare_state.worker_running = false; prepare_state.pending = None; }
+            return Err(format!("启动剪贴板预准备失败：{error}"));
+        }
+    }
     Ok(())
+}
+
+fn clipboard_prepare_worker(prepare_state: Arc<Mutex<ClipboardPrepareState>>, database_path: PathBuf) {
+    loop {
+        let request = {
+            let Ok(mut state) = prepare_state.lock() else { return; };
+            let request = state.pending.take();
+            if let Some(request) = &request { state.active = Some(ClipboardPrepareRequest { image_id: request.image_id.clone(), generation: request.generation, cell: request.cell.clone() }); }
+            request
+        };
+        let Some(request) = request else { if let Ok(mut state) = prepare_state.lock() { state.worker_running = false; } return; };
+        let result = match clipboard_source_for_image(&request.image_id, &database_path) {
+            Ok(source) => {
+                let cached = prepare_state.lock().ok().and_then(|state| state.cache.clone()).filter(|cache| prepared_clipboard_image_matches(&source, cache));
+                cached.map(Ok).unwrap_or_else(|| prepare_clipboard_image_payload(&request.image_id, &database_path))
+            }
+            Err(_) => prepare_clipboard_image_payload(&request.image_id, &database_path),
+        };
+        if let Ok(prepared) = &result { if let Ok(mut state) = prepare_state.lock() { if state.generation == request.generation { state.cache = if prepared.memory_bytes <= CLIPBOARD_PREPARED_CACHE_MAX_BYTES { Some(prepared.clone()) } else { None }; } } }
+        complete_clipboard_prepare_cell(&request.cell, result);
+        if let Ok(mut state) = prepare_state.lock() { if state.active.as_ref().map(|active| active.generation == request.generation).unwrap_or(false) { state.active = None; } }
+    }
+}
+
+pub fn prepare_image_clipboard_payload(image_id: String, state: &AppState) -> Result<(), String> { request_clipboard_preparation(image_id, state) }
+
+fn get_or_prepare_clipboard_image(image_id: &str, state: &AppState) -> Result<Arc<PreparedClipboardImage>, String> {
+    loop {
+        let source = clipboard_source_for_image(image_id, &state.database_path)?;
+        if let Ok(prepare_state) = state.clipboard_prepare_state.lock() { if let Some(cache) = &prepare_state.cache { if prepared_clipboard_image_matches(&source, cache) { #[cfg(debug_assertions)] eprintln!("[clipboard-prof] cache_hit image={image_id}"); return Ok(cache.clone()); } } }
+        #[cfg(debug_assertions)] eprintln!("[clipboard-prof] cache_miss image={image_id}");
+        request_clipboard_preparation(image_id.to_string(), state)?;
+        let cell = { let prepare_state = state.clipboard_prepare_state.lock().map_err(|_| "剪贴板预准备状态被占用".to_string())?; prepare_state.active.as_ref().or(prepare_state.pending.as_ref()).filter(|pending| pending.image_id == image_id).map(|pending| pending.cell.clone()) };
+        let Some(cell) = cell else { continue; };
+        let prepared = match wait_for_clipboard_prepare_cell(&cell) { Ok(prepared) => prepared, Err(error) if error == "剪贴板预准备请求已更新" => continue, Err(error) => return Err(error) };
+        let current_source = clipboard_source_for_image(image_id, &state.database_path)?;
+        if prepared_clipboard_image_matches(&current_source, &prepared) { return Ok(prepared); }
+    }
+}
+
+fn build_dibv5_data(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let pixel_bytes = (width as usize).checked_mul(height as usize).and_then(|value| value.checked_mul(4)).ok_or_else(|| "图片尺寸过大，无法构建 DIBV5".to_string())?;
+    if rgba.len() != pixel_bytes { return Err("RGBA 图片数据长度不正确".to_string()); }
+    if width > i32::MAX as u32 || height > i32::MAX as u32 || pixel_bytes > u32::MAX as usize { return Err("图片尺寸超过 Windows 剪贴板支持范围".to_string()); }
+    const HEADER_SIZE: usize = 124;
+    let mut data = vec![0u8; HEADER_SIZE.saturating_add(pixel_bytes)];
+    data[0..4].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+    data[4..8].copy_from_slice(&(width as i32).to_le_bytes());
+    data[8..12].copy_from_slice(&(height as i32).to_le_bytes());
+    data[12..14].copy_from_slice(&1u16.to_le_bytes()); data[14..16].copy_from_slice(&32u16.to_le_bytes());
+    data[16..20].copy_from_slice(&3u32.to_le_bytes()); data[20..24].copy_from_slice(&(pixel_bytes as u32).to_le_bytes());
+    data[40..44].copy_from_slice(&0x00ff0000u32.to_le_bytes()); data[44..48].copy_from_slice(&0x0000ff00u32.to_le_bytes());
+    data[48..52].copy_from_slice(&0x000000ffu32.to_le_bytes()); data[52..56].copy_from_slice(&0xff000000u32.to_le_bytes());
+    data[56..60].copy_from_slice(&0x73524742u32.to_le_bytes()); data[108..112].copy_from_slice(&4u32.to_le_bytes());
+    let mut offset = HEADER_SIZE;
+    for y in (0..height as usize).rev() { for x in 0..width as usize { let source = (y * width as usize + x) * 4; data[offset..offset + 4].copy_from_slice(&[rgba[source + 2], rgba[source + 1], rgba[source], rgba[source + 3]]); offset += 4; } }
+    Ok(data)
+}
+
+#[cfg(target_os = "windows")]
+fn write_prepared_clipboard(prepared: &PreparedClipboardImage) -> Result<ClipboardWriteResult, String> {
+    let open_started = Instant::now();
+    let clipboard = clipboard_win::Clipboard::new_attempts(10).map_err(|error| format!("访问系统剪贴板失败：{error}"))?;
+    let open_ms = open_started.elapsed().as_millis();
+    clipboard_win::raw::empty().map_err(|error| format!("清空系统剪贴板失败：{error}"))?;
+    let png_started = Instant::now();
+    let png_format = clipboard_win::register_format("PNG").ok_or_else(|| "注册 PNG 剪贴板格式失败".to_string())?;
+    clipboard_win::raw::set_without_clear(png_format.get(), &prepared.png_data).map_err(|error| format!("写入 PNG 剪贴板格式失败：{error}"))?;
+    let png_ms = png_started.elapsed().as_millis();
+    let dib_started = Instant::now();
+    clipboard_win::raw::set_without_clear(clipboard_win::formats::CF_DIBV5, &prepared.dibv5_data).map_err(|error| format!("写入 DIBV5 剪贴板格式失败：{error}"))?;
+    let dib_ms = dib_started.elapsed().as_millis();
+    let file_started = Instant::now();
+    let file_format_written = clipboard_win::raw::set_file_list(&[prepared.hdrop_path.as_str()]).is_ok();
+    let file_ms = file_started.elapsed().as_millis();
+    drop(clipboard);
+    let clipboard_sequence_number = clipboard_win::raw::seq_num().map(|value| value.get());
+    #[cfg(debug_assertions)] eprintln!("[clipboard-prof] write image={} open_ms={} png_ms={} dibv5_ms={} file_ms={} total_ms={} file_format_written={} memory_bytes={}", prepared.image_id, open_ms, png_ms, dib_ms, file_ms, open_started.elapsed().as_millis(), file_format_written, prepared.memory_bytes);
+    #[cfg(not(debug_assertions))] let _ = (open_ms, png_ms, dib_ms, file_ms);
+    Ok(ClipboardWriteResult { image_format_written: true, file_format_written, clipboard_sequence_number })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn write_prepared_clipboard(_prepared: &PreparedClipboardImage) -> Result<ClipboardWriteResult, String> { Err("系统剪贴板图片写入目前只支持 Windows".to_string()) }
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::build_dibv5_data;
+    #[test]
+    fn builds_bgra_pixels_with_alpha() { let rgba = [255, 0, 0, 128, 0, 255, 0, 64]; let data = build_dibv5_data(2, 1, &rgba).expect("DIBV5 should be built"); assert_eq!(&data[0..4], &124u32.to_le_bytes()); assert_eq!(&data[14..16], &32u16.to_le_bytes()); assert_eq!(&data[124..132], &[0, 0, 255, 128, 0, 255, 0, 64]); }
+    #[test]
+    fn flips_rows_for_bottom_up_dib() { let top_red_bottom_blue = [255, 0, 0, 255, 0, 0, 255, 255]; let data = build_dibv5_data(1, 2, &top_red_bottom_blue).expect("DIBV5 should be built"); assert_eq!(&data[124..132], &[255, 0, 0, 255, 0, 0, 255, 255]); }
+}
+
+pub fn copy_image_to_system_clipboard(image_id: String, state: &AppState) -> Result<ClipboardWriteResult, String> {
+    if state.clipboard_copy_busy.compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire).is_err() { return Err("图片正在复制，请稍候。".to_string()); }
+    let result = (|| { let prepared = get_or_prepare_clipboard_image(&image_id, state)?; write_prepared_clipboard(&prepared) })();
+    state.clipboard_copy_busy.store(false, AtomicOrdering::Release);
+    result
 }
 
 pub fn test_wd_swinv2_tagger(
@@ -4830,8 +5036,13 @@ pub fn import_data_migration_backup(
 
 pub fn export_organized_folder_result(
     destination_dir: String,
+    selected_folder_ids: Option<Vec<i64>>,
+    excluded_folder_ids: Option<Vec<i64>>,
     state: &AppState,
 ) -> Result<OrganizedExportManifest, String> {
+    if matches!(selected_folder_ids.as_ref(), Some(ids) if ids.is_empty()) {
+        return Err("请至少选择一个文件夹".to_string());
+    }
     let destination_root = PathBuf::from(destination_dir);
     fs::create_dir_all(&destination_root)
         .map_err(|error| format!("Failed to create organized export directory: {error}"))?;
@@ -4848,9 +5059,20 @@ pub fn export_organized_folder_result(
         .iter()
         .map(|folder| (folder.id, folder))
         .collect::<HashMap<_, _>>();
+    let included_folder_ids = resolve_export_folder_ids(
+        &store.user_folders,
+        selected_folder_ids.as_deref(),
+        excluded_folder_ids.as_deref(),
+    )?;
     let folder_paths = build_organized_export_folder_paths(&store.user_folders);
 
-    for folder_path in folder_paths.values() {
+    for folder in &store.user_folders {
+        if !included_folder_ids.contains(&folder.id) {
+            continue;
+        }
+        let Some(folder_path) = folder_paths.get(&folder.id) else {
+            continue;
+        };
         fs::create_dir_all(destination_root.join(folder_path))
             .map_err(|error| format!("Failed to create organized export folder: {error}"))?;
     }
@@ -4867,6 +5089,9 @@ pub fn export_organized_folder_result(
         let Some(folder) = folders_by_id.get(&assignment.folder_id) else {
             continue;
         };
+        if !included_folder_ids.contains(&folder.id) {
+            continue;
+        }
         let Some(folder_path) = folder_paths.get(&folder.id) else {
             continue;
         };
@@ -4900,6 +5125,53 @@ pub fn export_organized_folder_result(
     fs::write(&manifest_path, manifest_json)
         .map_err(|error| format!("Failed to write organized export manifest: {error}"))?;
     Ok(manifest)
+}
+
+fn resolve_export_folder_ids(
+    user_folders: &[UserFolder],
+    selected_folder_ids: Option<&[i64]>,
+    excluded_folder_ids: Option<&[i64]>,
+) -> Result<HashSet<i64>, String> {
+    let known_ids = user_folders.iter().map(|folder| folder.id).collect::<HashSet<_>>();
+    let Some(selected_folder_ids) = selected_folder_ids else {
+        return Ok(known_ids);
+    };
+    let selected = selected_folder_ids.iter().copied().collect::<HashSet<_>>();
+    if selected.iter().any(|id| !known_ids.contains(id)) {
+        return Err("导出选择中包含不存在的文件夹".to_string());
+    }
+    let excluded = excluded_folder_ids.unwrap_or_default().iter().copied().collect::<HashSet<_>>();
+    if excluded.iter().any(|id| !known_ids.contains(id)) {
+        return Err("导出排除列表中包含不存在的文件夹".to_string());
+    }
+
+    let children_by_parent = user_folders.iter().fold(HashMap::<Option<i64>, Vec<i64>>::new(), |mut map, folder| {
+        map.entry(folder.parent_id).or_default().push(folder.id);
+        map
+    });
+    let mut included = HashSet::new();
+    let mut stack = selected.iter().copied().collect::<Vec<_>>();
+    while let Some(folder_id) = stack.pop() {
+        if !included.insert(folder_id) {
+            continue;
+        }
+        if excluded.contains(&folder_id) {
+            included.remove(&folder_id);
+            continue;
+        }
+        stack.extend(children_by_parent.get(&Some(folder_id)).into_iter().flatten().copied());
+    }
+
+    let mut excluded_stack = excluded.iter().copied().collect::<Vec<_>>();
+    while let Some(folder_id) = excluded_stack.pop() {
+        included.remove(&folder_id);
+        for child_id in children_by_parent.get(&Some(folder_id)).into_iter().flatten().copied() {
+            excluded_stack.push(child_id);
+            included.remove(&child_id);
+        }
+    }
+
+    Ok(included)
 }
 
 fn build_organized_export_folder_paths(user_folders: &[UserFolder]) -> HashMap<i64, PathBuf> {

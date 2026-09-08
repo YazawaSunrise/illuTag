@@ -17,6 +17,7 @@ use illutag_core::library::{
     stop_natural_language_scan,
     warmup_clip_vector_cache,
     copy_image_to_system_clipboard,
+    prepare_image_clipboard_payload,
     start_thumbnail_generation,
     start_atmosphere_generation,
     pause_atmosphere_generation,
@@ -61,7 +62,7 @@ use illutag_core::library::{
     rename_reference_board, rename_reference_board_folder, reorder_reference_board,
     reorder_reference_board_folder, reorder_user_folder, rename_user_folder, update_reference_board_item_layout,
     bring_reference_board_item_to_front, start_scan_all_folders_collect_only, start_scan_all_folders_with_tagging, start_tag_pending_images_only, test_wd_swinv2_tagger,
-    AppState, AtmosphereGenerationProgress, BackupPathMapping, BackgroundScanProgress, BackgroundScanStatus, BatchSupplementTagInput, BatchSystemTrashResult, ColorSignatureGenerationProgress, DataMigrationBackupInspection, DevFakeGalleryOptions, DevSmallFileSetOptions, DevStressToolResult, GalleryImagePage, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, OrganizedExportManifest, ReferenceBoardPasteImageInput, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
+    AppState, AtmosphereGenerationProgress, BackupPathMapping, BackgroundScanProgress, BackgroundScanStatus, BatchSupplementTagInput, BatchSystemTrashResult, ClipboardWriteResult, ColorSignatureGenerationProgress, DataMigrationBackupInspection, DevFakeGalleryOptions, DevSmallFileSetOptions, DevStressToolResult, GalleryImagePage, GallerySearchFilters, ImageAutoTagSummary, ImageBytes, ImageUserTagSummary, KnownAutoTagSuggestion, LibraryStore, NaturalLanguageScanProgress, NaturalLanguageScanStatus, OrganizedExportManifest, ReferenceBoardPasteImageInput, StartupCleanupStatus, TagManagementState, ThumbnailGenerationProgress,
     WdTaggerTestResult,
 };
 use std::{
@@ -295,11 +296,34 @@ fn read_image_bytes_command(
 }
 
 #[tauri::command]
-fn copy_image_to_system_clipboard_command(
+async fn copy_image_to_system_clipboard_command(
+    image_id: String,
+    state: State<'_, AppState>,
+) -> Result<ClipboardWriteResult, String> {
+    let app_state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || copy_image_to_system_clipboard(image_id, &app_state))
+        .await
+        .map_err(|error| format!("图片复制任务失败：{error}"))?
+}
+
+#[tauri::command]
+fn prepare_image_clipboard_payload_command(
     image_id: String,
     state: State<AppState>,
 ) -> Result<(), String> {
-    copy_image_to_system_clipboard(image_id, &state)
+    prepare_image_clipboard_payload(image_id, &state)
+}
+
+#[tauri::command]
+fn read_system_clipboard_sequence_number_command() -> Result<Option<u32>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return Ok(clipboard_win::raw::seq_num().map(|value| value.get()));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(None)
+    }
 }
 
 #[tauri::command]
@@ -582,9 +606,11 @@ fn import_data_migration_backup_command(
 #[tauri::command]
 fn export_organized_folder_result_command(
     destination_dir: String,
+    selected_folder_ids: Option<Vec<i64>>,
+    excluded_folder_ids: Option<Vec<i64>>,
     state: State<AppState>,
 ) -> Result<OrganizedExportManifest, String> {
-    export_organized_folder_result(destination_dir, &state)
+    export_organized_folder_result(destination_dir, selected_folder_ids, excluded_folder_ids, &state)
 }
 
 #[tauri::command]
@@ -1291,6 +1317,46 @@ fn open_gallery_image_with_default_app_command(
 }
 
 #[tauri::command]
+fn reveal_gallery_image_in_file_manager_command(
+    image_id: String,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let library = list_library_from_state(&state)?;
+    let image = library
+        .images
+        .iter()
+        .find(|entry| entry.id == image_id)
+        .ok_or_else(|| "图片不存在".to_string())?;
+    if !Path::new(&image.path).is_file() {
+        return Err("图片文件不存在，无法在资源管理器中定位。".to_string());
+    }
+    let normalized_path = normalize_windows_path_for_shell(&image.path);
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer.exe")
+            .arg(format!("/select,{}", normalized_path))
+            .spawn()
+            .map_err(|error| format!("无法打开资源管理器：{error}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .args(["-R", normalized_path.as_str()])
+            .status()
+            .map_err(|error| format!("无法在文件管理器中定位图片：{error}"))?;
+        if status.success() { Ok(()) } else { Err(format!("无法在文件管理器中定位图片：status={status}")) }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let parent = Path::new(&normalized_path).parent().ok_or_else(|| "无法解析图片所在目录".to_string())?;
+        let status = Command::new("xdg-open").arg(parent).status().map_err(|error| format!("无法打开图片所在目录：{error}"))?;
+        if status.success() { Ok(()) } else { Err(format!("无法打开图片所在目录：status={status}")) }
+    }
+}
+
+#[tauri::command]
 fn open_external_url_command(url: String) -> Result<(), String> {
     let trimmed = url.trim();
     let allowed = trimmed.starts_with("https://github.com/YazawaSunrise/illuTag")
@@ -1528,6 +1594,13 @@ fn validate_migrated_data_directory(source: &Path, target: &Path) -> Result<(), 
 
 fn strip_windows_long_path_prefix(path: &str) -> &str {
     path.strip_prefix(r"\\?\").unwrap_or(path)
+}
+
+fn normalize_windows_path_for_shell(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    strip_windows_long_path_prefix(path).to_string()
 }
 
 fn path_prefix_variants(paths: &[PathBuf]) -> Vec<String> {
@@ -1904,6 +1977,8 @@ fn main() {
                 clip_image_encoder_last_used_at: Arc::new(Mutex::new(0)),
                 clip_image_encoder_release_worker_running: Arc::new(Mutex::new(false)),
                 wd_tagger_service: Arc::new(Mutex::new(None)),
+                clipboard_prepare_state: Arc::new(Mutex::new(Default::default())),
+                clipboard_copy_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
             let _ = warmup_clip_vector_cache(&app_state);
             app.manage(app_state);
@@ -1932,6 +2007,8 @@ fn main() {
             set_images_favorite_command,
             read_image_bytes_command,
             copy_image_to_system_clipboard_command,
+            prepare_image_clipboard_payload_command,
+            read_system_clipboard_sequence_number_command,
             test_wd_swinv2_tagger_command,
             start_scan_all_folders_with_tagging_command,
             start_scan_all_folders_collect_only_command,
@@ -2030,6 +2107,7 @@ fn main() {
             window_is_always_on_top_command,
             window_start_dragging_command,
             open_gallery_image_with_default_app_command,
+            reveal_gallery_image_in_file_manager_command,
             open_data_directory_command,
             open_external_url_command,
             window_close_command

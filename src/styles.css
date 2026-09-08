@@ -2625,6 +2625,60 @@ button {
   overflow: auto;
 }
 
+.settings-export-dialog__scope-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.settings-export-dialog__scope-switch label,
+.settings-export-dialog__folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  color: #d6dde5;
+  font-size: 13px;
+}
+
+.settings-export-dialog__scope-switch input,
+.settings-export-dialog__folder-row input {
+  flex: 0 0 auto;
+  accent-color: #6f9ed8;
+}
+
+.settings-export-dialog__folder-picker {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  padding: 8px 0;
+  overflow: auto;
+  border: 1px solid #2a3037;
+  border-radius: 8px;
+  background: #11161b;
+}
+
+.settings-export-dialog__folder-picker-hint,
+.settings-export-dialog__folder-picker-empty {
+  margin: 0;
+  padding: 0 10px 6px;
+  color: #8f9baa;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-export-dialog__folder-picker-empty { padding-top: 8px; }
+
+.settings-export-dialog__folder-row {
+  padding-top: 2px;
+  padding-right: 10px;
+  padding-bottom: 2px;
+  cursor: pointer;
+}
+
+.settings-export-dialog__folder-row:hover { background: rgb(220 230 241 / 0.08); }
+
 .settings-export-dialog__lead,
 .settings-export-dialog__section p {
   margin: 0;
@@ -5062,6 +5116,13 @@ button {
 .app-shell.theme-light .context-menu button.is-danger:hover {
   background: #fee4e2;
 }
+
+.app-shell.theme-light .settings-export-dialog__scope-switch label,
+.app-shell.theme-light .settings-export-dialog__folder-row { color: #334155; }
+.app-shell.theme-light .settings-export-dialog__folder-picker { border-color: #d4dde8; background: #f8fafc; }
+.app-shell.theme-light .settings-export-dialog__folder-picker-hint,
+.app-shell.theme-light .settings-export-dialog__folder-picker-empty { color: #64748b; }
+.app-shell.theme-light .settings-export-dialog__folder-row:hover { background: #eef3f8; }
 
 .app-shell.theme-light .import-library-picker-layer {
   background: rgb(34 44 57 / 0.22);

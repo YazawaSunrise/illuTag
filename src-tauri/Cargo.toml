@@ -1,6 +1,6 @@
 [package]
 name = "illutag"
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 
 [lib]
@@ -8,7 +8,6 @@ name = "illutag_core"
 path = "src/lib.rs"
 
 [dependencies]
-arboard = "3.4"
 base64 = "0.22"
 calamine = "0.26"
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
@@ -21,6 +20,9 @@ tauri-plugin-dialog = "=2.7.1"
 trash = "5"
 walkdir = "2"
 webp = "0.3.1"
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

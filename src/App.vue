@@ -71,6 +71,17 @@ type OrganizedExportManifest = {
   }>
 }
 
+type OrganizedExportSelection = {
+  selectedFolderIds: number[] | null
+  excludedFolderIds: number[] | null
+}
+
+type ClipboardWriteResult = {
+  imageFormatWritten: boolean
+  fileFormatWritten: boolean
+  clipboardSequenceNumber?: number | null
+}
+
 type GithubLatestRelease = {
   tag_name?: string
   html_url?: string
@@ -185,6 +196,7 @@ const galleryBrowseModeBeforeSlideshow = ref<GalleryBrowseMode>('default')
 const slideshowOpen = ref(false)
 const slideshowStartIndex = ref(0)
 const boardSpaceFocusMode = ref<'item' | 'canvas'>('item')
+const referenceClipboardPrepareTimer = ref<number | null>(null)
 const importLibraryFolderPickerItemId = ref<number | null>(null)
 const importLibraryFolderPickerResolve = ref<((folderId: number | null) => void) | null>(null)
 const sidebarHoverCloseTimer = ref<number | null>(null)
@@ -1743,6 +1755,8 @@ const {
   copyReferenceBoardItemToClipboard,
   pasteReferenceBoardContent,
   copyImageToSystemClipboard,
+  prepareImageClipboardPayload,
+  isCopying,
   buildClipboardCopyErrorText,
   clearInternalBoardCopyRefForItem,
   clearInternalBoardCopyRefForItems,
@@ -1759,6 +1773,9 @@ const {
   getReferenceBoardViewportMetrics,
   setErrorText(value) {
     errorText.value = value
+  },
+  setStatusText(value) {
+    statusText.value = value
   },
   formatError,
 })
@@ -2082,6 +2099,10 @@ onUnmounted(() => {
   clearTagManagerDragGhost()
   clearSidebarHoverCloseTimer()
   clearRightSidebarHoverCloseTimer()
+  if (referenceClipboardPrepareTimer.value !== null) {
+    window.clearTimeout(referenceClipboardPrepareTimer.value)
+    referenceClipboardPrepareTimer.value = null
+  }
   closeFolderRuleDanbooruSuggestions()
   stopBackgroundScanPolling()
   stopThumbnailGenerationPolling()
@@ -2198,8 +2219,19 @@ watch(activeReferenceBoardId, () => {
   }
 })
 
-watch(selectedReferenceBoardItemId, () => {
+watch(selectedReferenceBoardItemId, (itemId) => {
   boardSpaceFocusMode.value = 'item'
+  if (referenceClipboardPrepareTimer.value !== null) {
+    window.clearTimeout(referenceClipboardPrepareTimer.value)
+    referenceClipboardPrepareTimer.value = null
+  }
+  if (itemId === null || viewMode.value !== 'board') return
+  const item = library.value.referenceBoardItems.find((entry) => entry.id === itemId)
+  if (!item) return
+  referenceClipboardPrepareTimer.value = window.setTimeout(() => {
+    referenceClipboardPrepareTimer.value = null
+    void prepareImageClipboardPayload(item.imageId)
+  }, 150)
 })
 
 watch(
@@ -3349,6 +3381,7 @@ async function deleteFolderRuleDraft() {
 
 function openGalleryImageMenu(item: GalleryLayoutItem, event: MouseEvent) {
   openGalleryImageMenuState(item, event, closeReferenceBoardCanvasMenu)
+  void prepareImageClipboardPayload(item.id)
 }
 
 function openGalleryImageDetailFromGallery(item: GalleryLayoutItem) {
@@ -3357,6 +3390,7 @@ function openGalleryImageDetailFromGallery(item: GalleryLayoutItem) {
     return
   }
   openGalleryImageDetail(item)
+  void prepareImageClipboardPayload(item.id)
 }
 
 function openGalleryBatchModeFromContextMenu(imageId: string) {
@@ -3581,12 +3615,25 @@ async function removeGalleryImageFromFolder(imageId: string) {
 }
 
 async function copyGalleryImageToClipboard(imageId: string) {
+  closeGalleryImageContextMenu()
+  if (isCopying.value) return
   try {
-    await copyImageToSystemClipboard(imageId)
+    const result = await copyImageToSystemClipboard(imageId)
+    if (!result.fileFormatWritten) {
+      statusText.value = '图片已复制，但文件复制格式写入失败'
+    }
   } catch (error) {
     errorText.value = buildClipboardCopyErrorText(error, '图库复制')
+  }
+}
+
+async function revealGalleryImageInFileManager(imageId: string) {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('reveal_gallery_image_in_file_manager_command', { imageId })
+  } catch (error) {
+    errorText.value = formatError(error)
   } finally {
-    imageDetailContextMenu.value = null
     closeGalleryImageContextMenu()
   }
 }
@@ -3947,7 +3994,10 @@ async function importMigrationBackup() {
   }
 }
 
-async function exportOrganizedFolderResult() {
+async function exportOrganizedFolderResult(selection: OrganizedExportSelection = {
+  selectedFolderIds: null,
+  excludedFolderIds: null,
+}) {
   const destination = await open({
     title: '选择整理结果导出目录',
     directory: true,
@@ -3958,6 +4008,8 @@ async function exportOrganizedFolderResult() {
     const { invoke } = await import('@tauri-apps/api/core')
     const manifest = await invoke<OrganizedExportManifest>('export_organized_folder_result_command', {
       destinationDir: destination,
+      selectedFolderIds: selection.selectedFolderIds,
+      excludedFolderIds: selection.excludedFolderIds,
     })
     statusText.value = `整理结果已导出：${manifest.entries.length} 个文件`
     errorText.value = ''
@@ -4152,6 +4204,9 @@ const galleryViewHandlers = {
   toggleGalleryImageFavorite,
   openGalleryImageDetail: openGalleryImageDetailFromGallery,
   openGalleryImageMenu,
+  openGalleryImageWithDefaultApp,
+  revealGalleryImageInFileManager,
+  copyGalleryImageToClipboard,
   exitGalleryBatchMode,
   toggleSelectAllGalleryBatchImages,
   onGalleryBatchAction,
@@ -4589,6 +4644,7 @@ console.info(
             :is-loading="isLoading"
             :error-text="errorText"
             :folders="library.folders"
+            :user-folders="library.userFolders"
             :handlers="settingsViewHandlers"
           />
 
@@ -4662,6 +4718,7 @@ console.info(
       :reference-board-canvas-menu="referenceBoardCanvasMenu"
       :reference-board-canvas-menu-style="referenceBoardCanvasMenuStyle"
       :reference-board-sidebars-disabled="referenceBoardSidebarsDisabled"
+      :is-copying="isCopying"
       :drag-state="dragState"
       :handlers="overlayHandlers"
     />
@@ -5537,8 +5594,10 @@ console.info(
           移入回收站
         </button>
       </template>
-      <button type="button" @click="copyGalleryImageToClipboard(galleryImageContextMenu.imageId)">复制</button>
+      <button type="button" :disabled="isCopying" @click="copyGalleryImageToClipboard(galleryImageContextMenu.imageId)">复制</button>
       <button type="button" @click="exportGalleryImage(galleryImageContextMenu.imageId)">导出到本地</button>
+      <button type="button" @click="revealGalleryImageInFileManager(galleryImageContextMenu.imageId)">在资源管理器中打开</button>
+      <button type="button" @click="openGalleryImageWithDefaultApp(galleryImageContextMenu.imageId)">使用默认软件打开</button>
     </div>
 
     <div
