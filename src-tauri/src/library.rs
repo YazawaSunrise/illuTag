@@ -112,6 +112,9 @@ const LARGE_LIBRARY_IMAGE_THRESHOLD: i64 = 30_000;
 const LARGE_LIBRARY_INITIAL_IMAGE_LIMIT: i64 = 5_000;
 const ACTIVE_GALLERY_IMAGE_WHERE: &str =
     "COALESCE(i.source, '') <> 'reference' AND COALESCE(i.trashed, 0) = 0";
+const PROCESSING_TASK_THUMBNAIL: &str = "thumbnail";
+const PROCESSING_TASK_WD_TAGGER: &str = "wd_tagger";
+const PROCESSING_TASK_CLIP_IMAGE: &str = "clip_image";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -743,6 +746,21 @@ pub struct NaturalLanguageScanProgress {
     pub recent_errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageProcessingFailureRecord {
+    pub id: i64,
+    pub task: String,
+    pub image_id: Option<String>,
+    pub source_path: String,
+    pub file_name: String,
+    pub source_file_size: Option<i64>,
+    pub source_modified_at: Option<i64>,
+    pub reason: String,
+    pub full_error: String,
+    pub updated_at: i64,
+}
+
 impl Default for BackgroundScanProgress {
     fn default() -> Self {
         Self {
@@ -876,6 +894,7 @@ struct NaturalLanguageEmbeddingCandidate {
     image_id: String,
     image_path: String,
     modified_at: i64,
+    file_size: i64,
     current_source_modified_at: Option<i64>,
 }
 
@@ -8050,6 +8069,7 @@ pub fn bring_reference_board_item_to_front(item_id: i64, state: &AppState) -> Re
 
 pub fn duplicate_reference_board_item(
     item_id: i64,
+    target_board_id: i64,
     x: Option<f32>,
     y: Option<f32>,
     state: &AppState,
@@ -8060,7 +8080,17 @@ pub fn duplicate_reference_board_item(
         .map_err(|_| "图库状态被占用，请稍后再试".to_string())?;
     let conn = open_database(&state.database_path)?;
     let item = load_reference_board_item(&conn, item_id)?;
-    let next_index = next_reference_board_z_index(&conn, item.board_id)?;
+    let target_exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM reference_boards WHERE id = ?1)",
+            params![target_board_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("验证目标参考板失败：{error}"))?;
+    if !target_exists {
+        return Err("目标参考板不存在".to_string());
+    }
+    let next_index = next_reference_board_z_index(&conn, target_board_id)?;
     conn.execute(
         "
         INSERT INTO reference_board_items (
@@ -8069,7 +8099,7 @@ pub fn duplicate_reference_board_item(
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         ",
         params![
-            item.board_id,
+            target_board_id,
             item.image_id,
             x.unwrap_or(item.x + 28.0),
             y.unwrap_or(item.y + 28.0),
@@ -8287,6 +8317,209 @@ fn open_database(database_path: &Path) -> Result<Connection, String> {
         .map_err(|error| format!("Failed to set SQLite busy_timeout: {error}"))?;
     migrate_database(&conn)?;
     Ok(conn)
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct ProcessingFailureKey {
+    task: String,
+    source_path: String,
+    source_file_size: Option<i64>,
+    source_modified_at: Option<i64>,
+}
+
+fn load_processing_failure_keys(
+    conn: &Connection,
+    task: &str,
+) -> Result<HashSet<ProcessingFailureKey>, String> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT source_path, source_file_size, source_modified_at
+            FROM image_processing_failures
+            WHERE task = ?1
+            ",
+        )
+        .map_err(|error| format!("Failed to load processing failure records: {error}"))?;
+    let result = stmt.query_map(params![task], |row| {
+        Ok(ProcessingFailureKey {
+            task: task.to_string(),
+            source_path: row.get(0)?,
+            source_file_size: row.get(1)?,
+            source_modified_at: row.get(2)?,
+        })
+    })
+    .map_err(|error| format!("Failed to load processing failure records: {error}"))?
+    .collect::<Result<HashSet<_>, _>>()
+    .map_err(|error| format!("Failed to collect processing failure records: {error}"));
+    result
+}
+
+fn processing_failure_key(
+    task: &str,
+    source_path: &str,
+    source_file_size: Option<i64>,
+    source_modified_at: Option<i64>,
+) -> ProcessingFailureKey {
+    ProcessingFailureKey {
+        task: task.to_string(),
+        source_path: source_path.to_string(),
+        source_file_size,
+        source_modified_at,
+    }
+}
+
+fn source_fingerprint_for_path(path: &str) -> (Option<i64>, Option<i64>) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return (None, None);
+    };
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .map(system_time_ms);
+    (Some(metadata.len() as i64), modified_at)
+}
+
+fn is_fixed_file_processing_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("truncated")
+        || lower.contains("cannot identify image")
+        || lower.contains("unidentifiedimageerror")
+        || lower.contains("invalid image")
+        || lower.contains("unsupported image")
+        || lower.contains("invalid image dimensions")
+        || lower.contains("image dimensions")
+        || lower.contains("pixel limit")
+        || lower.contains("image size exceeds")
+        || lower.contains("decompression bomb")
+        || lower.contains("decode image")
+        || lower.contains("failed to decode")
+}
+
+fn concise_processing_failure_reason(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("truncated") {
+        return "图片文件不完整或已截断".to_string();
+    }
+    if lower.contains("cannot identify image")
+        || lower.contains("unidentifiedimageerror")
+        || lower.contains("invalid image")
+        || lower.contains("unsupported image")
+    {
+        return "图片格式无法识别或文件已损坏".to_string();
+    }
+    if lower.contains("pixel limit")
+        || lower.contains("image size exceeds")
+        || lower.contains("decompression bomb")
+        || lower.contains("image dimensions")
+    {
+        return "图片尺寸超过解码限制".to_string();
+    }
+    "图片解码失败".to_string()
+}
+
+fn record_image_processing_failure(
+    conn: &Connection,
+    task: &str,
+    image_id: Option<&str>,
+    source_path: &str,
+    source_file_size: Option<i64>,
+    source_modified_at: Option<i64>,
+    full_error: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "
+        INSERT INTO image_processing_failures (
+          task, image_id, source_path, source_file_size, source_modified_at,
+          reason, full_error, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT(task, source_path) DO UPDATE SET
+          image_id = excluded.image_id,
+          source_file_size = excluded.source_file_size,
+          source_modified_at = excluded.source_modified_at,
+          reason = excluded.reason,
+          full_error = excluded.full_error,
+          updated_at = excluded.updated_at
+        ",
+        params![
+            task,
+            image_id,
+            source_path,
+            source_file_size,
+            source_modified_at,
+            concise_processing_failure_reason(full_error),
+            full_error,
+            now_ms(),
+        ],
+    )
+    .map_err(|error| format!("Failed to save image processing failure: {error}"))?;
+    Ok(())
+}
+
+fn clear_image_processing_failure(
+    conn: &Connection,
+    task: &str,
+    source_path: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM image_processing_failures WHERE task = ?1 AND source_path = ?2",
+        params![task, source_path],
+    )
+    .map_err(|error| format!("Failed to clear image processing failure: {error}"))?;
+    Ok(())
+}
+
+pub fn list_image_processing_failures(
+    state: &AppState,
+) -> Result<Vec<ImageProcessingFailureRecord>, String> {
+    let conn = open_database(&state.database_path)?;
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT
+              id, task, image_id, source_path, source_file_size,
+              source_modified_at, reason, full_error, updated_at
+            FROM image_processing_failures
+            ORDER BY updated_at DESC, source_path ASC, task ASC
+            ",
+        )
+        .map_err(|error| format!("Failed to load image processing failures: {error}"))?;
+    let result = stmt.query_map([], |row| {
+        let source_path: String = row.get(3)?;
+        let file_name = Path::new(&source_path)
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| source_path.clone());
+        Ok(ImageProcessingFailureRecord {
+            id: row.get(0)?,
+            task: row.get(1)?,
+            image_id: row.get(2)?,
+            source_path,
+            file_name,
+            source_file_size: row.get(4)?,
+            source_modified_at: row.get(5)?,
+            reason: row.get(6)?,
+            full_error: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    })
+    .map_err(|error| format!("Failed to query image processing failures: {error}"))?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|error| format!("Failed to collect image processing failures: {error}"));
+    result
+}
+
+pub fn retry_image_processing_failure(
+    failure_id: i64,
+    state: &AppState,
+) -> Result<Vec<ImageProcessingFailureRecord>, String> {
+    let conn = open_database(&state.database_path)?;
+    conn.execute(
+        "DELETE FROM image_processing_failures WHERE id = ?1",
+        params![failure_id],
+    )
+    .map_err(|error| format!("Failed to clear image processing failure: {error}"))?;
+    list_image_processing_failures(state)
 }
 
 fn migrate_database(conn: &Connection) -> Result<(), String> {
@@ -8538,6 +8771,25 @@ fn migrate_database(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_image_color_signatures_updated
           ON image_color_signatures(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS image_processing_failures (
+          id INTEGER PRIMARY KEY,
+          task TEXT NOT NULL,
+          image_id TEXT,
+          source_path TEXT NOT NULL,
+          source_file_size INTEGER,
+          source_modified_at INTEGER,
+          reason TEXT NOT NULL,
+          full_error TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(task, source_path)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_processing_failures_updated
+          ON image_processing_failures(updated_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_image_processing_failures_path
+          ON image_processing_failures(source_path);
 
         CREATE TRIGGER IF NOT EXISTS trg_image_auto_tags_insert_known
         AFTER INSERT ON image_auto_tags
@@ -9882,6 +10134,7 @@ fn tag_images_with_wd_model(
     }
 
     let mut conn = open_database(database_path)?;
+    let processing_failures = load_processing_failure_keys(&conn, PROCESSING_TASK_WD_TAGGER)?;
     let dictionary = load_cn_tag_dictionary_map()?;
     let model_root = resolve_wd_tagger_model_dir(None)?;
     let model_path = model_root.join("model.onnx");
@@ -9919,6 +10172,16 @@ fn tag_images_with_wd_model(
             increment_scan_progress_failed(progress);
             continue;
         }
+        let (file_size, modified_at) = source_fingerprint_for_path(image_id);
+        if processing_failures.contains(&processing_failure_key(
+            PROCESSING_TASK_WD_TAGGER,
+            image_id,
+            file_size,
+            modified_at,
+        )) {
+            increment_scan_progress_failed(progress);
+            continue;
+        }
         match run_wd_tagger_via_service_with_recovery(
             &mut service_guard,
             &model_path,
@@ -9931,9 +10194,26 @@ fn tag_images_with_wd_model(
         ) {
             Ok(result) => {
                 save_wd_tagger_result(&mut conn, image_id, &result, &dictionary)?;
+                let _ = clear_image_processing_failure(
+                    &conn,
+                    PROCESSING_TASK_WD_TAGGER,
+                    image_id,
+                );
                 increment_scan_progress_tagged(progress);
             }
             Err(error) => {
+                if is_fixed_file_processing_error(&error) {
+                    let (current_size, current_modified) = source_fingerprint_for_path(image_id);
+                    let _ = record_image_processing_failure(
+                        &conn,
+                        PROCESSING_TASK_WD_TAGGER,
+                        Some(image_id),
+                        image_id,
+                        current_size.or(file_size),
+                        current_modified.or(modified_at),
+                        &error,
+                    );
+                }
                 eprintln!("[wd-tag] {error}");
                 increment_scan_progress_failed(progress);
                 set_scan_progress_error(progress, &error);
@@ -9965,6 +10245,9 @@ fn run_wd_tagger_via_service_with_recovery(
     match primary {
         Ok(result) => Ok(result),
         Err(first_error) => {
+            if is_fixed_file_processing_error(&first_error) {
+                return Err(first_error);
+            }
             stop_python_child_service(service, |running| &mut running.child);
             ensure_wd_tagger_service_started(service, model_path, tags_path, script_path)?;
             let running = service
@@ -10556,6 +10839,7 @@ fn generate_thumbnails_once(
 
     let thumb_root = ensure_thumbnail_root_dir(database_path)?;
     repair_thumbnail_paths_for_current_data_dir(&conn, &thumb_root, &mut candidates)?;
+    let processing_failures = load_processing_failure_keys(&conn, PROCESSING_TASK_THUMBNAIL)?;
     set_thumbnail_progress_total(progress, candidates.len() as i64);
     set_thumbnail_progress_phase(progress, "generating");
 
@@ -10603,6 +10887,20 @@ fn generate_thumbnails_once(
             } else {
                 skipped += 1;
             }
+            processed += 1;
+            set_thumbnail_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        }
+
+        let (source_file_size, source_modified_at) =
+            source_fingerprint_for_path(&candidate.image_path);
+        if processing_failures.contains(&processing_failure_key(
+            PROCESSING_TASK_THUMBNAIL,
+            &candidate.image_path,
+            source_file_size.or(Some(candidate.file_size)),
+            source_modified_at.or(Some(candidate.modified_at)),
+        )) {
+            skipped += 1;
             processed += 1;
             set_thumbnail_progress_counts(progress, processed, generated, skipped, failed);
             continue;
@@ -10763,6 +11061,11 @@ fn apply_thumbnail_worker_result(
                 push_thumbnail_progress_recent_error(progress, &error);
                 *failed += 1;
             } else {
+                let _ = clear_image_processing_failure(
+                    conn,
+                    PROCESSING_TASK_THUMBNAIL,
+                    &result.candidate.image_path,
+                );
                 *generated += 1;
                 if let Some(previous_thumb) = result.candidate.current_thumb_path {
                     if previous_thumb != next_thumb_path {
@@ -10772,6 +11075,19 @@ fn apply_thumbnail_worker_result(
             }
         }
         Err(error) => {
+            if is_fixed_file_processing_error(&error) {
+                let (file_size, modified_at) =
+                    source_fingerprint_for_path(&result.candidate.image_path);
+                let _ = record_image_processing_failure(
+                    conn,
+                    PROCESSING_TASK_THUMBNAIL,
+                    Some(&result.candidate.image_id),
+                    &result.candidate.image_path,
+                    file_size.or(Some(result.candidate.file_size)),
+                    modified_at.or(Some(result.candidate.modified_at)),
+                    &error,
+                );
+            }
             set_thumbnail_progress_error(progress, &error);
             push_thumbnail_progress_recent_error(progress, &error);
             *failed += 1;
@@ -10801,6 +11117,7 @@ fn generate_natural_language_embeddings_once(
               i.id,
               i.path,
               i.modified_at,
+              i.file_size,
               e.source_modified_at
             FROM images i
             LEFT JOIN image_clip_embeddings e
@@ -10819,7 +11136,8 @@ fn generate_natural_language_embeddings_once(
                 image_id: row.get(0)?,
                 image_path: row.get(1)?,
                 modified_at: row.get(2)?,
-                current_source_modified_at: row.get(3)?,
+                file_size: row.get(3)?,
+                current_source_modified_at: row.get(4)?,
             })
         })
         .map_err(|error| format!("Failed to load natural language scan candidates: {error}"))?
@@ -10829,6 +11147,8 @@ fn generate_natural_language_embeddings_once(
 
     set_natural_language_scan_progress_total(progress, candidates.len() as i64);
     set_natural_language_scan_progress_phase(progress, "generating");
+    let processing_failures =
+        load_processing_failure_keys(&conn, PROCESSING_TASK_CLIP_IMAGE)?;
 
     if candidates.is_empty() {
         set_natural_language_scan_progress_phase(progress, "idle");
@@ -10857,6 +11177,25 @@ fn generate_natural_language_embeddings_once(
             skipped += 1;
             processed += 1;
             set_natural_language_scan_progress_counts(progress, processed, generated, skipped, failed);
+            continue;
+        }
+
+        let (file_size, modified_at) = source_fingerprint_for_path(&candidate.image_path);
+        if processing_failures.contains(&processing_failure_key(
+            PROCESSING_TASK_CLIP_IMAGE,
+            &candidate.image_path,
+            file_size.or(Some(candidate.file_size)),
+            modified_at.or(Some(candidate.modified_at)),
+        )) {
+            skipped += 1;
+            processed += 1;
+            set_natural_language_scan_progress_counts(
+                progress,
+                processed,
+                generated,
+                skipped,
+                failed,
+            );
             continue;
         }
 
@@ -10898,11 +11237,29 @@ fn generate_natural_language_embeddings_once(
                     set_natural_language_scan_progress_error(progress, &error);
                     push_natural_language_scan_recent_error(progress, &error);
                 } else {
+                    let _ = clear_image_processing_failure(
+                        &conn,
+                        PROCESSING_TASK_CLIP_IMAGE,
+                        &candidate.image_path,
+                    );
                     upsert_clip_vector_cache_entry(clip_vector_cache, &candidate.image_id, vector.clone());
                     generated += 1;
                 }
             }
             Err(error) => {
+                if is_fixed_file_processing_error(&error) {
+                    let (current_size, current_modified) =
+                        source_fingerprint_for_path(&candidate.image_path);
+                    let _ = record_image_processing_failure(
+                        &conn,
+                        PROCESSING_TASK_CLIP_IMAGE,
+                        Some(&candidate.image_id),
+                        &candidate.image_path,
+                        current_size.or(Some(candidate.file_size)),
+                        current_modified.or(Some(candidate.modified_at)),
+                        &error,
+                    );
+                }
                 failed += 1;
                 set_natural_language_scan_progress_error(progress, &error);
                 push_natural_language_scan_recent_error(progress, &error);
@@ -11392,6 +11749,9 @@ fn run_chinese_clip_image_embedding_via_service_with_recovery(
     match primary {
         Ok(vector) => Ok(vector),
         Err(first_error) => {
+            if is_fixed_file_processing_error(&first_error) {
+                return Err(first_error);
+            }
             stop_python_child_service(service, |running| &mut running.child);
             ensure_clip_image_service_started(service, model_root, script_path)?;
             let running = service

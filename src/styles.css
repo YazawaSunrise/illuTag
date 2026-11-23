@@ -1317,6 +1317,64 @@ button {
   will-change: transform;
 }
 
+.gallery-scrollbar {
+  position: absolute;
+  z-index: 8;
+  top: 16px;
+  right: 8px;
+  bottom: 16px;
+  width: 14px;
+  padding: 0 4px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.gallery-scrollbar__track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: rgb(151 166 183 / 0.18);
+}
+
+.gallery-scrollbar__thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  min-height: 28px;
+  border-radius: 999px;
+  background: #82d5b8;
+  cursor: grab;
+  touch-action: none;
+}
+
+.gallery-scrollbar__thumb:active {
+  cursor: grabbing;
+}
+
+.app-shell.is-gallery-scrollbar-sidebar-fixed .gallery-scrollbar {
+  right: 8px;
+}
+
+.app-shell:not(.is-window-maximized).is-titlebar-pinned .gallery-scrollbar {
+  top: calc(var(--app-titlebar-offset) + 14px);
+}
+
+.app-shell.is-window-maximized.is-titlebar-pinned .gallery-scrollbar {
+  top: calc(var(--app-titlebar-offset) + 14px);
+}
+
+.app-shell.is-gallery-scrollbar-sidebar-hidden .right-sidebar-hotspot {
+  pointer-events: none;
+  opacity: 0;
+}
+
+.app-shell.is-gallery-scrollbar-sidebar-fixed .right-sidebar-hotspot {
+  pointer-events: none;
+  opacity: 0;
+}
+
 .app-shell:not(.is-window-maximized) .gallery-page {
   padding-top: 52px;
 }
@@ -2678,6 +2736,139 @@ button {
 }
 
 .settings-export-dialog__folder-row:hover { background: rgb(220 230 241 / 0.08); }
+
+.settings__processing-failures {
+  display: grid;
+  gap: 8px;
+  max-width: 920px;
+  margin-top: 14px;
+}
+
+.settings__processing-failures-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid #343c45;
+  border-radius: 7px;
+  color: #d6dde5;
+  background: #171c21;
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings__processing-failures-toggle:hover {
+  border-color: #6d879e;
+  background: #202830;
+}
+
+.settings__processing-failures-list {
+  display: grid;
+  gap: 8px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.settings__processing-failure {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #2a3037;
+  border-radius: 7px;
+  background: #11161b;
+}
+
+.settings__processing-failure-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings__processing-failure-main strong {
+  color: #edf2f7;
+  font-size: 13px;
+}
+
+.settings__processing-failure-path {
+  overflow: hidden;
+  color: #8f9baa;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings__processing-failure-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.settings__processing-failure-reason {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #f0c889;
+  background: rgb(185 119 31 / 0.16);
+  font-size: 11px;
+}
+
+.settings__processing-failure-retry {
+  padding: 0;
+  border: 0;
+  color: #9fc5f3;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.settings__processing-failure-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.settings__segmented-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 920px;
+  margin: -2px 0 6px 28px;
+}
+
+.settings__segmented-label {
+  color: #aab6c5;
+  font-size: 12px;
+}
+
+.settings__segmented-control {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid #343c45;
+  border-radius: 7px;
+  background: #11161b;
+}
+
+.settings__segmented-control button {
+  min-width: 54px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 5px;
+  color: #9aa8b7;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.settings__segmented-control button.is-active {
+  color: #eaf2fb;
+  background: #3c566e;
+}
 
 .settings-export-dialog__lead,
 .settings-export-dialog__section p {
@@ -5123,6 +5314,53 @@ button {
 .app-shell.theme-light .settings-export-dialog__folder-picker-hint,
 .app-shell.theme-light .settings-export-dialog__folder-picker-empty { color: #64748b; }
 .app-shell.theme-light .settings-export-dialog__folder-row:hover { background: #eef3f8; }
+
+.app-shell.theme-light .settings__processing-failures-toggle {
+  border-color: #cfd8e4;
+  color: #334155;
+  background: #ffffff;
+}
+
+.app-shell.theme-light .settings__processing-failures-toggle:hover {
+  border-color: #90a4bb;
+  background: #f3f6fb;
+}
+
+.app-shell.theme-light .settings__processing-failure {
+  border-color: #d4dde8;
+  background: #ffffff;
+}
+
+.app-shell.theme-light .settings__processing-failure-main strong {
+  color: #1f2937;
+}
+
+.app-shell.theme-light .settings__processing-failure-path,
+.app-shell.theme-light .settings__segmented-label {
+  color: #64748b;
+}
+
+.app-shell.theme-light .settings__segmented-control {
+  border-color: #cfd8e4;
+  background: #f8fafc;
+}
+
+.app-shell.theme-light .settings__segmented-control button {
+  color: #64748b;
+}
+
+.app-shell.theme-light .settings__segmented-control button.is-active {
+  color: #ffffff;
+  background: #5e7690;
+}
+
+.app-shell.theme-light .gallery-scrollbar__track {
+  background: rgb(100 116 139 / 0.2);
+}
+
+.app-shell.theme-light .gallery-scrollbar__thumb {
+  background: #5f9d88;
+}
 
 .app-shell.theme-light .import-library-picker-layer {
   background: rgb(34 44 57 / 0.22);

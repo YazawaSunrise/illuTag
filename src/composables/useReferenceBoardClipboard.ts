@@ -108,7 +108,8 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
   }
 
   async function pasteReferenceBoardContent(worldX?: number, worldY?: number) {
-    if (!options.activeReferenceBoard.value) return
+    const targetBoardId = options.activeReferenceBoard.value?.id
+    if (targetBoardId === undefined) return
 
     const pastePoint = resolveReferenceBoardPastePoint(worldX, worldY)
     try {
@@ -131,10 +132,11 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
         if (sourceStillExists) {
           options.library.value = await invoke<TLibraryStore>('duplicate_reference_board_item_command', {
             itemId: copied.itemId,
+            targetBoardId,
             x: pastePoint.x,
             y: pastePoint.y,
           })
-          options.ensureBoardCanvasBoundsFor(options.activeReferenceBoard.value.id)
+          options.ensureBoardCanvasBoundsFor(targetBoardId)
           return
         }
         internalBoardCopyRef.value = null
@@ -144,13 +146,13 @@ export function useReferenceBoardClipboard<TLibraryStore extends LibraryStoreLik
       const clipboardImage = await readClipboardImageForReferenceBoard()
       if (clipboardImage) {
         options.library.value = await invoke<TLibraryStore>('paste_image_to_reference_board_command', {
-          boardId: options.activeReferenceBoard.value.id,
+          boardId: targetBoardId,
           imageBytes: clipboardImage.imageBytes,
           mimeType: clipboardImage.mimeType,
           x: pastePoint.x,
           y: pastePoint.y,
         })
-        options.ensureBoardCanvasBoundsFor(options.activeReferenceBoard.value.id)
+        options.ensureBoardCanvasBoundsFor(targetBoardId)
         return
       }
 

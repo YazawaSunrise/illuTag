@@ -62,6 +62,7 @@ type UseReferenceBoardManagementOptions<TLibraryStore extends LibraryStoreLike> 
   convertFileSrc: (path: string) => string
   setErrorText: (value: string) => void
   formatError: (error: unknown) => string
+  onReferenceBoardDeleted?: (boardId: number) => void
 }
 
 export function useReferenceBoardManagement<TLibraryStore extends LibraryStoreLike>(
@@ -731,6 +732,7 @@ export function useReferenceBoardManagement<TLibraryStore extends LibraryStoreLi
         options.activeReferenceBoardId.value = null
         options.viewMode.value = 'gallery'
       }
+      options.onReferenceBoardDeleted?.(boardId)
     } catch (error) {
       options.setErrorText(options.formatError(error))
     }

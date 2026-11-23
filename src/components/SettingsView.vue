@@ -1,5 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, ref, toRefs } from 'vue'
+import type { FolderImageDropMode } from '../composables/useAppSettings'
 
 type LibraryFolder = {
   path: string
@@ -11,12 +12,23 @@ type UserFolder = {
   name: string
 }
 
+type ImageProcessingFailureRecord = {
+  id: number
+  task: string
+  sourcePath: string
+  fileName: string
+  reason: string
+  fullError: string
+}
+
 type ThemeMode = 'light' | 'dark'
 type ExportDialogMode = 'migration' | 'organized' | null
 
 const exportDialogMode = ref<ExportDialogMode>(null)
 const organizedExportScope = ref<'all' | 'selected'>('all')
 const selectedOrganizedFolderIds = ref<Set<number>>(new Set())
+const processingFailuresExpanded = ref(false)
+const processingFailureVisibleLimit = ref(200)
 
 function openExportDialog(mode: Exclude<ExportDialogMode, null>) {
   exportDialogMode.value = mode
@@ -34,6 +46,9 @@ const props = defineProps<{
   sidebarPinned: boolean
   autoHideTitlebarInWindowMode: boolean
   autoFixRightSidebarOnPreview: boolean
+  showGalleryScrollbar: boolean
+  galleryScrollbarSidebarMode: 'hidden' | 'fixed'
+  folderImageDropMode: FolderImageDropMode
   thumbnailCacheEnabled: boolean
   isThumbnailGenerationRunning: boolean
   isThumbnailGenerationPaused: boolean
@@ -77,11 +92,13 @@ const props = defineProps<{
   errorText: string
   folders: LibraryFolder[]
   userFolders: UserFolder[]
+  processingFailures: ImageProcessingFailureRecord[]
   handlers: Record<string, (...args: any[]) => any>
 }>()
 
 const {
-  sidebarPinned, autoHideTitlebarInWindowMode, autoFixRightSidebarOnPreview, thumbnailCacheEnabled,
+  sidebarPinned, autoHideTitlebarInWindowMode, autoFixRightSidebarOnPreview, showGalleryScrollbar,
+  galleryScrollbarSidebarMode, thumbnailCacheEnabled,
   isThumbnailGenerationRunning, isThumbnailGenerationPaused, thumbnailProgressText, thumbnailProgressPercent, thumbnailRecentErrors,
   isAtmosphereGenerationRunning, isAtmosphereGenerationPaused, atmosphereProgressText, atmosphereProgressPercent, atmosphereRecentErrors,
   isColorSignatureGenerationRunning, isColorSignatureGenerationPaused, colorSignatureProgressText, colorSignatureProgressPercent, colorSignatureRecentErrors,
@@ -89,8 +106,49 @@ const {
   isNaturalLanguageScanRunning, isNaturalLanguageScanPaused, naturalLanguageScanProgressText, naturalLanguageScanRecentErrors,
   themeMode, appVersion, updateChecking, updateAvailable, updateLatestVersion, updateStatusText,
   dataDirectoryPath, dataDirectoryWarning, isMigratingDataDirectory, dataDirectoryRestartRequired,
-  folderPathInput, isPickingFolder, isAddingFolder, isLoading, errorText, folders, userFolders, handlers,
+  folderPathInput, isPickingFolder, isAddingFolder, isLoading, errorText, folders, userFolders,
+  processingFailures, handlers,
 } = toRefs(props)
+
+const processingFailureTaskLabels: Record<string, string> = {
+  thumbnail: '缩略图',
+  wd_tagger: 'WD 标签',
+  clip_image: '自然语言向量',
+}
+
+const groupedProcessingFailures = computed(() => {
+  const groups = new Map<string, {
+    sourcePath: string
+    fileName: string
+    failures: ImageProcessingFailureRecord[]
+  }>()
+  for (const failure of processingFailures.value) {
+    const group = groups.get(failure.sourcePath) ?? {
+      sourcePath: failure.sourcePath,
+      fileName: failure.fileName || failure.sourcePath,
+      failures: [],
+    }
+    group.failures.push(failure)
+    groups.set(failure.sourcePath, group)
+  }
+  return [...groups.values()]
+})
+
+const visibleProcessingFailures = computed(() =>
+  groupedProcessingFailures.value.slice(0, processingFailureVisibleLimit.value),
+)
+
+function processingFailureTaskLabel(task: string) {
+  return processingFailureTaskLabels[task] ?? task
+}
+
+function toggleProcessingFailures() {
+  processingFailuresExpanded.value = !processingFailuresExpanded.value
+}
+
+function showMoreProcessingFailures() {
+  processingFailureVisibleLimit.value += 200
+}
 
 const userFolderChildren = computed(() => {
   const children = new Map<number | null, UserFolder[]>()
@@ -239,6 +297,35 @@ function organizedExportSelection() {
 
     <label class="setting-toggle">
       <input
+        :checked="showGalleryScrollbar"
+        type="checkbox"
+        @change="handlers.setShowGalleryScrollbar(($event.target as HTMLInputElement).checked)"
+      />
+      <span>显示可拖动滚动条</span>
+    </label>
+
+    <div v-if="showGalleryScrollbar" class="settings__segmented-row">
+      <span class="settings__segmented-label">瀑布流右侧栏</span>
+      <div class="settings__segmented-control">
+        <button
+          type="button"
+          :class="{ 'is-active': galleryScrollbarSidebarMode === 'hidden' }"
+          @click="handlers.setGalleryScrollbarSidebarMode('hidden')"
+        >
+          隐藏
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': galleryScrollbarSidebarMode === 'fixed' }"
+          @click="handlers.setGalleryScrollbarSidebarMode('fixed')"
+        >
+          固定
+        </button>
+      </div>
+    </div>
+
+    <label class="setting-toggle">
+      <input
         :checked="thumbnailCacheEnabled"
         type="checkbox"
         @change="handlers.setThumbnailCacheEnabled(($event.target as HTMLInputElement).checked)"
@@ -254,6 +341,28 @@ function organizedExportSelection() {
       />
       <span>启动时自动扫描</span>
     </label>
+
+    <div class="settings__segmented-row">
+      <span id="folder-image-drop-mode-label" class="settings__segmented-label">拖动图片到文件夹时</span>
+      <div class="settings__segmented-control" role="group" aria-labelledby="folder-image-drop-mode-label">
+        <button
+          type="button"
+          :class="{ 'is-active': folderImageDropMode === 'copy' }"
+          :aria-pressed="folderImageDropMode === 'copy'"
+          @click="handlers.requestFolderImageDropMode('copy')"
+        >
+          复制
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': folderImageDropMode === 'move' }"
+          :aria-pressed="folderImageDropMode === 'move'"
+          @click="handlers.requestFolderImageDropMode('move')"
+        >
+          移动
+        </button>
+      </div>
+    </div>
 
     <div class="settings__thumbnail-actions">
       <button
@@ -545,6 +654,72 @@ function organizedExportSelection() {
         <li v-for="(entry, index) in scanRecentErrors" :key="`${index}-${entry}`">{{ entry }}</li>
       </ul>
     </div>
+
+    <section v-if="processingFailures.length > 0" class="settings__processing-failures">
+      <button
+        type="button"
+        class="settings__processing-failures-toggle"
+        :aria-expanded="processingFailuresExpanded"
+        @click="toggleProcessingFailures()"
+      >
+        <span>处理失败的图片（{{ groupedProcessingFailures.length }}）</span>
+        <span>{{ processingFailuresExpanded ? '收起' : '展开' }}</span>
+      </button>
+      <div v-if="processingFailuresExpanded" class="settings__processing-failures-list">
+        <article
+          v-for="group in visibleProcessingFailures"
+          :key="group.sourcePath"
+          class="settings__processing-failure"
+        >
+          <div class="settings__processing-failure-main">
+            <strong>{{ group.fileName }}</strong>
+            <span class="settings__processing-failure-path" :title="group.sourcePath">
+              {{ group.sourcePath }}
+            </span>
+            <div class="settings__processing-failure-reasons">
+              <span
+                v-for="failure in group.failures"
+                :key="failure.id"
+                class="settings__processing-failure-reason"
+              >
+                {{ processingFailureTaskLabel(failure.task) }}：{{ failure.reason }}
+                <button
+                  type="button"
+                  class="settings__processing-failure-retry"
+                  @click="handlers.retryProcessingFailure(failure.id)"
+                >
+                  重试
+                </button>
+              </span>
+            </div>
+          </div>
+          <div class="settings__processing-failure-actions">
+            <button
+              type="button"
+              class="secondary-button"
+              @click="handlers.copyProcessingFailurePath(group.sourcePath)"
+            >
+              复制路径
+            </button>
+            <button
+              type="button"
+              class="secondary-button"
+              @click="handlers.revealProcessingFailurePath(group.sourcePath)"
+            >
+              定位
+            </button>
+          </div>
+        </article>
+        <button
+          v-if="visibleProcessingFailures.length < groupedProcessingFailures.length"
+          type="button"
+          class="secondary-button"
+          @click="showMoreProcessingFailures()"
+        >
+          显示更多
+        </button>
+      </div>
+    </section>
 
     <div class="settings__export-actions">
       <button class="secondary-button" type="button" @click="openExportDialog('migration')">

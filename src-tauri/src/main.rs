@@ -48,6 +48,7 @@ use illutag_core::library::{
     assign_user_tag_to_folder, unassign_user_tag_from_folder, create_user_custom_tag, delete_user_custom_tag,
     dev_cleanup_stress_test_data, dev_create_fake_gallery_data, dev_create_small_file_test_set,
     export_data_migration_backup, export_organized_folder_result, inspect_data_migration_backup, import_data_migration_backup,
+    list_image_processing_failures, retry_image_processing_failure,
     list_gallery_image_ids_for_scope, list_gallery_images_by_ids_page, list_gallery_images_page, search_gallery_image_ids, start_startup_cleanup, startup_cleanup_status, suggest_known_auto_tags,
     move_reference_board_to_folder, paste_image_to_reference_board, paste_images_to_reference_board,
     read_image_bytes,
@@ -884,11 +885,12 @@ fn paste_images_to_reference_board_command(
 #[tauri::command]
 fn duplicate_reference_board_item_command(
     item_id: i64,
+    target_board_id: i64,
     x: Option<f32>,
     y: Option<f32>,
     state: State<AppState>,
 ) -> Result<LibraryStore, String> {
-    duplicate_reference_board_item(item_id, x, y, &state)
+    duplicate_reference_board_item(item_id, target_board_id, x, y, &state)
 }
 
 #[tauri::command]
@@ -1353,6 +1355,69 @@ fn reveal_gallery_image_in_file_manager_command(
         let parent = Path::new(&normalized_path).parent().ok_or_else(|| "无法解析图片所在目录".to_string())?;
         let status = Command::new("xdg-open").arg(parent).status().map_err(|error| format!("无法打开图片所在目录：{error}"))?;
         if status.success() { Ok(()) } else { Err(format!("无法打开图片所在目录：status={status}")) }
+    }
+}
+
+#[tauri::command]
+fn list_image_processing_failures_command(
+    state: State<AppState>,
+) -> Result<Vec<illutag_core::library::ImageProcessingFailureRecord>, String> {
+    list_image_processing_failures(&state)
+}
+
+#[tauri::command]
+fn retry_image_processing_failure_command(
+    failure_id: i64,
+    state: State<AppState>,
+) -> Result<Vec<illutag_core::library::ImageProcessingFailureRecord>, String> {
+    retry_image_processing_failure(failure_id, &state)
+}
+
+#[tauri::command]
+fn reveal_file_path_in_file_manager_command(source_path: String) -> Result<(), String> {
+    let trimmed = source_path.trim();
+    if trimmed.is_empty() {
+        return Err("图片路径为空，无法定位。".to_string());
+    }
+    if !Path::new(trimmed).is_file() {
+        return Err("图片文件已不存在，无法在资源管理器中定位。".to_string());
+    }
+    let normalized_path = normalize_windows_path_for_shell(trimmed);
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer.exe")
+            .arg(format!("/select,{}", normalized_path))
+            .spawn()
+            .map_err(|error| format!("无法打开资源管理器：{error}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .args(["-R", normalized_path.as_str()])
+            .status()
+            .map_err(|error| format!("无法在文件管理器中定位图片：{error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("无法在文件管理器中定位图片：status={status}"))
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let parent = Path::new(&normalized_path)
+            .parent()
+            .ok_or_else(|| "无法解析图片所在目录".to_string())?;
+        let status = Command::new("xdg-open")
+            .arg(parent)
+            .status()
+            .map_err(|error| format!("无法打开图片所在目录：{error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("无法打开图片所在目录：status={status}"))
+        }
     }
 }
 
@@ -2108,6 +2173,9 @@ fn main() {
             window_start_dragging_command,
             open_gallery_image_with_default_app_command,
             reveal_gallery_image_in_file_manager_command,
+            list_image_processing_failures_command,
+            retry_image_processing_failure_command,
+            reveal_file_path_in_file_manager_command,
             open_data_directory_command,
             open_external_url_command,
             window_close_command

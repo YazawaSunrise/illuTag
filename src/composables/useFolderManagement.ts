@@ -50,6 +50,7 @@ type UseFolderManagementOptions<TLibraryStore extends LibraryStoreLike> = {
   library: Ref<TLibraryStore>
   viewMode: Ref<'gallery' | 'settings' | 'board'>
   activeReferenceBoardId: Ref<number | null>
+  onLeaveReferenceBoard?: () => void
   setErrorText: (value: string) => void
   formatError: (error: unknown) => string
   updateStatus: () => void
@@ -459,6 +460,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   }
 
   function showAllImages() {
+    options.onLeaveReferenceBoard?.()
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'all'
     unclassifiedOnlyParentFolderId.value = null
@@ -466,6 +468,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   }
 
   function showRandomImages() {
+    options.onLeaveReferenceBoard?.()
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'random'
     randomGalleryVisitSerial.value += 1
@@ -474,6 +477,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   }
 
   function showFavoriteImages() {
+    options.onLeaveReferenceBoard?.()
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'favorites'
     unclassifiedOnlyParentFolderId.value = null
@@ -481,6 +485,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   }
 
   function showUnclassifiedImages() {
+    options.onLeaveReferenceBoard?.()
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'unclassified'
     unclassifiedOnlyParentFolderId.value = null
@@ -488,6 +493,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
   }
 
   function showTrashImages() {
+    options.onLeaveReferenceBoard?.()
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = 'trash'
     unclassifiedOnlyParentFolderId.value = null
@@ -506,6 +512,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       expandFolder(folder.id)
     }
 
+    options.onLeaveReferenceBoard?.()
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = folder.id
     unclassifiedOnlyParentFolderId.value = null
@@ -520,6 +527,7 @@ export function useFolderManagement<TLibraryStore extends LibraryStoreLike>(
       }
       return
     }
+    options.onLeaveReferenceBoard?.()
     options.viewMode.value = 'gallery'
     activeUserFolderId.value = folderId
     options.activeReferenceBoardId.value = null

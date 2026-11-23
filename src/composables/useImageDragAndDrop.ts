@@ -3,6 +3,7 @@ import type { GalleryLayoutItem } from '../types/gallery'
 
 type DragState = {
   imageId: string
+  moveSourceFolderId: number | null
   thumbnailUrl: string
   x: number
   y: number
@@ -29,7 +30,8 @@ type UseImageDragAndDropOptions<TLibraryStore extends LibraryStoreLike> = {
   folderIdFromPoint: (x: number, y: number) => number | null
   folderHasChildren: (folderId: number) => boolean
   expandedDropFolderIdsFor: (folderId: number) => Set<number>
-  assignImageToFolder: (imageId: string, folderId: number) => Promise<void>
+  getMoveSourceFolderId: (imageId: string) => number | null
+  dropImageIntoFolder: (imageId: string, folderId: number, moveSourceFolderId: number | null) => Promise<void>
   referenceBoardIdFromPoint: (x: number, y: number) => number | null
   referenceBoardFolderIdFromPoint: (x: number, y: number) => number | null
   isPointInsideRightSidebarArea: (x: number, y: number) => boolean
@@ -94,6 +96,7 @@ export function useImageDragAndDrop<TLibraryStore extends LibraryStoreLike>(
     pressedItem.value = item
     pressedPointerId.value = event.pointerId
     pressCurrent.value = { x: event.clientX, y: event.clientY }
+    const moveSourceFolderId = options.getMoveSourceFolderId(item.id)
 
     longPressTimer.value = window.setTimeout(() => {
       if (!pressedItem.value || !pressCurrent.value) return
@@ -101,6 +104,7 @@ export function useImageDragAndDrop<TLibraryStore extends LibraryStoreLike>(
       const panelPosition = floatingPanelPosition(current.x, current.y)
       dragState.value = {
         imageId: item.id,
+        moveSourceFolderId,
         thumbnailUrl: item.thumbnailUrl,
         x: current.x,
         y: current.y,
@@ -200,7 +204,10 @@ export function useImageDragAndDrop<TLibraryStore extends LibraryStoreLike>(
           ? folderCandidateId
           : null
       if (folderId !== null) {
-        await options.assignImageToFolder(dragState.value.imageId, folderId)
+        const { imageId, moveSourceFolderId } = dragState.value
+        if (folderId !== moveSourceFolderId) {
+          await options.dropImageIntoFolder(imageId, folderId, moveSourceFolderId)
+        }
       }
     } catch (error) {
       options.setErrorText(options.formatError(error))
